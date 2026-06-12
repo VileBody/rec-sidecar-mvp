@@ -543,6 +543,19 @@ Checks текущей стадии:
 """
 
 
+def scorecard_advice_prompt(stage: str, agenda: StageAgenda) -> str:
+    return f"""Ты tactical sales coach для high-ticket B2C sales call на русском.
+Стадия: {stage} — {agenda.title}
+Agenda: {agenda.agenda}
+Канонический следующий шаг: {agenda.step}
+
+Верни только одну короткую строку next_action, без JSON и markdown.
+Если данных не хватает или рано переходить: начни с "Уточнить:" и дай 1-3 коротких вопроса/микрошага.
+Если можно двигаться дальше: начни с "Переход:" и дай готовую фразу перехода на следующую стадию.
+Фраза должна быть пригодна сказать клиенту вслух прямо сейчас.
+"""
+
+
 def vertex_scorecard_response_schema() -> dict[str, Any]:
     return {
         "type": "OBJECT",
@@ -673,11 +686,21 @@ def normalize_scorecard(
     )
 
 
-def fallback_scorecard(stage: str, agenda: StageAgenda, reason: str | None = None) -> StageScorecard:
+def fallback_scorecard(
+    stage: str,
+    agenda: StageAgenda,
+    reason: str | None = None,
+    next_action: str | None = None,
+) -> StageScorecard:
+    raw = RawScorecard(
+        summary=reason or "Scorecard evaluator временно недоступен.",
+        next_action=next_action or agenda.step,
+        checks=[],
+    )
     return normalize_scorecard(
         stage=stage,
         agenda=agenda,
-        raw=None,
+        raw=raw,
         fallback_reason=reason or "Scorecard evaluator временно недоступен.",
     )
 

@@ -365,6 +365,7 @@ class VertexClient:
     ) -> str:
         generation_config: dict[str, Any] = {
             "temperature": temperature,
+            "maxOutputTokens": 96,
             "responseMimeType": "application/json",
             "responseSchema": vertex_stage_response_schema(),
         }
@@ -403,6 +404,7 @@ class VertexClient:
             "contents": [{"role": "user", "parts": [{"text": user_content}]}],
             "generationConfig": {
                 "temperature": temperature,
+                "maxOutputTokens": 768,
                 "responseMimeType": "application/json",
                 "responseSchema": vertex_scorecard_response_schema(),
             },
@@ -420,6 +422,38 @@ class VertexClient:
         text = vertex_response_text(response.json())
         if not text:
             raise ProviderError("vertex", "empty scorecard response")
+        return text
+
+    async def generate_text(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+        max_output_tokens: int,
+    ) -> str:
+        body = {
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": user_content}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_output_tokens,
+            },
+        }
+        try:
+            response = await self.client.post(
+                self._method_url_for_model("generateContent", model),
+                headers=await self._headers(),
+                json=body,
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderError("vertex", f"{exc.__class__.__name__}: {exc}") from exc
+        if not response.is_success:
+            raise ProviderError("vertex", response.text, response.status_code)
+        text = vertex_response_text(response.json())
+        if not text:
+            raise ProviderError("vertex", "empty text response")
         return text
 
     async def stream_text(

@@ -38,6 +38,7 @@ from .schemas import (
 from .scorecard import (
     fallback_scorecard,
     normalize_scorecard,
+    scorecard_advice_prompt,
     safe_parse_scorecard,
     scorecard_system_prompt,
 )
@@ -54,6 +55,8 @@ from .stage_assets import (
 logger = logging.getLogger("uvicorn.error")
 HELP_TEMPERATURE = 1.0
 STAGE_SCORECARD_TIMEOUT_SECS = 5.0
+STAGE_ADVICE_DELAY_SECS = 1.5
+STAGE_ADVICE_TIMEOUT_SECS = 3.0
 
 FALLBACK_HELP_OPENER_TEXT = (
     "Давайте зафиксируем главный риск и разберем, что должно быть иначе, "
@@ -577,22 +580,46 @@ class LlmOrchestrator:
                 "Scorecard evaluator disabled: Vertex is not configured.",
             )
 
-        try:
-            started_at = time.monotonic()
-            model = self.settings.vertex_model
-            text = await asyncio.wait_for(
-                self.vertex.generate_scorecard(
-                    model=model,
-                    system_prompt=scorecard_system_prompt(agenda.stage, agenda),
-                    user_content=(
-                        f"{request.context}\n\n"
-                        f"--- Текущий stage из предыдущего шага ---\n"
-                        f"{request.current_stage or '(пока неизвестен)'}\n"
-                    ),
-                    temperature=0.0,
-                ),
-                timeout=STAGE_SCORECARD_TIMEOUT_SECS,
+        started_at = time.monotonic()
+        model = self.settings.vertex_model
+        user_content = (
+            f"{request.context}\n\n"
+            f"--- Текущий stage из предыдущего шага ---\n"
+            f"{request.current_stage or '(пока неизвестен)'}\n"
+        )
+        scorecard_task = asyncio.create_task(
+            self.vertex.generate_scorecard(
+                model=model,
+                system_prompt=scorecard_system_prompt(agenda.stage, agenda),
+                user_content=user_content,
+                temperature=0.0,
             )
+        )
+        advice_task: asyncio.Task[str] | None = None
+
+        def start_advice_task() -> asyncio.Task[str]:
+            return asyncio.create_task(
+                self.vertex.generate_text(
+                    model=model,
+                    system_prompt=scorecard_advice_prompt(agenda.stage, agenda),
+                    user_content=user_content,
+                    temperature=0.4,
+                    max_output_tokens=160,
+                )
+            )
+
+        try:
+            done, _ = await asyncio.wait(
+                {scorecard_task},
+                timeout=STAGE_ADVICE_DELAY_SECS,
+            )
+            if not done:
+                advice_task = start_advice_task()
+            remaining_timeout = max(
+                0.1,
+                STAGE_SCORECARD_TIMEOUT_SECS - (time.monotonic() - started_at),
+            )
+            text = await asyncio.wait_for(scorecard_task, remaining_timeout)
             raw = safe_parse_scorecard(text)
             scorecard = normalize_scorecard(stage=agenda.stage, agenda=agenda, raw=raw)
             logger.info(
@@ -608,17 +635,44 @@ class LlmOrchestrator:
             )
             return scorecard
         except (ProviderError, ValueError, json.JSONDecodeError, TimeoutError) as exc:
+            reason = scorecard_error_reason(exc)
+            advice_started_after_error = advice_task is None
+            if advice_task is None:
+                advice_task = start_advice_task()
+            advice = await self._scorecard_advice_from_task(
+                advice_task,
+                timeout=STAGE_ADVICE_TIMEOUT_SECS if advice_started_after_error else 0.5,
+            )
             logger.warning(
-                "stage_scorecard fallback run_id=%s stage=%s error=%s",
+                "stage_scorecard fallback run_id=%s stage=%s model=%s elapsed_ms=%s error=%s advice=%s",
                 request.run_id,
                 agenda.stage,
-                exc,
+                model,
+                int((time.monotonic() - started_at) * 1000),
+                reason,
+                bool(advice),
             )
             return fallback_scorecard(
                 agenda.stage,
                 agenda,
-                f"Scorecard evaluator fallback: {exc}",
+                f"Scorecard evaluator fallback: {reason}",
+                next_action=advice,
             )
+        finally:
+            await cancel_tasks(
+                *[task for task in (scorecard_task, advice_task) if task is not None]
+            )
+
+    async def _scorecard_advice_from_task(
+        self, task: asyncio.Task[str], *, timeout: float
+    ) -> str | None:
+        try:
+            text = await asyncio.wait_for(task, timeout)
+        except (ProviderError, TimeoutError) as exc:
+            logger.info("stage_scorecard advice_fallback error=%s", scorecard_error_reason(exc))
+            return None
+        text = clean_one_line(text)
+        return text or None
 
     async def _vertex_text_stream(
         self,
@@ -838,6 +892,23 @@ def best_opener_result(results: Iterable[OpenerFirstDelta]) -> OpenerFirstDelta 
     if not successes:
         return None
     return min(successes, key=lambda result: result.candidate.priority)
+
+
+def clean_one_line(text: str) -> str:
+    return " ".join(text.strip().strip("\"'`").split())
+
+
+def scorecard_error_reason(exc: BaseException) -> str:
+    if isinstance(exc, TimeoutError):
+        return f"timeout after {STAGE_SCORECARD_TIMEOUT_SECS:.0f}s"
+    return str(exc) or exc.__class__.__name__
+
+
+async def cancel_tasks(*tasks: asyncio.Task[Any]) -> None:
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def close_opener_results(

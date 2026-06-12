@@ -343,9 +343,26 @@ async def test_stage_agenda_returns_pending_scorecard_on_vertex_timeout():
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         calls.append(payload)
-        schema_properties = payload["generationConfig"]["responseSchema"]["properties"]
-        if "checks" in schema_properties:
+        schema = payload["generationConfig"].get("responseSchema")
+        if schema and "checks" in schema["properties"]:
             raise httpx.ReadTimeout("scorecard timeout", request=request)
+        if schema is None:
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": "Уточнить: 1) что именно не получилось; 2) какой результат нужен."
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+            )
         return httpx.Response(
             200,
             json={
@@ -380,7 +397,8 @@ async def test_stage_agenda_returns_pending_scorecard_on_vertex_timeout():
         assert response.scorecard.miss_count == 0
         assert response.scorecard.ready_to_advance is False
         assert "ReadTimeout" in response.scorecard.summary
-        assert len(calls) == 2
+        assert response.scorecard.next_action.startswith("Уточнить:")
+        assert len(calls) == 3
     finally:
         await client.aclose()
 
