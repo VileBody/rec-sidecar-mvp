@@ -694,7 +694,7 @@ def fallback_scorecard(
 ) -> StageScorecard:
     raw = RawScorecard(
         summary=reason or "Scorecard evaluator временно недоступен.",
-        next_action=next_action or agenda.step,
+        next_action=next_action or f"Уточнить: {agenda.step}",
         checks=[],
     )
     return normalize_scorecard(

@@ -728,7 +728,7 @@ class LlmOrchestrator:
             logger.info("stage_scorecard advice_fallback error=%s", scorecard_error_reason(exc))
             return None
         text = clean_one_line(text)
-        return text or None
+        return text if is_usable_advice(text) else None
 
     async def _stage_advice_text(self, *, system_prompt: str, user_content: str) -> str:
         parts: list[str] = []
@@ -748,14 +748,15 @@ class LlmOrchestrator:
                     len(text),
                 )
                 return text
-            if time.monotonic() - started_at >= 2.0 and text:
+            if time.monotonic() - started_at >= 2.0 and is_usable_advice(text):
                 logger.info(
                     "stage_scorecard advice_partial elapsed_ms=%s chars=%s",
                     int((time.monotonic() - started_at) * 1000),
                     len(text),
                 )
                 return text
-        return clean_one_line("".join(parts))
+        text = clean_one_line("".join(parts))
+        return text if is_usable_advice(text) else ""
 
     async def _stage_advice_cerebras(
         self, *, request: StageRequest, system_prompt: str, user_content: str
@@ -782,6 +783,8 @@ class LlmOrchestrator:
             )
             return None
         text = clean_one_line(text)
+        if not is_usable_advice(text):
+            return None
         logger.info(
             "stage_scorecard advice_cerebras_ready run_id=%s model=%s elapsed_ms=%s chars=%s",
             request.run_id,
@@ -1013,6 +1016,10 @@ def best_opener_result(results: Iterable[OpenerFirstDelta]) -> OpenerFirstDelta 
 
 def clean_one_line(text: str) -> str:
     return " ".join(text.strip().strip("\"'`").split())
+
+
+def is_usable_advice(text: str) -> bool:
+    return len(text.strip()) >= 32
 
 
 def scorecard_error_reason(exc: BaseException) -> str:
