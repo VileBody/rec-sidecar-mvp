@@ -21,7 +21,9 @@ use std::{
 const COACH_AUTO_SUGGESTIONS: bool = false;
 const TRANSCRIPT_PANEL_TITLE: &str = "REC Transcript";
 const COACH_PANEL_TITLE: &str = "REC Coach";
+const STAGE_AGENDA_PANEL_TITLE: &str = "REC Stage Agenda";
 const DEFAULT_HELP_CONTEXT_DELAY_MS: u64 = 300;
+const DEFAULT_STAGE_DETECT_INTERVAL_MS: u64 = 5_000;
 const DEFAULT_CONTEXT_MAX_TRANSCRIPT_CHARS: usize = 16_000;
 const DEFAULT_CONTEXT_MAX_CHAT_CHARS: usize = 4_000;
 const DEFAULT_CONTEXT_MAX_LIVE_PARTIAL_CHARS: usize = 1_200;
@@ -81,6 +83,11 @@ pub struct RecApp {
     coach_tx: Option<Sender<coach::CoachInput>>,
     coach_rx: Option<Receiver<coach::CoachEvent>>,
     coach_status: String,
+    stage_agenda: Option<coach::CoachStageAgenda>,
+    stage_status: String,
+    stage_panel_pinned: bool,
+    force_stage_detect: bool,
+    last_stage_request_sent: Instant,
     force_coach_snapshot: bool,
     last_coach_snapshot_sent: Instant,
     rx: Option<Receiver<asr::AsrEvent>>,
@@ -126,6 +133,11 @@ impl RecApp {
             coach_tx: None,
             coach_rx: None,
             coach_status: "Coach idle".to_string(),
+            stage_agenda: None,
+            stage_status: "Stage idle".to_string(),
+            stage_panel_pinned: false,
+            force_stage_detect: true,
+            last_stage_request_sent: Instant::now(),
             force_coach_snapshot: false,
             last_coach_snapshot_sent: Instant::now(),
             rx: None,
@@ -171,6 +183,10 @@ impl RecApp {
         self.coach_chat_messages.clear();
         self.next_coach_chat_id = 1;
         self.pending_help = None;
+        self.stage_agenda = None;
+        self.stage_status = "Stage detecting...".to_string();
+        self.stage_panel_pinned = false;
+        self.force_stage_detect = true;
         self.current_run = Some(RunSession::new());
         self.open_transcript_window();
         self.spawn_coach();
@@ -233,6 +249,10 @@ impl RecApp {
                 self.coach_chat_input.clear();
                 self.coach_chat_messages.clear();
                 self.pending_help = None;
+                self.stage_agenda = None;
+                self.stage_status = "Stage idle".to_string();
+                self.stage_panel_pinned = false;
+                self.force_stage_detect = true;
                 self.rx = None;
                 self.status = format!("Saved and closed {}", path.display());
             }
@@ -315,6 +335,7 @@ impl RecApp {
             self.coach_rx = Some(event_rx);
             self.coach_status = "Coach connecting...".to_string();
             self.force_coach_snapshot = true;
+            self.force_stage_detect = true;
         } else {
             self.coach_tx = None;
             self.coach_rx = None;
@@ -330,6 +351,7 @@ impl RecApp {
         self.coach_rx = None;
         self.coach_status = "Coach idle".to_string();
         self.force_coach_snapshot = false;
+        self.force_stage_detect = true;
         self.pending_help = None;
     }
 
@@ -431,6 +453,14 @@ impl RecApp {
 
                 self.coach_status = "Coach ready".to_string();
                 self.force_coach_snapshot = pushed;
+            }
+            coach::CoachEvent::StageAgenda(agenda) => {
+                self.stage_status = format!("{} · {}", agenda.stage, agenda.model);
+                self.stage_agenda = Some(agenda);
+                self.force_stage_detect = false;
+            }
+            coach::CoachEvent::StageError(message) => {
+                self.stage_status = message;
             }
             coach::CoachEvent::HelpStage(id, stage) => {
                 self.set_help_stage(id, stage);
@@ -778,6 +808,45 @@ impl RecApp {
         }
     }
 
+    fn maybe_send_stage_request(&mut self) {
+        if self.coach_tx.is_none() || self.current_run.is_none() {
+            return;
+        }
+
+        let interval = stage_detect_interval();
+        if !self.force_stage_detect && self.last_stage_request_sent.elapsed() < interval {
+            return;
+        }
+
+        if self.bubbles.is_empty() && self.live_partial.is_none() {
+            return;
+        }
+
+        let Some(run_id) = self.current_run.as_ref().map(|run| run.id.clone()) else {
+            return;
+        };
+        let Some(tx) = self.coach_tx.clone() else {
+            return;
+        };
+
+        let request = coach::CoachStageRequest {
+            run_id,
+            context: self.render_coach_context(),
+            current_stage: self
+                .stage_agenda
+                .as_ref()
+                .map(|agenda| agenda.stage.clone()),
+        };
+
+        if tx.send(coach::CoachInput::Stage(request)).is_ok() {
+            self.force_stage_detect = false;
+            self.last_stage_request_sent = Instant::now();
+            if self.stage_agenda.is_none() {
+                self.stage_status = "Stage detecting...".to_string();
+            }
+        }
+    }
+
     fn chat_is_streaming(&self) -> bool {
         self.coach_chat_messages
             .iter()
@@ -1119,6 +1188,66 @@ impl RecApp {
         );
     }
 
+    fn show_stage_agenda_panel(&mut self, ctx: &egui::Context) {
+        let monitor = ctx.input(|input| {
+            input
+                .viewport()
+                .monitor_size
+                .unwrap_or_else(|| egui::vec2(1440.0, 900.0))
+        });
+        let width = (monitor.x * 0.40).clamp(560.0, 760.0);
+        let height = 178.0;
+        let x = ((monitor.x - width) / 2.0).max(0.0);
+        let y = 72.0;
+
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("stage_agenda_panel"),
+            egui::ViewportBuilder::default()
+                .with_title(STAGE_AGENDA_PANEL_TITLE)
+                .with_decorations(false)
+                .with_always_on_top()
+                .with_position([x, y])
+                .with_inner_size([width, height])
+                .with_min_inner_size([460.0, 140.0]),
+            |ctx, class| {
+                if class == egui::ViewportClass::Embedded {
+                    return;
+                }
+
+                if !self.stage_panel_pinned {
+                    self.stage_panel_pinned =
+                        platform::pin_window_to_all_spaces(STAGE_AGENDA_PANEL_TITLE);
+                }
+
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add_space(8.0);
+                    if let Some(agenda) = &self.stage_agenda {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.heading(&agenda.stage);
+                            ui.label(RichText::new(&agenda.title).size(15.0));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(RichText::new(&agenda.model).italics().size(11.0));
+                                },
+                            );
+                        });
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(&agenda.agenda).size(14.0));
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(&agenda.emotion).size(13.0).italics());
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(&agenda.step).size(14.0));
+                    } else {
+                        ui.heading("Stage");
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(&self.stage_status).size(14.0));
+                    }
+                });
+            },
+        );
+    }
+
     fn show_transcript_column(&mut self, ui: &mut egui::Ui) {
         let scroll_height = (ui.clip_rect().bottom() - ui.cursor().top()).max(160.0);
         egui::ScrollArea::vertical()
@@ -1342,7 +1471,12 @@ impl eframe::App for RecApp {
         if COACH_AUTO_SUGGESTIONS {
             self.maybe_send_coach_snapshot();
         }
+        self.maybe_send_stage_request();
         self.show_main_window(ctx);
+
+        if self.current_run.is_some() {
+            self.show_stage_agenda_panel(ctx);
+        }
 
         if self.transcript_open {
             self.show_sidecar_panels(ctx);
@@ -1367,6 +1501,13 @@ fn help_context_delay() -> Duration {
     Duration::from_millis(env_u64(
         "COACH_HELP_CONTEXT_DELAY_MS",
         DEFAULT_HELP_CONTEXT_DELAY_MS,
+    ))
+}
+
+fn stage_detect_interval() -> Duration {
+    Duration::from_millis(env_u64(
+        "COACH_STAGE_DETECT_INTERVAL_MS",
+        DEFAULT_STAGE_DETECT_INTERVAL_MS,
     ))
 }
 
@@ -1531,6 +1672,27 @@ mod tests {
 
         app.handle_coach_event(coach::CoachEvent::ChatFinished(9));
         assert!(app.chat_message_mut(9).unwrap().help_stage_label.is_none());
+    }
+
+    #[test]
+    fn stage_agenda_event_updates_overlay_state() {
+        let (_dir, paths) = temp_paths();
+        let mut app = RecApp::new_with_paths(paths);
+
+        app.handle_coach_event(coach::CoachEvent::StageAgenda(coach::CoachStageAgenda {
+            stage: "S2.3".to_string(),
+            title: "Target & Gap".to_string(),
+            agenda: "выяснить желаемый результат".to_string(),
+            emotion: "Очень крутая цель.".to_string(),
+            step: "Почему пока не получается?".to_string(),
+            provider: "cerebras".to_string(),
+            model: "gpt-oss-120b".to_string(),
+        }));
+
+        let agenda = app.stage_agenda.as_ref().unwrap();
+        assert_eq!(agenda.stage, "S2.3");
+        assert_eq!(agenda.model, "gpt-oss-120b");
+        assert_eq!(app.stage_status, "S2.3 · gpt-oss-120b");
     }
 
     #[test]

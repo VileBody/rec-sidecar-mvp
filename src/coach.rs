@@ -32,6 +32,7 @@ pub enum CoachInput {
     Snapshot(CoachSnapshot),
     Chat(CoachChatRequest),
     Help(CoachHelpRequest),
+    Stage(CoachStageRequest),
     Stop,
 }
 
@@ -56,11 +57,31 @@ pub struct CoachHelpRequest {
     pub context: String,
 }
 
+#[derive(Clone)]
+pub struct CoachStageRequest {
+    pub run_id: String,
+    pub context: String,
+    pub current_stage: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoachStageAgenda {
+    pub stage: String,
+    pub title: String,
+    pub agenda: String,
+    pub emotion: String,
+    pub step: String,
+    pub provider: String,
+    pub model: String,
+}
+
 pub enum CoachEvent {
     Ready(String),
     Started,
     Delta(String),
     Finished,
+    StageAgenda(CoachStageAgenda),
+    StageError(String),
     HelpStage(u64, CoachHelpStage),
     ChatModel(u64, String),
     ChatStarted(u64),
@@ -124,6 +145,19 @@ struct LiveResponse {
     text: String,
     provider: Option<String>,
     model: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StageAgendaResponse {
+    stage: String,
+    title: String,
+    agenda: String,
+    emotion: String,
+    step: String,
+    provider: String,
+    model: String,
+    #[allow(dead_code)]
+    confidence: Option<f32>,
 }
 
 struct HelpOpenerOutcome {
@@ -206,6 +240,7 @@ fn run_coach_worker(
     }
 
     let mut latest: Option<CoachSnapshot> = None;
+    let mut pending_stage: Option<CoachStageRequest> = None;
     let mut pending_helps = VecDeque::new();
     let mut pending_chats = VecDeque::new();
     let mut last_sent = String::new();
@@ -213,7 +248,11 @@ fn run_coach_worker(
     let mut next_due = Instant::now();
 
     loop {
-        let timeout = if force_due || !pending_helps.is_empty() || !pending_chats.is_empty() {
+        let timeout = if force_due
+            || pending_stage.is_some()
+            || !pending_helps.is_empty()
+            || !pending_chats.is_empty()
+        {
             Duration::ZERO
         } else {
             next_due.saturating_duration_since(Instant::now())
@@ -233,6 +272,10 @@ fn run_coach_worker(
                 pending_helps.push_back(request);
                 continue;
             }
+            Ok(CoachInput::Stage(request)) => {
+                pending_stage = Some(request);
+                continue;
+            }
             Ok(CoachInput::Stop) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -241,6 +284,7 @@ fn run_coach_worker(
         if drain_inputs(
             &input_rx,
             &mut latest,
+            &mut pending_stage,
             &mut pending_helps,
             &mut pending_chats,
             &mut force_due,
@@ -274,6 +318,7 @@ fn run_coach_worker(
             if drain_inputs(
                 &input_rx,
                 &mut latest,
+                &mut pending_stage,
                 &mut pending_helps,
                 &mut pending_chats,
                 &mut force_due,
@@ -309,6 +354,48 @@ fn run_coach_worker(
             if drain_inputs(
                 &input_rx,
                 &mut latest,
+                &mut pending_stage,
+                &mut pending_helps,
+                &mut pending_chats,
+                &mut force_due,
+            ) {
+                return Ok(());
+            }
+        }
+
+        if let Some(request) = pending_stage.take() {
+            let started_at = Instant::now();
+            coach_log(format!(
+                "stage request start run_id={} context_chars={} current_stage={}",
+                request.run_id,
+                request.context.chars().count(),
+                request.current_stage.as_deref().unwrap_or("unknown"),
+            ));
+
+            match runtime.block_on(send_stage_request(&client, &config, &request, &tx)) {
+                Ok(()) => {
+                    coach_log(format!(
+                        "stage request done run_id={} elapsed_ms={}",
+                        request.run_id,
+                        started_at.elapsed().as_millis()
+                    ));
+                }
+                Err(err) => {
+                    coach_log(format!(
+                        "stage request error run_id={}: {}",
+                        request.run_id, err
+                    ));
+                    let _ = tx.send(CoachEvent::StageError(format!(
+                        "Stage detect error: {}",
+                        concise_error(&err)
+                    )));
+                }
+            }
+
+            if drain_inputs(
+                &input_rx,
+                &mut latest,
+                &mut pending_stage,
                 &mut pending_helps,
                 &mut pending_chats,
                 &mut force_due,
@@ -364,6 +451,7 @@ fn run_coach_worker(
         if drain_inputs(
             &input_rx,
             &mut latest,
+            &mut pending_stage,
             &mut pending_helps,
             &mut pending_chats,
             &mut force_due,
@@ -379,6 +467,7 @@ fn run_coach_worker(
 fn drain_inputs(
     input_rx: &Receiver<CoachInput>,
     latest: &mut Option<CoachSnapshot>,
+    pending_stage: &mut Option<CoachStageRequest>,
     pending_helps: &mut VecDeque<CoachHelpRequest>,
     pending_chats: &mut VecDeque<CoachChatRequest>,
     force_due: &mut bool,
@@ -394,6 +483,9 @@ fn drain_inputs(
             }
             CoachInput::Help(request) => {
                 pending_helps.push_back(request);
+            }
+            CoachInput::Stage(request) => {
+                *pending_stage = Some(request);
             }
             CoachInput::Stop => return true,
         }
@@ -414,6 +506,36 @@ async fn fetch_health(client: &Client, config: &CoachConfig) -> Result<HealthRes
         .json::<HealthResponse>()
         .await
         .map_err(Into::into)
+}
+
+async fn send_stage_request(
+    client: &Client,
+    config: &CoachConfig,
+    request: &CoachStageRequest,
+    tx: &Sender<CoachEvent>,
+) -> Result<(), BoxError> {
+    let response = service_post(
+        client,
+        config,
+        "/v1/coach/stage",
+        stage_request_body(request),
+    )
+    .await?;
+    let agenda = response.json::<StageAgendaResponse>().await?;
+    coach_log(format!(
+        "stage response run_id={} stage={} provider={} model={}",
+        request.run_id, agenda.stage, agenda.provider, agenda.model
+    ));
+    let _ = tx.send(CoachEvent::StageAgenda(CoachStageAgenda {
+        stage: agenda.stage,
+        title: agenda.title,
+        agenda: agenda.agenda,
+        emotion: agenda.emotion,
+        step: agenda.step,
+        provider: agenda.provider,
+        model: agenda.model,
+    }));
+    Ok(())
 }
 
 async fn send_help_request(
@@ -870,6 +992,14 @@ fn help_request_body(request: &CoachHelpRequest) -> Value {
     })
 }
 
+fn stage_request_body(request: &CoachStageRequest) -> Value {
+    json!({
+        "run_id": request.run_id,
+        "context": request.context,
+        "current_stage": request.current_stage,
+    })
+}
+
 fn build_client(config: &CoachConfig) -> Result<Client, BoxError> {
     Ok(Client::builder().timeout(config.timeout).build()?)
 }
@@ -1062,6 +1192,19 @@ mod tests {
         assert_eq!(body["run_id"], "run-1");
         assert_eq!(body["content"], "Спикер 1: привет");
         assert_eq!(body["force"], true);
+    }
+
+    #[test]
+    fn stage_request_body_matches_service_contract() {
+        let body = stage_request_body(&CoachStageRequest {
+            run_id: "run-1".to_string(),
+            context: "dialogue".to_string(),
+            current_stage: Some("S2.2".to_string()),
+        });
+
+        assert_eq!(body["run_id"], "run-1");
+        assert_eq!(body["context"], "dialogue");
+        assert_eq!(body["current_stage"], "S2.2");
     }
 
     #[test]

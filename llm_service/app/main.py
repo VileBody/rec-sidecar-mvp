@@ -16,6 +16,8 @@ from .schemas import (
     LiveRequest,
     LiveResponse,
     OpenerResponse,
+    StageAgendaResponse,
+    StageRequest,
 )
 
 
@@ -72,6 +74,19 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+@app.post(
+    "/v1/coach/stage",
+    response_model=StageAgendaResponse,
+    dependencies=[Depends(require_service_token)],
+)
+async def stage_agenda(request: StageRequest) -> StageAgendaResponse:
+    try:
+        return await orchestrator.stage_agenda(request)
+    except (ProviderError, ValueError) as exc:
+        status = provider_status(exc) if isinstance(exc, ProviderError) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
 @app.post(

@@ -17,7 +17,12 @@ from llm_service.app.providers import (
     parse_json_suggestion,
     pop_vertex_stream_value,
 )
-from llm_service.app.schemas import HelpRequest
+from llm_service.app.schemas import HelpRequest, StageRequest
+from llm_service.app.stage_assets import (
+    KNOWN_STAGES,
+    STAGE_AGENDA_BY_TAG,
+    parse_stage_detection,
+)
 
 
 @pytest.fixture
@@ -72,6 +77,32 @@ def test_help_prompts_force_single_sentence():
     assert "_Комментарий:_" in SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT
 
 
+def test_stage_agenda_assets_cover_detector_tags():
+    assert set(KNOWN_STAGES) == {
+        "S2.1",
+        "S2.2",
+        "S2.3",
+        "S2.4",
+        "S2.5",
+        "S3.1",
+        "S3.2",
+        "S3.3",
+        "S3.4a",
+        "S3.4b",
+        "S3.5",
+    }
+    assert STAGE_AGENDA_BY_TAG["S3.4a"].agenda.startswith("выяснить")
+    assert STAGE_AGENDA_BY_TAG["S3.5"].step.endswith("следующего контакта.")
+
+
+def test_parse_stage_detection_accepts_json_and_plain_text():
+    assert parse_stage_detection('{"stage":"S3.4A","confidence":0.8}') == (
+        "S3.4a",
+        0.8,
+    )
+    assert parse_stage_detection("Сейчас мы в S2.3") == ("S2.3", None)
+
+
 @pytest.mark.anyio
 async def test_cerebras_prompt_cache_retry():
     calls = []
@@ -102,6 +133,42 @@ async def test_cerebras_prompt_cache_retry():
         assert len(calls) == 2
         assert "prompt_cache_key" in calls[0]
         assert "prompt_cache_key" not in calls[1]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_stage_agenda_uses_gpt_oss_detection_and_fixed_mapping():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": '{"stage":"S3.4a","confidence":0.82}'}}
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(make_settings(), client)
+
+        response = await orchestrator.stage_agenda(
+            StageRequest(run_id="run", context="dialogue", current_stage=None)
+        )
+
+        assert response.stage == "S3.4a"
+        assert response.title == "Objection Clarifier"
+        assert response.agenda == 'выяснить истинную причину возражения ("цена или ценность?")'
+        assert response.model == "secondary-model"
+        assert response.confidence == 0.82
+        assert calls[0]["model"] == "secondary-model"
+        assert calls[0]["temperature"] == 0.1
+        assert "Prompt 1: Detect Where We Are" in calls[0]["messages"][0]["content"]
     finally:
         await client.aclose()
 

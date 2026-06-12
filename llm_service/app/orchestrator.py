@@ -26,7 +26,20 @@ from .providers import (
     parse_bos_eos_text,
     parse_json_suggestion,
 )
-from .schemas import ChatRequest, HelpRequest, LiveRequest, LiveResponse, OpenerResponse
+from .schemas import (
+    ChatRequest,
+    HelpRequest,
+    LiveRequest,
+    LiveResponse,
+    OpenerResponse,
+    StageAgendaResponse,
+    StageRequest,
+)
+from .stage_assets import (
+    STAGE_AGENDA_BY_TAG,
+    parse_stage_detection,
+    stage_detection_system_prompt,
+)
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -151,6 +164,43 @@ class LlmOrchestrator:
                     yield event
             else:
                 yield sse_event({"event": "error", "message": str(exc)})
+
+    async def stage_agenda(self, request: StageRequest) -> StageAgendaResponse:
+        if not self.cerebras.configured():
+            raise ProviderError("cerebras", "stage detector requires Cerebras")
+
+        model = self.settings.help_opener_secondary_model
+        user_content = (
+            f"{request.context}\n\n"
+            f"--- Текущий stage из предыдущего шага ---\n"
+            f"{request.current_stage or '(пока неизвестен)'}\n"
+        )
+        text = await self.cerebras.text(
+            model=model,
+            system_prompt=stage_detection_system_prompt(),
+            user_content=user_content,
+            temperature=0.1,
+            prompt_cache_key=f"rec-sidecar-stage-detect-v1-{request.run_id}",
+        )
+        stage, confidence = parse_stage_detection(text)
+        agenda = STAGE_AGENDA_BY_TAG[stage]
+        logger.info(
+            "stage_detect run_id=%s stage=%s model=%s confidence=%s",
+            request.run_id,
+            stage,
+            model,
+            confidence,
+        )
+        return StageAgendaResponse(
+            stage=agenda.stage,
+            title=agenda.title,
+            agenda=agenda.agenda,
+            emotion=agenda.emotion,
+            step=agenda.step,
+            provider="cerebras",
+            model=model,
+            confidence=confidence,
+        )
 
     async def help_opener(self, request: HelpRequest) -> OpenerResponse:
         text_parts: list[str] = []

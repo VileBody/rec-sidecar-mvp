@@ -41,6 +41,23 @@ class HelpRequest(StrictModel):
     context: str
 
 
+class StageRequest(StrictModel):
+    run_id: str
+    context: str
+    current_stage: str | None = None
+
+
+class StageAgendaResponse(BaseModel):
+    stage: str
+    title: str
+    agenda: str
+    emotion: str
+    step: str
+    provider: str
+    model: str
+    confidence: float | None = None
+
+
 class OpenerResponse(BaseModel):
     text: str
     model: str | None = None

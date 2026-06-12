@@ -44,7 +44,7 @@ docker compose up --build llm-service
 curl http://127.0.0.1:8088/healthz
 ```
 
-The Rust app keeps UI state, ASR, context building, queues, Help stages, and chat history. The FastAPI service owns prompts, Cerebras/Vertex auth, provider fallback, prompt-cache retry, and model labels.
+The Rust app keeps UI state, ASR, context building, queues, Help stages, chat history, and the stage overlay window. The FastAPI service owns prompts, Cerebras/Vertex auth, provider fallback, prompt-cache retry, model labels, and `/v1/coach/stage` detection. Stage detection runs every `COACH_STAGE_DETECT_INTERVAL_MS=5000` ms by default and maps the detected sales stage to the fixed agenda from `llm_service/app/prompt_assets/3_current_stage_agenda.md`.
 
 ## Timeweb Kubernetes Deploy
 
