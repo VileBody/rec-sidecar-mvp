@@ -1,20 +1,20 @@
 use crate::context::{CoachChatMessage, CoachChatRole};
 use eframe::egui::{self, RichText};
 
-pub(crate) fn side_panel_layout(ctx: &egui::Context) -> (f32, f32, f32, f32) {
+pub(crate) fn side_panel_layout(ctx: &egui::Context) -> (f32, f32, f32, f32, f32) {
     let monitor = ctx.input(|input| {
         input
             .viewport()
             .monitor_size
             .unwrap_or_else(|| egui::vec2(1440.0, 900.0))
     });
-    let center_min = (monitor.x * 0.42).clamp(320.0, 760.0);
+    let center_min = (monitor.x * 0.56).clamp(520.0, 980.0);
     let max_panel_width = ((monitor.x - center_min) / 2.0).max(240.0);
-    let left_width = (monitor.x * 0.20).clamp(300.0, 370.0).min(max_panel_width);
-    let right_width = (monitor.x * 0.22).clamp(330.0, 420.0).min(max_panel_width);
-    let panel_height = monitor.y.max(520.0);
+    let left_width = (monitor.x * 0.15).clamp(240.0, 320.0).min(max_panel_width);
+    let right_width = (monitor.x * 0.17).clamp(280.0, 360.0).min(max_panel_width);
+    let panel_height = (monitor.y * 0.78).clamp(520.0, monitor.y.max(520.0));
 
-    (left_width, right_width, panel_height, monitor.x)
+    (left_width, right_width, panel_height, monitor.x, monitor.y)
 }
 
 pub(crate) fn show_panel_header(ctx: &egui::Context, ui: &mut egui::Ui, title: &str) {

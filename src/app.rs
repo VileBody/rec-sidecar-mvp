@@ -65,6 +65,12 @@ impl AsrLanguageSelection {
     }
 }
 
+#[derive(Clone, Copy)]
+enum PanelSide {
+    Transcript,
+    Coach,
+}
+
 pub struct RecApp {
     paths: AppPaths,
     recording: bool,
@@ -72,6 +78,10 @@ pub struct RecApp {
     transcript_open: bool,
     transcript_panel_pinned: bool,
     coach_panel_pinned: bool,
+    transcript_panel_width: Option<f32>,
+    coach_panel_width: Option<f32>,
+    transcript_panel_height: Option<f32>,
+    coach_panel_height: Option<f32>,
     bubbles: Vec<String>,
     live_partial: Option<String>,
     coach_bubbles: Vec<String>,
@@ -123,6 +133,10 @@ impl RecApp {
             transcript_open: false,
             transcript_panel_pinned: false,
             coach_panel_pinned: false,
+            transcript_panel_width: None,
+            coach_panel_width: None,
+            transcript_panel_height: None,
+            coach_panel_height: None,
             bubbles: Vec::new(),
             live_partial: None,
             coach_bubbles: Vec::new(),
@@ -1129,10 +1143,29 @@ impl RecApp {
     }
 
     fn show_sidecar_panels(&mut self, ctx: &egui::Context) {
-        let (left_width, right_width, panel_height, monitor_width) = ui::side_panel_layout(ctx);
+        let (default_left, default_right, default_height, monitor_width, monitor_height) =
+            ui::side_panel_layout(ctx);
+        let max_side_width = (monitor_width * 0.34).max(320.0);
+        let max_side_height = monitor_height.max(520.0);
+        let left_width = self
+            .transcript_panel_width
+            .unwrap_or(default_left)
+            .clamp(220.0, max_side_width);
+        let right_width = self
+            .coach_panel_width
+            .unwrap_or(default_right)
+            .clamp(260.0, max_side_width);
+        let left_height = self
+            .transcript_panel_height
+            .unwrap_or(default_height)
+            .clamp(420.0, max_side_height);
+        let right_height = self
+            .coach_panel_height
+            .unwrap_or(default_height)
+            .clamp(420.0, max_side_height);
 
-        self.show_transcript_panel(ctx, left_width, panel_height);
-        self.show_coach_panel(ctx, right_width, panel_height, monitor_width);
+        self.show_transcript_panel(ctx, left_width, left_height);
+        self.show_coach_panel(ctx, right_width, right_height, monitor_width);
     }
 
     fn show_transcript_panel(&mut self, ctx: &egui::Context, width: f32, height: f32) {
@@ -1141,10 +1174,11 @@ impl RecApp {
             egui::ViewportBuilder::default()
                 .with_title(TRANSCRIPT_PANEL_TITLE)
                 .with_decorations(false)
+                .with_resizable(true)
                 .with_always_on_top()
                 .with_position([0.0, 0.0])
                 .with_inner_size([width, height])
-                .with_min_inner_size([280.0, 420.0]),
+                .with_min_inner_size([220.0, 420.0]),
             |ctx, class| {
                 if class == egui::ViewportClass::Embedded {
                     return;
@@ -1155,8 +1189,14 @@ impl RecApp {
                         platform::pin_window_to_all_spaces(TRANSCRIPT_PANEL_TITLE);
                 }
 
+                if let Some(actual_rect) = ctx.input(|input| input.viewport().inner_rect) {
+                    self.transcript_panel_width = Some(actual_rect.width().clamp(220.0, 760.0));
+                    self.transcript_panel_height = Some(actual_rect.height().clamp(420.0, 1600.0));
+                }
+
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui::show_panel_header(ctx, ui, "Расшифровка");
+                    self.show_panel_resize_controls(ui, PanelSide::Transcript);
                     ui.separator();
                     self.show_transcript_column(ui);
                 });
@@ -1182,10 +1222,11 @@ impl RecApp {
             egui::ViewportBuilder::default()
                 .with_title(COACH_PANEL_TITLE)
                 .with_decorations(false)
+                .with_resizable(true)
                 .with_always_on_top()
                 .with_position([x, 0.0])
                 .with_inner_size([width, height])
-                .with_min_inner_size([300.0, 420.0]),
+                .with_min_inner_size([260.0, 420.0]),
             |ctx, class| {
                 if class == egui::ViewportClass::Embedded {
                     return;
@@ -1195,8 +1236,14 @@ impl RecApp {
                     self.coach_panel_pinned = platform::pin_window_to_all_spaces(COACH_PANEL_TITLE);
                 }
 
+                if let Some(actual_rect) = ctx.input(|input| input.viewport().inner_rect) {
+                    self.coach_panel_width = Some(actual_rect.width().clamp(260.0, 760.0));
+                    self.coach_panel_height = Some(actual_rect.height().clamp(420.0, 1600.0));
+                }
+
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui::show_panel_header(ctx, ui, "Тренер");
+                    self.show_panel_resize_controls(ui, PanelSide::Coach);
                     ui.separator();
                     self.show_coach_column(ui);
                 });
@@ -1206,6 +1253,64 @@ impl RecApp {
                 }
             },
         );
+    }
+
+    fn show_panel_resize_controls(&mut self, ui: &mut egui::Ui, side: PanelSide) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("ширина").size(11.0));
+            if ui.small_button("уже").clicked() {
+                self.adjust_panel_width(side, -48.0);
+            }
+            if ui.small_button("шире").clicked() {
+                self.adjust_panel_width(side, 48.0);
+            }
+            ui.separator();
+            ui.label(RichText::new("высота").size(11.0));
+            if ui.small_button("-").clicked() {
+                self.adjust_panel_height(side, -64.0);
+            }
+            if ui.small_button("+").clicked() {
+                self.adjust_panel_height(side, 64.0);
+            }
+            if ui.small_button("сброс").clicked() {
+                match side {
+                    PanelSide::Transcript => {
+                        self.transcript_panel_width = None;
+                        self.transcript_panel_height = None;
+                    }
+                    PanelSide::Coach => {
+                        self.coach_panel_width = None;
+                        self.coach_panel_height = None;
+                    }
+                }
+            }
+        });
+    }
+
+    fn adjust_panel_width(&mut self, side: PanelSide, delta: f32) {
+        match side {
+            PanelSide::Transcript => {
+                let current = self.transcript_panel_width.unwrap_or(300.0);
+                self.transcript_panel_width = Some((current + delta).clamp(220.0, 760.0));
+            }
+            PanelSide::Coach => {
+                let current = self.coach_panel_width.unwrap_or(320.0);
+                self.coach_panel_width = Some((current + delta).clamp(260.0, 760.0));
+            }
+        }
+    }
+
+    fn adjust_panel_height(&mut self, side: PanelSide, delta: f32) {
+        match side {
+            PanelSide::Transcript => {
+                let current = self.transcript_panel_height.unwrap_or(680.0);
+                self.transcript_panel_height = Some((current + delta).clamp(420.0, 1600.0));
+            }
+            PanelSide::Coach => {
+                let current = self.coach_panel_height.unwrap_or(680.0);
+                self.coach_panel_height = Some((current + delta).clamp(420.0, 1600.0));
+            }
+        }
     }
 
     fn show_stage_agenda_panel(&mut self, ctx: &egui::Context) {
