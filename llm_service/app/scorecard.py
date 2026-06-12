@@ -692,8 +692,9 @@ def fallback_scorecard(
     reason: str | None = None,
     next_action: str | None = None,
 ) -> StageScorecard:
+    public_reason = public_fallback_reason(reason)
     raw = RawScorecard(
-        summary=reason or "Scorecard evaluator временно недоступен.",
+        summary=public_reason,
         next_action=next_action or f"Уточнить: {agenda.step}",
         checks=[],
     )
@@ -701,8 +702,17 @@ def fallback_scorecard(
         stage=stage,
         agenda=agenda,
         raw=raw,
-        fallback_reason=reason or "Scorecard evaluator временно недоступен.",
+        fallback_reason=public_reason,
     )
+
+
+def public_fallback_reason(reason: str | None) -> str:
+    if not reason:
+        return "Оценка не успела: пока лучше добрать buyer evidence и не переходить дальше."
+    text = reason.lower()
+    if "not configured" in text or "disabled" in text:
+        return "Оценка временно недоступна: держись цели стадии и добери факты."
+    return "Оценка не успела: пока лучше добрать buyer evidence и не переходить дальше."
 
 
 def scorecard_signals(checks: list[StageScoreCheck]) -> list[StageScoreSignal]:

@@ -101,6 +101,7 @@ pub struct RecApp {
     viewer_title: String,
     viewer_text: String,
     status: String,
+    auto_start_pending: bool,
 }
 
 impl Default for RecApp {
@@ -151,6 +152,7 @@ impl RecApp {
             viewer_title: String::new(),
             viewer_text: String::new(),
             status: "Ready".to_string(),
+            auto_start_pending: env_flag("REC_AUTO_START"),
         };
 
         app.refresh_history();
@@ -1266,49 +1268,47 @@ impl RecApp {
                                     egui::Frame::new()
                                         .fill(header_fill)
                                         .corner_radius(egui::CornerRadius::same(5))
-                                        .inner_margin(egui::Margin::symmetric(10, 7))
+                                        .inner_margin(egui::Margin::symmetric(8, 4))
                                         .show(ui, |ui| {
                                             ui.set_width(ui.available_width());
                                             ui.horizontal_wrapped(|ui| {
-                                                ui.label(
-                                                    RichText::new("●")
-                                                        .color(egui::Color32::WHITE)
-                                                        .size(24.0),
-                                                );
-                                                ui.label(
-                                                    RichText::new(format!(
-                                                        "{} {}",
-                                                        agenda.stage, agenda.title
-                                                    ))
-                                                    .color(egui::Color32::WHITE)
-                                                    .size(19.0)
-                                                    .strong(),
-                                                );
                                                 if let Some(scorecard) = &agenda.scorecard {
                                                     let counter = if scorecard.total_count > 0 {
                                                         format!(
-                                                            "{} · {}/{}",
+                                                            "{} · {} · {}/{}",
+                                                            agenda.stage,
                                                             scorecard.readiness_label,
                                                             scorecard.hit_count,
                                                             scorecard.total_count
                                                         )
                                                     } else {
-                                                        scorecard.readiness_label.clone()
+                                                        format!(
+                                                            "{} · {}",
+                                                            agenda.stage, scorecard.readiness_label
+                                                        )
                                                     };
                                                     ui.label(
                                                         RichText::new(counter)
                                                             .color(egui::Color32::WHITE)
-                                                            .size(16.0)
+                                                            .size(13.0)
                                                             .strong(),
                                                     );
                                                 } else if let Some((_, label)) = readiness {
                                                     ui.label(
-                                                        RichText::new(label)
-                                                            .color(egui::Color32::WHITE)
-                                                            .size(16.0)
-                                                            .strong(),
+                                                        RichText::new(format!(
+                                                            "{} · {}",
+                                                            agenda.stage, label
+                                                        ))
+                                                        .color(egui::Color32::WHITE)
+                                                        .size(13.0)
+                                                        .strong(),
                                                     );
                                                 }
+                                                ui.label(
+                                                    RichText::new(&agenda.title)
+                                                        .color(egui::Color32::WHITE)
+                                                        .size(12.0),
+                                                );
                                                 ui.with_layout(
                                                     egui::Layout::right_to_left(
                                                         egui::Align::Center,
@@ -1324,7 +1324,7 @@ impl RecApp {
                                                 );
                                             });
                                         });
-                                    ui.add_space(10.0);
+                                    ui.add_space(8.0);
                                     if let Some(scorecard) = &agenda.scorecard {
                                         ui.label(
                                             RichText::new("СОВЕТ")
@@ -1335,7 +1335,7 @@ impl RecApp {
                                         ui.label(
                                             RichText::new(&scorecard.next_action)
                                                 .color(readiness_text_color(&scorecard.readiness))
-                                                .size(18.0)
+                                                .size(20.0)
                                                 .strong(),
                                         );
                                         ui.add_space(8.0);
@@ -1623,7 +1623,7 @@ fn readiness_color(readiness: &str) -> egui::Color32 {
         "green" => egui::Color32::from_rgb(30, 160, 85),
         "yellow" => egui::Color32::from_rgb(214, 157, 35),
         "red" => egui::Color32::from_rgb(210, 70, 64),
-        _ => egui::Color32::from_rgb(142, 147, 153),
+        _ => egui::Color32::from_rgb(210, 88, 42),
     }
 }
 
@@ -1632,7 +1632,7 @@ fn readiness_panel_fill(readiness: &str) -> egui::Color32 {
         "green" => egui::Color32::from_rgb(218, 252, 226),
         "yellow" => egui::Color32::from_rgb(255, 244, 205),
         "red" => egui::Color32::from_rgb(255, 224, 224),
-        _ => egui::Color32::from_rgb(239, 242, 246),
+        _ => egui::Color32::from_rgb(255, 232, 218),
     }
 }
 
@@ -1641,7 +1641,7 @@ fn readiness_text_color(readiness: &str) -> egui::Color32 {
         "green" => egui::Color32::from_rgb(15, 96, 52),
         "yellow" => egui::Color32::from_rgb(126, 82, 12),
         "red" => egui::Color32::from_rgb(142, 35, 32),
-        _ => egui::Color32::from_rgb(67, 74, 82),
+        _ => egui::Color32::from_rgb(134, 52, 20),
     }
 }
 
@@ -1668,6 +1668,12 @@ impl eframe::App for RecApp {
         self.drain_asr();
         self.drain_coach();
         self.maybe_dispatch_pending_help();
+        if self.auto_start_pending {
+            self.auto_start_pending = false;
+            if self.current_run.is_none() && !self.recording && !self.connecting {
+                self.start_new_recording();
+            }
+        }
 
         let help_shortcut = ctx.input(|input| {
             input.key_pressed(egui::Key::H)
@@ -1736,6 +1742,17 @@ fn env_u64(name: &str, default: u64) -> u64 {
     env_var(name)
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+fn env_flag(name: &str) -> bool {
+    env_var(name)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn env_usize(name: &str, default: usize) -> usize {

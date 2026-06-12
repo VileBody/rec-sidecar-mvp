@@ -123,6 +123,15 @@ def test_parse_stage_detection_accepts_json_and_plain_text():
     assert parse_stage_detection("Сейчас мы в S2.3") == ("S2.3", None)
 
 
+def test_parse_stage_detection_infers_natural_language_stage():
+    assert parse_stage_detection(
+        "BOS\nМы перешли от установки фрейма к сбору текущей реальности."
+    ) == ("S2.2", None)
+    assert parse_stage_detection(
+        "EOS\nКлиент сказал, что надо подумать; нужно понять, цена или ценность."
+    ) == ("S3.4a", None)
+
+
 def test_constructive_prefix_stripper_removes_ui_heading():
     assert strip_constructive_prefix("**Следующий ход:** Спроси про цель.") == (
         "Спроси про цель."
@@ -302,8 +311,8 @@ async def test_stage_agenda_falls_back_to_current_stage_without_502():
                             "parts": [
                                 {
                                     "text": (
-                                        "Мы сейчас обсуждаем текущую ситуацию клиента, "
-                                        "но модель не вернула JSON."
+                                        "Модель не вернула JSON, а данных пока мало "
+                                        "для уверенного определения стадии."
                                     )
                                 }
                             ]
@@ -392,7 +401,7 @@ async def test_stage_agenda_returns_pending_scorecard_on_vertex_timeout():
         assert response.scorecard.hit_count == 0
         assert response.scorecard.miss_count == 0
         assert response.scorecard.ready_to_advance is False
-        assert "ReadTimeout" in response.scorecard.summary
+        assert "Оценка не успела" in response.scorecard.summary
         assert response.scorecard.next_action.startswith("Уточнить:")
         assert len(calls) == 3
     finally:

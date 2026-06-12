@@ -104,7 +104,131 @@ def parse_stage_detection(text: str) -> tuple[str, float | None]:
         if stage in STAGE_AGENDA_BY_TAG:
             return stage, None
 
+    inferred = infer_stage_from_text(text)
+    if inferred:
+        return inferred, None
+
     raise ValueError(f"unknown stage detection response: {text!r}")
+
+
+def infer_stage_from_text(text: str) -> str | None:
+    normalized = text.lower().replace("ё", "е")
+    normalized = re.sub(r"\b(bos|eos)\b", " ", normalized)
+
+    hints: tuple[tuple[str, tuple[str, ...]], ...] = (
+        (
+            "S3.5",
+            (
+                "follow-up",
+                "потеряш",
+                "следующего контакта",
+                "причину отказа",
+            ),
+        ),
+        (
+            "S3.4b",
+            (
+                "второй созвон",
+                "second zoom",
+                "запланировать второй",
+                "вышлю договор",
+            ),
+        ),
+        (
+            "S3.4a",
+            (
+                "цена или ценность",
+                "истинную причину возражения",
+                "обjection clarifier",
+                "надо подумать",
+            ),
+        ),
+        (
+            "S3.3",
+            (
+                "вариант через банк",
+                "денег нет",
+                "платеж 15к",
+                "downsell",
+            ),
+        ),
+        (
+            "S3.2",
+            (
+                "видит ли клиент ценность",
+                "value test",
+                "понятна ценность",
+                "проверить ценность",
+            ),
+        ),
+        (
+            "S3.1",
+            (
+                "pitch",
+                "оффер",
+                "презентаци",
+                "рассказать про продукт",
+                "500 000",
+            ),
+        ),
+        (
+            "S2.5",
+            (
+                "разрешение на переход",
+                "переход к офферу",
+                "pivot",
+                "давай расскажу",
+            ),
+        ),
+        (
+            "S2.4",
+            (
+                "истинный мотив",
+                "зачем клиент",
+                "что зацепило",
+                "уровень доверия",
+            ),
+        ),
+        (
+            "S2.3",
+            (
+                "target",
+                "gap",
+                "точка б",
+                "желаемый результат",
+                "цель",
+                "разрыв",
+            ),
+        ),
+        (
+            "S2.2",
+            (
+                "сбор текущей реальности",
+                "сбору текущей реальности",
+                "текущая реальность",
+                "текущей ситуации",
+                "текущую ситуацию",
+                "сбор фактов",
+                "операционн",
+                "выявило основную боль",
+                "нет времени на развитие",
+            ),
+        ),
+        (
+            "S2.1",
+            (
+                "фрейм",
+                "рамк",
+                "custdev",
+                "касдев",
+                "правила звонка",
+            ),
+        ),
+    )
+    for stage, markers in hints:
+        if any(marker in normalized for marker in markers):
+            return stage
+    return None
 
 
 def extract_json_object(text: str) -> Any:
