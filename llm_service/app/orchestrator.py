@@ -1019,7 +1019,8 @@ def clean_one_line(text: str) -> str:
 
 
 def is_usable_advice(text: str) -> bool:
-    return len(text.strip()) >= 32
+    text = text.strip()
+    return len(text) >= 32 and (len(text) >= 90 or text.endswith((".", "?", "!")))
 
 
 def scorecard_error_reason(exc: BaseException) -> str:
