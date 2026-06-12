@@ -14,6 +14,7 @@ DEFAULT_TIMEOUT_SECS = 30.0
 DEFAULT_RATE_LIMIT_BACKOFF_MS = 15_000
 DEFAULT_HELP_OPENER_TIMEOUT_MS = 3_000
 DEFAULT_REASONING_EFFORT = "none"
+DEFAULT_VERTEX_THINKING_LEVEL = "low"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 
@@ -76,6 +77,7 @@ class Settings:
     vertex_access_token: str | None
     vertex_adc_credentials_path: str | None
     vertex_quota_project_id: str | None
+    vertex_thinking_level: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -131,6 +133,8 @@ class Settings:
             vertex_adc_credentials_path=adc_path,
             vertex_quota_project_id=env_var("GOOGLE_CLOUD_QUOTA_PROJECT")
             or quota_project_from_adc(adc_path),
+            vertex_thinking_level=env_var("VERTEX_THINKING_LEVEL")
+            or DEFAULT_VERTEX_THINKING_LEVEL,
         )
 
     @property
@@ -167,8 +171,9 @@ class Settings:
             return self.cerebras_model
         if self.cerebras_configured and self.vertex_configured:
             return (
-                f"fast {self.help_opener_primary_model} -> "
-                f"{self.help_opener_secondary_model} / slow {self.vertex_model}"
+                f"fast race {self.help_opener_primary_model} + "
+                f"{self.help_opener_secondary_model} + {self.vertex_model}"
+                f"({self.vertex_thinking_level or 'default'}) / slow {self.vertex_model}"
             )
         if self.vertex_configured:
             return self.vertex_model

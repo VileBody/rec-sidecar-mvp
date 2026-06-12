@@ -345,11 +345,15 @@ class VertexClient:
         system_prompt: str,
         user_content: str,
         temperature: float,
+        thinking_level: str | None = None,
     ) -> AsyncIterator[str]:
+        generation_config: dict[str, Any] = {"temperature": temperature}
+        if thinking_level:
+            generation_config["thinkingConfig"] = {"thinkingLevel": thinking_level}
         body = {
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": user_content}]}],
-            "generationConfig": {"temperature": temperature},
+            "generationConfig": generation_config,
         }
         async with self.client.stream(
             "POST",

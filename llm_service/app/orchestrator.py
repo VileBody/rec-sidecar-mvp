@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
@@ -23,7 +24,6 @@ from .providers import (
     cerebras_structured_response_format,
     parse_bos_eos_text,
     parse_json_suggestion,
-    strip_outer_quotes,
 )
 from .schemas import ChatRequest, HelpRequest, LiveRequest, LiveResponse, OpenerResponse
 
@@ -36,17 +36,18 @@ FALLBACK_HELP_OPENER_TEXT = (
 
 
 @dataclass
-class OpenerAttempt:
+class OpenerCandidate:
     slot: str
+    provider: str
     model: str | None
-    text: str | None
-    error: str | None = None
-    rate_limited: bool = False
-    timeout: bool = False
+    stream: AsyncIterator[str] | None
 
-    @property
-    def success(self) -> bool:
-        return bool(self.text and self.text.strip())
+
+@dataclass
+class OpenerFirstDelta:
+    candidate: OpenerCandidate
+    delta: str | None = None
+    error: Exception | None = None
 
 
 class LlmOrchestrator:
@@ -148,31 +149,92 @@ class LlmOrchestrator:
                 yield sse_event({"event": "error", "message": str(exc)})
 
     async def help_opener(self, request: HelpRequest) -> OpenerResponse:
-        if not self.cerebras.configured():
-            return OpenerResponse(text=FALLBACK_HELP_OPENER_TEXT, fallback=True)
+        text_parts: list[str] = []
+        model: str | None = None
+        fallback = False
 
-        primary_model = self._ready_opener_model(
-            "primary", self.settings.help_opener_primary_model
-        )
-        secondary_model = self._ready_opener_model(
-            "secondary", self.settings.help_opener_secondary_model
-        )
-        primary, secondary = await asyncio.gather(
-            self._opener_attempt("primary", primary_model, request),
-            self._opener_attempt("secondary", secondary_model, request),
-        )
-        self._apply_opener_attempt(primary)
-        self._apply_opener_attempt(secondary)
+        async for frame in self.help_opener_stream(request):
+            data = frame.decode("utf-8").removeprefix("data:").strip()
+            if not data:
+                continue
+            event = json.loads(data)
+            match event.get("event"):
+                case "model":
+                    model = event.get("model")
+                case "delta":
+                    text_parts.append(event.get("text", ""))
+                case "fallback":
+                    fallback = True
+                case "error":
+                    raise ProviderError("service", event.get("message", "opener stream error"))
 
-        for attempt in (primary, secondary):
-            if attempt.success:
-                return OpenerResponse(
-                    text=attempt.text or "",
-                    model=attempt.model,
-                    fallback=False,
+        return OpenerResponse(
+            text="".join(text_parts).strip() or FALLBACK_HELP_OPENER_TEXT,
+            model=model,
+            fallback=fallback,
+        )
+
+    async def help_opener_stream(self, request: HelpRequest) -> AsyncIterator[bytes]:
+        candidates = self._opener_candidates(request)
+        if not candidates:
+            async for event in self._fallback_opener_stream():
+                yield event
+            return
+
+        timeout = self.settings.help_opener_timeout_ms / 1000.0
+        pending: dict[asyncio.Task[OpenerFirstDelta], OpenerCandidate] = {
+            asyncio.create_task(self._first_opener_delta(candidate)): candidate
+            for candidate in candidates
+            if candidate.stream is not None
+        }
+        deadline = time.monotonic() + timeout
+
+        try:
+            while pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                done, _ = await asyncio.wait(
+                    pending.keys(),
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
+                if not done:
+                    break
 
-        return OpenerResponse(text=FALLBACK_HELP_OPENER_TEXT, fallback=True)
+                for task in done:
+                    candidate = pending.pop(task)
+                    result = await task
+                    if result.delta:
+                        await self._cancel_opener_candidates(pending)
+                        yield sse_event(
+                            {
+                                "event": "model",
+                                "model": candidate.model,
+                                "provider": candidate.provider,
+                            }
+                        )
+                        first_delta = normalize_opener_delta(result.delta, first=True)
+                        if first_delta:
+                            yield sse_event({"event": "delta", "text": first_delta})
+                        if candidate.stream is not None:
+                            async for delta in candidate.stream:
+                                delta = normalize_opener_delta(delta)
+                                if delta:
+                                    yield sse_event({"event": "delta", "text": delta})
+                        yield sse_event({"event": "done"})
+                        return
+
+                    if isinstance(result.error, ProviderError) and result.error.is_rate_limit:
+                        self._opener_cooldowns[candidate.slot] = (
+                            time.monotonic() + self.settings.rate_limit_backoff_ms / 1000.0
+                        )
+                    await close_async_iterator(candidate.stream)
+        finally:
+            await self._cancel_opener_candidates(pending)
+
+        async for event in self._fallback_opener_stream():
+            yield event
 
     async def help_constructive_stream(self, request: HelpRequest) -> AsyncIterator[bytes]:
         if not self.vertex.configured():
@@ -246,47 +308,96 @@ class LlmOrchestrator:
         self._opener_cooldowns.pop(slot, None)
         return model
 
-    async def _opener_attempt(
-        self, slot: str, model: str | None, request: HelpRequest
-    ) -> OpenerAttempt:
-        if not model:
-            return OpenerAttempt(slot=slot, model=None, text=None)
+    def _opener_candidates(self, request: HelpRequest) -> list[OpenerCandidate]:
         user_content = (
             f"{request.context}\n\n--- Задача ---\n"
             "Дай одну короткую эмпатичную фразу-мостик, которую продавец может сразу "
             "прочитать клиенту вслух."
         )
-        try:
-            text = await asyncio.wait_for(
-                self.cerebras.text(
-                    model=model,
-                    system_prompt=SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
-                    user_content=user_content,
-                    temperature=0.25,
-                    prompt_cache_key=f"rec-sidecar-help-opener-v1-{request.run_id}",
+        candidates: list[OpenerCandidate] = []
+
+        use_cerebras = self.settings.provider == "cerebras" or self._auto_provider()
+        use_vertex = self._prefer_vertex() or self._auto_provider()
+
+        if use_cerebras and self.cerebras.configured():
+            for slot, model in (
+                (
+                    "primary",
+                    self._ready_opener_model(
+                        "primary", self.settings.help_opener_primary_model
+                    ),
                 ),
-                timeout=self.settings.help_opener_timeout_ms / 1000.0,
-            )
-            text = strip_outer_quotes(text)
-            return OpenerAttempt(slot=slot, model=model, text=text or None)
-        except asyncio.TimeoutError:
-            return OpenerAttempt(slot=slot, model=model, text=None, timeout=True)
-        except ProviderError as exc:
-            return OpenerAttempt(
-                slot=slot,
-                model=model,
-                text=None,
-                error=str(exc),
-                rate_limited=exc.is_rate_limit,
+                (
+                    "secondary",
+                    self._ready_opener_model(
+                        "secondary", self.settings.help_opener_secondary_model
+                    ),
+                ),
+            ):
+                if not model:
+                    continue
+                candidates.append(
+                    OpenerCandidate(
+                        slot=slot,
+                        provider="cerebras",
+                        model=model,
+                        stream=self.cerebras.stream_text(
+                            model=model,
+                            system_prompt=SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
+                            user_content=user_content,
+                            temperature=0.25,
+                            prompt_cache_key=f"rec-sidecar-help-opener-v1-{request.run_id}",
+                        ),
+                    )
+                )
+
+        vertex_model = self._ready_opener_model("vertex", self.settings.vertex_model)
+        if use_vertex and self.vertex.configured() and vertex_model:
+            candidates.append(
+                OpenerCandidate(
+                    slot="vertex",
+                    provider="vertex",
+                    model=vertex_model,
+                    stream=self.vertex.stream_text(
+                        system_prompt=SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
+                        user_content=user_content,
+                        temperature=0.25,
+                        thinking_level=self.settings.vertex_thinking_level,
+                    ),
+                )
             )
 
-    def _apply_opener_attempt(self, attempt: OpenerAttempt) -> None:
-        if attempt.rate_limited:
-            self._opener_cooldowns[attempt.slot] = (
-                time.monotonic() + self.settings.rate_limit_backoff_ms / 1000.0
-            )
-        elif attempt.success:
-            self._opener_cooldowns.pop(attempt.slot, None)
+        return candidates
+
+    async def _first_opener_delta(self, candidate: OpenerCandidate) -> OpenerFirstDelta:
+        if candidate.stream is None:
+            return OpenerFirstDelta(candidate=candidate)
+        try:
+            async for delta in candidate.stream:
+                if delta and delta.strip():
+                    return OpenerFirstDelta(candidate=candidate, delta=delta)
+            return OpenerFirstDelta(candidate=candidate)
+        except ProviderError as exc:
+            return OpenerFirstDelta(candidate=candidate, error=exc)
+        except Exception as exc:
+            return OpenerFirstDelta(candidate=candidate, error=exc)
+
+    async def _cancel_opener_candidates(
+        self, pending: dict[asyncio.Task[OpenerFirstDelta], OpenerCandidate]
+    ) -> None:
+        candidates = list(pending.values())
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending.keys(), return_exceptions=True)
+        for candidate in candidates:
+            await close_async_iterator(candidate.stream)
+        pending.clear()
+
+    async def _fallback_opener_stream(self) -> AsyncIterator[bytes]:
+        yield sse_event({"event": "fallback"})
+        yield sse_event({"event": "delta", "text": FALLBACK_HELP_OPENER_TEXT})
+        yield sse_event({"event": "done"})
 
     def _prefer_vertex(self) -> bool:
         return self.settings.provider in {"vertex", "gemini", "google"}
@@ -305,3 +416,18 @@ class LlmOrchestrator:
 def sse_event(payload: dict[str, Any]) -> bytes:
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"data: {text}\n\n".encode("utf-8")
+
+
+def normalize_opener_delta(delta: str, first: bool = False) -> str:
+    if first:
+        return delta.lstrip().lstrip("\"'«»“”")
+    return delta
+
+
+async def close_async_iterator(stream: AsyncIterator[str] | None) -> None:
+    if stream is None:
+        return
+    aclose = getattr(stream, "aclose", None)
+    if aclose is not None:
+        with suppress(Exception):
+            await aclose()

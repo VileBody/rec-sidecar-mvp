@@ -86,6 +86,15 @@ async def help_opener(request: HelpRequest) -> OpenerResponse:
         raise HTTPException(status_code=provider_status(exc), detail=str(exc)) from exc
 
 
+@app.post("/v1/coach/help/opener/stream", dependencies=[Depends(require_service_token)])
+async def help_opener_stream(request: HelpRequest) -> StreamingResponse:
+    return StreamingResponse(
+        orchestrator.help_opener_stream(request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.post("/v1/coach/help/constructive/stream", dependencies=[Depends(require_service_token)])
 async def help_constructive_stream(request: HelpRequest) -> StreamingResponse:
     return StreamingResponse(

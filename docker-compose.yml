@@ -22,6 +22,7 @@ services:
       GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
       GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-global}
       VERTEX_GEMINI_MODEL: ${VERTEX_GEMINI_MODEL:-gemini-3.5-flash}
+      VERTEX_THINKING_LEVEL: ${VERTEX_THINKING_LEVEL:-low}
       VERTEX_ADC_CREDENTIALS: ${VERTEX_ADC_CREDENTIALS:-/root/.config/gcloud/application_default_credentials.json}
       VERTEX_ACCESS_TOKEN: ${VERTEX_ACCESS_TOKEN:-}
       VERTEX_API_BASE: ${VERTEX_API_BASE:-https://aiplatform.googleapis.com}

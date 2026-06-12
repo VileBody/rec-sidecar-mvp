@@ -126,10 +126,8 @@ struct LiveResponse {
     model: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct HelpOpenerResponse {
-    text: String,
-    model: Option<String>,
+struct HelpOpenerOutcome {
+    emitted: bool,
     fallback: bool,
 }
 
@@ -139,6 +137,12 @@ struct ServiceStreamEvent {
     text: Option<String>,
     model: Option<String>,
     message: Option<String>,
+}
+
+#[derive(Default)]
+struct ServiceStreamResult {
+    emitted: bool,
+    fallback: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -424,7 +428,7 @@ async fn send_help_request(
     ));
     let (slow_handle, slow_rx) = spawn_help_constructive_task(client, config, request);
 
-    let opener = match send_help_opener_request(client, config, request).await {
+    let opener = match send_help_opener_request(client, config, request, tx).await {
         Ok(opener) => opener,
         Err(err) => {
             coach_log(format!(
@@ -432,17 +436,13 @@ async fn send_help_request(
                 request.id,
                 concise_error(&err)
             ));
-            HelpOpenerResponse {
-                text: fallback_help_opener_text().to_string(),
-                model: None,
+            HelpOpenerOutcome {
+                emitted: emit_help_opener_text(tx, request.id, fallback_help_opener_text()),
                 fallback: true,
             }
         }
     };
-    if let Some(model) = opener.model.as_deref() {
-        let _ = tx.send(CoachEvent::ChatModel(request.id, model.to_string()));
-    }
-    let opener_emitted = emit_help_opener_text(tx, request.id, &opener.text);
+    let opener_emitted = opener.emitted;
     if opener.fallback {
         let _ = tx.send(CoachEvent::HelpStage(request.id, CoachHelpStage::Fallback));
     }
@@ -560,16 +560,28 @@ async fn send_help_opener_request(
     client: &Client,
     config: &CoachConfig,
     request: &CoachHelpRequest,
-) -> Result<HelpOpenerResponse, BoxError> {
+    tx: &Sender<CoachEvent>,
+) -> Result<HelpOpenerOutcome, BoxError> {
     let response = service_post(
         client,
         config,
-        "/v1/coach/help/opener",
+        "/v1/coach/help/opener/stream",
         help_request_body(request),
     )
     .await?;
+    let result =
+        parse_service_stream_deltas(response, request.id, tx, Some("**Сказать сейчас:**\n> "))
+            .await?;
 
-    Ok(response.json::<HelpOpenerResponse>().await?)
+    if !result.emitted {
+        return Err("empty LLM service opener response".into());
+    }
+
+    let _ = tx.send(CoachEvent::ChatDelta(request.id, "\n\n".to_string()));
+    Ok(HelpOpenerOutcome {
+        emitted: result.emitted,
+        fallback: result.fallback,
+    })
 }
 
 fn emit_help_opener_text(tx: &Sender<CoachEvent>, request_id: u64, text: &str) -> bool {
@@ -726,9 +738,22 @@ async fn parse_service_chat_stream_deltas(
     tx: &Sender<CoachEvent>,
     first_delta_prefix: Option<&str>,
 ) -> Result<bool, BoxError> {
+    Ok(
+        parse_service_stream_deltas(response, request_id, tx, first_delta_prefix)
+            .await?
+            .emitted,
+    )
+}
+
+async fn parse_service_stream_deltas(
+    response: reqwest::Response,
+    request_id: u64,
+    tx: &Sender<CoachEvent>,
+    first_delta_prefix: Option<&str>,
+) -> Result<ServiceStreamResult, BoxError> {
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
-    let mut emitted = false;
+    let mut result = ServiceStreamResult::default();
     let mut prefix_sent = false;
 
     while let Some(chunk) = stream.next().await {
@@ -743,16 +768,16 @@ async fn parse_service_chat_stream_deltas(
                     tx,
                     first_delta_prefix,
                     &mut prefix_sent,
-                    &mut emitted,
+                    &mut result,
                 )? == ServiceStreamAction::Done
                 {
-                    return Ok(emitted);
+                    return Ok(result);
                 }
             }
         }
     }
 
-    Ok(emitted)
+    Ok(result)
 }
 
 fn handle_service_stream_event(
@@ -761,7 +786,7 @@ fn handle_service_stream_event(
     tx: &Sender<CoachEvent>,
     first_delta_prefix: Option<&str>,
     prefix_sent: &mut bool,
-    emitted: &mut bool,
+    result: &mut ServiceStreamResult,
 ) -> Result<ServiceStreamAction, BoxError> {
     let data = data.trim();
     if data.is_empty() {
@@ -790,9 +815,12 @@ fn handle_service_stream_event(
                     }
                     *prefix_sent = true;
                 }
-                *emitted = true;
+                result.emitted = true;
                 let _ = tx.send(CoachEvent::ChatDelta(request_id, text.to_string()));
             }
+        }
+        "fallback" => {
+            result.fallback = true;
         }
         "done" => return Ok(ServiceStreamAction::Done),
         "error" => {
@@ -1032,7 +1060,7 @@ mod tests {
     fn service_stream_event_maps_model_delta_and_done() {
         let (tx, rx) = mpsc::channel();
         let mut prefix_sent = false;
-        let mut emitted = false;
+        let mut result = ServiceStreamResult::default();
 
         let action = handle_service_stream_event(
             r#"{"event":"model","model":"gemini"}"#,
@@ -1040,7 +1068,7 @@ mod tests {
             &tx,
             Some("prefix: "),
             &mut prefix_sent,
-            &mut emitted,
+            &mut result,
         )
         .unwrap();
         assert_eq!(action, ServiceStreamAction::Continue);
@@ -1051,11 +1079,11 @@ mod tests {
             &tx,
             Some("prefix: "),
             &mut prefix_sent,
-            &mut emitted,
+            &mut result,
         )
         .unwrap();
         assert_eq!(action, ServiceStreamAction::Continue);
-        assert!(emitted);
+        assert!(result.emitted);
         assert!(prefix_sent);
 
         let action = handle_service_stream_event(
@@ -1064,7 +1092,7 @@ mod tests {
             &tx,
             Some("prefix: "),
             &mut prefix_sent,
-            &mut emitted,
+            &mut result,
         )
         .unwrap();
         assert_eq!(action, ServiceStreamAction::Done);
@@ -1078,6 +1106,27 @@ mod tests {
         assert!(
             matches!(rx.try_recv().unwrap(), CoachEvent::ChatDelta(7, text) if text == "hello")
         );
+    }
+
+    #[test]
+    fn service_stream_event_marks_fallback() {
+        let (tx, _rx) = mpsc::channel();
+        let mut prefix_sent = false;
+        let mut result = ServiceStreamResult::default();
+
+        let action = handle_service_stream_event(
+            r#"{"event":"fallback"}"#,
+            7,
+            &tx,
+            None,
+            &mut prefix_sent,
+            &mut result,
+        )
+        .unwrap();
+
+        assert_eq!(action, ServiceStreamAction::Continue);
+        assert!(result.fallback);
+        assert!(!result.emitted);
     }
 
     #[tokio::test]

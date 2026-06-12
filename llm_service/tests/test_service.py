@@ -1,10 +1,12 @@
+import asyncio
 import json
+from typing import AsyncIterator
 
 import httpx
 import pytest
 
 from llm_service.app.config import Settings
-from llm_service.app.orchestrator import LlmOrchestrator, sse_event
+from llm_service.app.orchestrator import LlmOrchestrator, OpenerCandidate, sse_event
 from llm_service.app.providers import (
     CerebrasClient,
     parse_bos_eos_text,
@@ -41,6 +43,7 @@ def make_settings(**overrides):
         "vertex_access_token": None,
         "vertex_adc_credentials_path": None,
         "vertex_quota_project_id": None,
+        "vertex_thinking_level": "low",
     }
     values.update(overrides)
     return Settings(**values)
@@ -97,8 +100,13 @@ async def test_help_opener_selects_primary_model():
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         model = payload["model"]
-        text = "primary answer" if model == "primary-model" else "secondary answer"
-        return httpx.Response(200, json={"choices": [{"message": {"content": text}}]})
+        text = (
+            'data: {"choices":[{"delta":{"content":"primary answer"}}]}\n\n'
+            "data: [DONE]\n\n"
+            if model == "primary-model"
+            else "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=text)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
@@ -111,6 +119,87 @@ async def test_help_opener_selects_primary_model():
         assert response.text == "primary answer"
         assert response.model == "primary-model"
         assert response.fallback is False
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_help_opener_stream_uses_first_delta_winner():
+    async def slow_stream() -> AsyncIterator[str]:
+        await asyncio.sleep(0.05)
+        yield "slow answer"
+
+    async def fast_stream() -> AsyncIterator[str]:
+        yield "fast"
+        yield " answer"
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
+    try:
+        orchestrator = LlmOrchestrator(make_settings(cerebras_api_key=None), client)
+        orchestrator._opener_candidates = lambda _: [
+            OpenerCandidate(
+                slot="slow",
+                provider="cerebras",
+                model="slow-model",
+                stream=slow_stream(),
+            ),
+            OpenerCandidate(
+                slot="fast",
+                provider="cerebras",
+                model="fast-model",
+                stream=fast_stream(),
+            ),
+        ]
+
+        frames = [
+            json.loads(frame.decode("utf-8").removeprefix("data:").strip())
+            async for frame in orchestrator.help_opener_stream(
+                HelpRequest(id=1, run_id="run", context="context")
+            )
+        ]
+
+        assert frames == [
+            {"event": "model", "model": "fast-model", "provider": "cerebras"},
+            {"event": "delta", "text": "fast"},
+            {"event": "delta", "text": " answer"},
+            {"event": "done"},
+        ]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_help_opener_vertex_candidate_sends_low_thinking():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            text='[{"candidates":[{"content":{"parts":[{"text":"vertex answer"}]}}]}]',
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                cerebras_api_key=None,
+                vertex_project="project",
+                vertex_access_token="token",
+                vertex_thinking_level="low",
+            ),
+            client,
+        )
+
+        response = await orchestrator.help_opener(
+            HelpRequest(id=1, run_id="run", context="context")
+        )
+
+        assert response.text == "vertex answer"
+        assert response.model == "gemini-3.5-flash"
+        assert calls[0]["generationConfig"]["thinkingConfig"] == {
+            "thinkingLevel": "low"
+        }
     finally:
         await client.aclose()
 
