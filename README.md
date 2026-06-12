@@ -46,6 +46,19 @@ curl http://127.0.0.1:8088/healthz
 
 The Rust app keeps UI state, ASR, context building, queues, Help stages, and chat history. The FastAPI service owns prompts, Cerebras/Vertex auth, provider fallback, prompt-cache retry, and model labels.
 
+## Timeweb Kubernetes Deploy
+
+The cloud deployment uses the manifest in `k8s/llm-helper.yaml`.
+
+```bash
+kubectl create namespace rec-sidecar --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n rec-sidecar create secret generic llm-helper-env --from-env-file=.deploy/llm-helper-secret.env --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n rec-sidecar create secret docker-registry ghcr-pull --docker-server=ghcr.io --docker-username=<github-user> --docker-password=<github-token> --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f k8s/llm-helper.yaml
+```
+
+`llm-helper` is exposed as `NodePort` `30914`, so the desktop app can use `COACH_LLM_SERVICE_URL=http://<node-external-ip>:30914`.
+
 Auto live suggestions are disabled by default in code (`COACH_AUTO_SUGGESTIONS=false`) to avoid provider rate limits. The manual `Помоги` flow is pull-based:
 
 - UI sends an ASR `Flush { reason: "help" }` command.
