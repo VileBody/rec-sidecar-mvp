@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -28,10 +29,12 @@ from .providers import (
 from .schemas import ChatRequest, HelpRequest, LiveRequest, LiveResponse, OpenerResponse
 
 
+logger = logging.getLogger("llm_service.orchestrator")
+HELP_TEMPERATURE = 1.0
+
 FALLBACK_HELP_OPENER_TEXT = (
-    "Слышу, что сейчас много сомнений и риска. Давайте спокойно разберем, "
-    "что именно не сработало раньше и что должно быть иначе, чтобы вам было "
-    "безопасно двигаться дальше."
+    "Давайте зафиксируем главный риск и разберем, что должно быть иначе, "
+    "чтобы вам было безопасно двигаться дальше."
 )
 
 
@@ -178,10 +181,16 @@ class LlmOrchestrator:
     async def help_opener_stream(self, request: HelpRequest) -> AsyncIterator[bytes]:
         candidates = self._opener_candidates(request)
         if not candidates:
+            logger.info(
+                "help_opener fallback id=%s run_id=%s reason=no_candidates",
+                request.id,
+                request.run_id,
+            )
             async for event in self._fallback_opener_stream():
                 yield event
             return
 
+        started_at = time.monotonic()
         timeout = self.settings.help_opener_timeout_ms / 1000.0
         pending: dict[asyncio.Task[OpenerFirstDelta], OpenerCandidate] = {
             asyncio.create_task(self._first_opener_delta(candidate)): candidate
@@ -214,6 +223,40 @@ class LlmOrchestrator:
                     candidate = pending.pop(task)
                     result = await task
                     first_results[candidate.slot] = result
+                    elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                    if result.delta:
+                        logger.info(
+                            "help_opener first_delta id=%s run_id=%s slot=%s provider=%s model=%s priority=%s elapsed_ms=%s chars=%s",
+                            request.id,
+                            request.run_id,
+                            candidate.slot,
+                            candidate.provider,
+                            candidate.model,
+                            candidate.priority,
+                            elapsed_ms,
+                            len(result.delta),
+                        )
+                    elif result.error:
+                        logger.info(
+                            "help_opener candidate_error id=%s run_id=%s slot=%s provider=%s model=%s elapsed_ms=%s error=%s",
+                            request.id,
+                            request.run_id,
+                            candidate.slot,
+                            candidate.provider,
+                            candidate.model,
+                            elapsed_ms,
+                            result.error,
+                        )
+                    else:
+                        logger.info(
+                            "help_opener candidate_empty id=%s run_id=%s slot=%s provider=%s model=%s elapsed_ms=%s",
+                            request.id,
+                            request.run_id,
+                            candidate.slot,
+                            candidate.provider,
+                            candidate.model,
+                            elapsed_ms,
+                        )
                     if isinstance(result.error, ProviderError) and result.error.is_rate_limit:
                         self._opener_cooldowns[candidate.slot] = (
                             time.monotonic() + self.settings.rate_limit_backoff_ms / 1000.0
@@ -225,8 +268,27 @@ class LlmOrchestrator:
                 ) or best_opener_result(first_results.values())
 
             if winner and winner.delta:
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
                 await self._cancel_opener_candidates(pending)
                 await close_opener_results(first_results.values(), keep=winner.candidate)
+                logger.info(
+                    "help_opener selected id=%s run_id=%s slot=%s provider=%s model=%s priority=%s elapsed_ms=%s ready=%s",
+                    request.id,
+                    request.run_id,
+                    winner.candidate.slot,
+                    winner.candidate.provider,
+                    winner.candidate.model,
+                    winner.candidate.priority,
+                    elapsed_ms,
+                    ",".join(
+                        f"{result.candidate.slot}:{result.candidate.model}"
+                        for result in sorted(
+                            first_results.values(),
+                            key=lambda result: result.candidate.priority,
+                        )
+                        if result.delta
+                    ),
+                )
                 yield sse_event(
                     {
                         "event": "model",
@@ -251,6 +313,12 @@ class LlmOrchestrator:
                 keep=winner.candidate if winner else None,
             )
 
+        logger.info(
+            "help_opener fallback id=%s run_id=%s reason=no_winner elapsed_ms=%s",
+            request.id,
+            request.run_id,
+            int((time.monotonic() - started_at) * 1000),
+        )
         async for event in self._fallback_opener_stream():
             yield event
 
@@ -266,7 +334,7 @@ class LlmOrchestrator:
         async for event in self._vertex_text_stream(
             system_prompt=SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
             user_content=user_content,
-            temperature=0.35,
+            temperature=HELP_TEMPERATURE,
         ):
             yield event
 
@@ -348,7 +416,7 @@ class LlmOrchestrator:
                     stream=self.vertex.stream_text(
                         system_prompt=SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
                         user_content=user_content,
-                        temperature=0.25,
+                        temperature=HELP_TEMPERATURE,
                         thinking_level=self.settings.vertex_thinking_level,
                     ),
                 )
@@ -381,7 +449,7 @@ class LlmOrchestrator:
                             model=model,
                             system_prompt=SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
                             user_content=user_content,
-                            temperature=0.25,
+                            temperature=HELP_TEMPERATURE,
                             prompt_cache_key=f"rec-sidecar-help-opener-v1-{request.run_id}",
                         ),
                     )

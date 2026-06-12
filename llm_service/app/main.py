@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -18,6 +19,8 @@ from .schemas import (
     OpenerResponse,
 )
 
+
+logging.getLogger("llm_service").setLevel(logging.INFO)
 
 settings = Settings.from_env()
 orchestrator = LlmOrchestrator(settings)

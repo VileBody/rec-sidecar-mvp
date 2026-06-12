@@ -135,6 +135,7 @@ struct HelpOpenerOutcome {
 struct ServiceStreamEvent {
     event: String,
     text: Option<String>,
+    provider: Option<String>,
     model: Option<String>,
     message: Option<String>,
 }
@@ -603,18 +604,18 @@ fn format_help_opener_text(text: &str) -> Option<String> {
 }
 
 fn fallback_constructive_text() -> &'static str {
-    "\n**Следующий ход:** Задай короткий уточняющий вопрос и дай клиенту договорить.\n_Комментарий:_ Конструктивная часть сейчас недоступна, поэтому лучше не давить и уточнить главное сомнение клиента."
+    "\n**Следующий ход:** Задай короткий уточняющий вопрос о главном риске клиента и дай ему договорить."
 }
 
 fn fallback_constructive_error_text(reason: &str) -> String {
     format!(
-        "\n**Следующий ход:** Задай короткий уточняющий вопрос и дай клиенту договорить.\n_Комментарий:_ Конструктив не успел подготовиться: {}.",
+        "\n**Следующий ход:** Задай короткий уточняющий вопрос о главном риске клиента и дай ему договорить, потому что конструктив не успел подготовиться: {}.",
         reason.trim()
     )
 }
 
 fn fallback_help_opener_text() -> &'static str {
-    "Слышу, что сейчас много сомнений и риска. Давайте спокойно разберем, что именно не сработало раньше и что должно быть иначе, чтобы вам было безопасно двигаться дальше."
+    "Давайте зафиксируем главный риск и разберем, что должно быть иначе, чтобы вам было безопасно двигаться дальше."
 }
 
 async fn send_help_constructive_request(
@@ -799,11 +800,18 @@ fn handle_service_stream_event(
     let event = serde_json::from_str::<ServiceStreamEvent>(data)?;
     match event.event.as_str() {
         "model" => {
+            let provider = event.provider.as_deref().unwrap_or("unknown");
             if let Some(model) = event
                 .model
                 .as_deref()
                 .filter(|model| !model.trim().is_empty())
             {
+                coach_log(format!(
+                    "service stream model id={} provider={} model={}",
+                    request_id,
+                    provider,
+                    model.trim()
+                ));
                 let _ = tx.send(CoachEvent::ChatModel(request_id, model.trim().to_string()));
             }
         }
@@ -1039,7 +1047,7 @@ mod tests {
         let text = fallback_constructive_error_text("timeout");
 
         assert!(text.contains("**Следующий ход:**"));
-        assert!(text.contains("_Комментарий:_"));
+        assert!(!text.contains("_Комментарий:_"));
         assert!(text.contains("timeout"));
     }
 
@@ -1063,7 +1071,7 @@ mod tests {
         let mut result = ServiceStreamResult::default();
 
         let action = handle_service_stream_event(
-            r#"{"event":"model","model":"gemini"}"#,
+            r#"{"event":"model","provider":"vertex","model":"gemini"}"#,
             7,
             &tx,
             Some("prefix: "),

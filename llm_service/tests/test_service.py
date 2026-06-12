@@ -7,6 +7,10 @@ import pytest
 
 from llm_service.app.config import Settings
 from llm_service.app.orchestrator import LlmOrchestrator, OpenerCandidate, sse_event
+from llm_service.app.prompts import (
+    SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
+    SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
+)
 from llm_service.app.providers import (
     CerebrasClient,
     parse_bos_eos_text,
@@ -61,6 +65,13 @@ def test_suggestion_parsers():
     }
 
 
+def test_help_prompts_force_single_sentence():
+    assert "Ровно одно предложение" in SALES_COACH_HELP_OPENER_SYSTEM_PROMPT
+    assert "Дай ровно одно предложение" in SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT
+    assert "Не используй" in SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT
+    assert "_Комментарий:_" in SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT
+
+
 @pytest.mark.anyio
 async def test_cerebras_prompt_cache_retry():
     calls = []
@@ -97,8 +108,11 @@ async def test_cerebras_prompt_cache_retry():
 
 @pytest.mark.anyio
 async def test_help_opener_selects_primary_model():
+    calls = []
+
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
+        calls.append(payload)
         model = payload["model"]
         text = (
             'data: {"choices":[{"delta":{"content":"primary answer"}}]}\n\n'
@@ -119,6 +133,7 @@ async def test_help_opener_selects_primary_model():
         assert response.text == "primary answer"
         assert response.model == "primary-model"
         assert response.fallback is False
+        assert all(call["temperature"] == 1.0 for call in calls)
     finally:
         await client.aclose()
 
@@ -245,9 +260,49 @@ async def test_help_opener_vertex_candidate_sends_low_thinking():
 
         assert response.text == "vertex answer"
         assert response.model == "gemini-3.5-flash"
+        assert calls[0]["generationConfig"]["temperature"] == 1.0
         assert calls[0]["generationConfig"]["thinkingConfig"] == {
             "thinkingLevel": "low"
         }
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_help_constructive_stream_sends_temperature_one():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            text='[{"candidates":[{"content":{"parts":[{"text":"next step"}]}}]}]',
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                cerebras_api_key=None,
+                vertex_project="project",
+                vertex_access_token="token",
+            ),
+            client,
+        )
+
+        frames = [
+            json.loads(frame.decode("utf-8").removeprefix("data:").strip())
+            async for frame in orchestrator.help_constructive_stream(
+                HelpRequest(id=1, run_id="run", context="context")
+            )
+        ]
+
+        assert frames == [
+            {"event": "model", "model": "gemini-3.5-flash"},
+            {"event": "delta", "text": "next step"},
+            {"event": "done"},
+        ]
+        assert calls[0]["generationConfig"]["temperature"] == 1.0
     finally:
         await client.aclose()
 
