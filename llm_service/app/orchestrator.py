@@ -599,12 +599,9 @@ class LlmOrchestrator:
 
         def start_advice_task() -> asyncio.Task[str]:
             return asyncio.create_task(
-                self.vertex.generate_text(
-                    model=model,
+                self._stage_advice_text(
                     system_prompt=scorecard_advice_prompt(agenda.stage, agenda),
                     user_content=user_content,
-                    temperature=0.4,
-                    max_output_tokens=160,
                 )
             )
 
@@ -673,6 +670,19 @@ class LlmOrchestrator:
             return None
         text = clean_one_line(text)
         return text or None
+
+    async def _stage_advice_text(self, *, system_prompt: str, user_content: str) -> str:
+        parts: list[str] = []
+        async for delta in self.vertex.stream_text(
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=0.4,
+            thinking_level=self.settings.vertex_thinking_level,
+        ):
+            parts.append(delta)
+            if sum(len(part) for part in parts) >= 260:
+                break
+        return clean_one_line("".join(parts))
 
     async def _vertex_text_stream(
         self,

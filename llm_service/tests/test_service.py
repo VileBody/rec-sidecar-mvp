@@ -349,19 +349,11 @@ async def test_stage_agenda_returns_pending_scorecard_on_vertex_timeout():
         if schema is None:
             return httpx.Response(
                 200,
-                json={
-                    "candidates": [
-                        {
-                            "content": {
-                                "parts": [
-                                    {
-                                        "text": "Уточнить: 1) что именно не получилось; 2) какой результат нужен."
-                                    }
-                                ]
-                            }
-                        }
-                    ]
-                },
+                text=(
+                    '{"candidates":[{"content":{"parts":[{"text":'
+                    '"Уточнить: 1) что именно не получилось; 2) какой результат нужен."'
+                    '}]}}]}'
+                ),
             )
         return httpx.Response(
             200,
