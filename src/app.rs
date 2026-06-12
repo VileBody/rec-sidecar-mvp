@@ -879,6 +879,16 @@ impl RecApp {
             coach_bubbles: &self.coach_bubbles,
             coach_live: self.coach_live.as_deref(),
             coach_chat_messages: &self.coach_chat_messages,
+            stage_agenda: self
+                .stage_agenda
+                .as_ref()
+                .map(|agenda| context::StageAgendaContext {
+                    stage: agenda.stage.as_str(),
+                    title: agenda.title.as_str(),
+                    agenda: agenda.agenda.as_str(),
+                    emotion: agenda.emotion.as_str(),
+                    step: agenda.step.as_str(),
+                }),
         }
     }
 

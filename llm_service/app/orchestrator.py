@@ -36,6 +36,7 @@ from .schemas import (
     StageRequest,
 )
 from .stage_assets import (
+    CURRENT_STAGE_AGENDA_PROMPT,
     STAGE_AGENDA_BY_TAG,
     parse_stage_detection,
     stage_detection_system_prompt,
@@ -378,8 +379,12 @@ class LlmOrchestrator:
             return
 
         user_content = (
-            f"{request.context}\n\n--- Задача ---\n"
-            "Подготовь один короткий следующий ход продавцу для текущего момента звонка."
+            f"{request.context}\n\n"
+            "--- Fixed stage -> agenda mapping ---\n"
+            f"{CURRENT_STAGE_AGENDA_PROMPT}\n\n"
+            "--- Задача ---\n"
+            "Подготовь один короткий следующий ход продавцу для текущего момента звонка. "
+            "Строго опирайся на текущий stage, agenda и stage -> agenda mapping."
         )
         async for event in self._vertex_text_stream(
             system_prompt=SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
@@ -448,7 +453,7 @@ class LlmOrchestrator:
         user_content = (
             f"{request.context}\n\n--- Задача ---\n"
             "Дай одну короткую эмпатичную фразу-мостик, которую продавец может сразу "
-            "прочитать клиенту вслух."
+            "прочитать клиенту вслух. Не добавляй вопрос, оффер или следующий шаг."
         )
         candidates: list[OpenerCandidate] = []
 

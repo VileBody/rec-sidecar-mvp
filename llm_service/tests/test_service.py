@@ -72,7 +72,11 @@ def test_suggestion_parsers():
 
 def test_help_prompts_force_single_sentence():
     assert "Ровно одно предложение" in SALES_COACH_HELP_OPENER_SYSTEM_PROMPT
+    assert "не генерируй следующий вопрос, оффер" in SALES_COACH_HELP_OPENER_SYSTEM_PROMPT
+    assert "Только эмоционально присоединись" in SALES_COACH_HELP_OPENER_SYSTEM_PROMPT
     assert "Дай ровно одно предложение" in SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT
+    assert "строго следуя текущему stage -> agenda mapping" in SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT
+    assert "только actionable next step" in SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT
     assert "Не используй" in SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT
     assert "_Комментарий:_" in SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT
 
@@ -370,6 +374,10 @@ async def test_help_constructive_stream_sends_temperature_one():
             {"event": "done"},
         ]
         assert calls[0]["generationConfig"]["temperature"] == 1.0
+        user_text = calls[0]["contents"][0]["parts"][0]["text"]
+        assert "--- Fixed stage -> agenda mapping ---" in user_text
+        assert "S3.4a — Objection Clarifier" in user_text
+        assert "Строго опирайся на текущий stage" in user_text
     finally:
         await client.aclose()
 

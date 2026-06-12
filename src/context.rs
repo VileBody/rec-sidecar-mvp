@@ -13,12 +13,22 @@ pub(crate) struct CoachChatMessage {
     pub(crate) model_label: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct StageAgendaContext<'a> {
+    pub(crate) stage: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) agenda: &'a str,
+    pub(crate) emotion: &'a str,
+    pub(crate) step: &'a str,
+}
+
 pub(crate) struct ContextInput<'a> {
     pub(crate) transcript: &'a [String],
     pub(crate) live_partial: Option<&'a str>,
     pub(crate) coach_bubbles: &'a [String],
     pub(crate) coach_live: Option<&'a str>,
     pub(crate) coach_chat_messages: &'a [CoachChatMessage],
+    pub(crate) stage_agenda: Option<StageAgendaContext<'a>>,
 }
 
 pub(crate) struct HelpContextSettings {
@@ -202,6 +212,22 @@ pub(crate) fn render_help_context(
         }
     }
 
+    out.push_str("\n--- Текущий stage / agenda ---\n");
+    if let Some(stage_agenda) = input.stage_agenda {
+        out.push_str("Stage: ");
+        push_clean_line(&mut out, stage_agenda.stage);
+        out.push_str("Title: ");
+        push_clean_line(&mut out, stage_agenda.title);
+        out.push_str("Agenda: ");
+        push_clean_line(&mut out, stage_agenda.agenda);
+        out.push_str("Эмоциональная реакция из mapping: ");
+        push_clean_line(&mut out, stage_agenda.emotion);
+        out.push_str("Следующий шаг из mapping: ");
+        push_clean_line(&mut out, stage_agenda.step);
+    } else {
+        out.push_str("(stage пока не определен)\n");
+    }
+
     out.push_str("\n--- Уже показанные подсказки / ответы тренера ---\n");
     let coach_context = render_recent_coach_context(
         input,
@@ -310,6 +336,7 @@ mod tests {
         coach_bubbles: &'a [String],
         coach_live: Option<&'a str>,
         coach_chat_messages: &'a [CoachChatMessage],
+        stage_agenda: Option<StageAgendaContext<'a>>,
     ) -> ContextInput<'a> {
         ContextInput {
             transcript,
@@ -317,6 +344,7 @@ mod tests {
             coach_bubbles,
             coach_live,
             coach_chat_messages,
+            stage_agenda,
         }
     }
 
@@ -341,6 +369,13 @@ mod tests {
             &empty,
             None,
             &empty_messages,
+            Some(StageAgendaContext {
+                stage: "S2.3",
+                title: "Target & Gap",
+                agenda: "выяснить желаемый результат и препятствия",
+                emotion: "Очень крутая цель, это реально сделать.",
+                step: "Почему пока не получается сделать результат самостоятельно?",
+            }),
         );
 
         let text = render_help_context(
@@ -357,6 +392,8 @@ mod tests {
         assert!(text.contains("line"));
         assert!(!text.contains("first long line"));
         assert!(text.contains("[LIVE] tail"));
+        assert!(text.contains("Stage: S2.3"));
+        assert!(text.contains("Agenda: выяснить желаемый результат и препятствия"));
     }
 
     #[test]
@@ -382,7 +419,7 @@ mod tests {
             },
         ];
 
-        let text = render_chat_context(&input(&transcript, None, &empty, None, &messages));
+        let text = render_chat_context(&input(&transcript, None, &empty, None, &messages, None));
 
         assert!(text.contains("Продавец: Что спросить?"));
         assert!(text.contains("Тренер: Уточни цель."));

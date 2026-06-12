@@ -737,7 +737,7 @@ fn fallback_constructive_error_text(reason: &str) -> String {
 }
 
 fn fallback_help_opener_text() -> &'static str {
-    "Давайте зафиксируем главный риск и разберем, что должно быть иначе, чтобы вам было безопасно двигаться дальше."
+    "Понимаю, вопрос важный, и правильно, что вы его сейчас поднимаете."
 }
 
 async fn send_help_constructive_request(
