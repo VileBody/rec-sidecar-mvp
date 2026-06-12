@@ -1,42 +1,108 @@
 use crate::context::{CoachChatMessage, CoachChatRole};
 use eframe::egui::{self, RichText};
 
-pub(crate) fn side_panel_layout(ctx: &egui::Context) -> (f32, f32, f32, f32, f32) {
-    let monitor = ctx.input(|input| {
-        input
-            .viewport()
-            .monitor_size
-            .unwrap_or_else(|| egui::vec2(1440.0, 900.0))
-    });
-    let center_min = (monitor.x * 0.56).clamp(520.0, 980.0);
-    let max_panel_width = ((monitor.x - center_min) / 2.0).max(240.0);
-    let left_width = (monitor.x * 0.15).clamp(240.0, 320.0).min(max_panel_width);
-    let right_width = (monitor.x * 0.17).clamp(280.0, 360.0).min(max_panel_width);
-    let panel_height = (monitor.y * 0.78).clamp(520.0, monitor.y.max(520.0));
+pub(crate) fn apply_liquid_glass_style(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.override_text_color = Some(egui::Color32::from_rgb(235, 242, 248));
+    visuals.panel_fill = egui::Color32::from_rgb(13, 18, 28);
+    visuals.window_fill = egui::Color32::from_rgb(22, 29, 42);
+    visuals.window_corner_radius = egui::CornerRadius::same(16);
+    visuals.faint_bg_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18);
+    visuals.extreme_bg_color = egui::Color32::from_rgba_unmultiplied(4, 8, 16, 220);
+    visuals.hyperlink_color = egui::Color32::from_rgb(126, 210, 255);
+    visuals.selection.bg_fill = egui::Color32::from_rgb(56, 128, 190);
+    visuals.widgets.noninteractive.bg_fill =
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12);
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(
+        1.0,
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 42),
+    );
+    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28);
+    visuals.widgets.inactive.weak_bg_fill =
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18);
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(
+        1.0,
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 54),
+    );
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 42);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(
+        1.0,
+        egui::Color32::from_rgba_unmultiplied(190, 230, 255, 110),
+    );
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgba_unmultiplied(91, 171, 226, 96);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(
+        1.0,
+        egui::Color32::from_rgba_unmultiplied(200, 238, 255, 150),
+    );
+    visuals.widgets.open.bg_fill = visuals.widgets.hovered.bg_fill;
+    visuals.widgets.open.bg_stroke = visuals.widgets.hovered.bg_stroke;
+    visuals.window_shadow = glass_shadow();
+    visuals.popup_shadow = glass_shadow();
+    ctx.set_visuals(visuals);
 
-    (left_width, right_width, panel_height, monitor.x, monitor.y)
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.spacing.window_margin = egui::Margin::same(14);
+    ctx.set_style(style);
 }
 
-pub(crate) fn show_panel_header(ctx: &egui::Context, ui: &mut egui::Ui, title: &str) {
+pub(crate) fn app_background_frame() -> egui::Frame {
+    egui::Frame::new().fill(egui::Color32::from_rgb(9, 14, 23))
+}
+
+pub(crate) fn toolbar_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(18, 25, 38, 238))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+        ))
+        .inner_margin(egui::Margin::symmetric(14, 10))
+}
+
+pub(crate) fn glass_panel_frame() -> egui::Frame {
+    tinted_glass_frame(
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 22),
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 62),
+    )
+}
+
+pub(crate) fn tinted_glass_frame(fill: egui::Color32, stroke: egui::Color32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(egui::Stroke::new(1.0, stroke))
+        .corner_radius(egui::CornerRadius::same(18))
+        .inner_margin(egui::Margin::same(14))
+        .outer_margin(egui::Margin::same(8))
+        .shadow(glass_shadow())
+}
+
+pub(crate) fn section_header(ui: &mut egui::Ui, title: &str, detail: impl AsRef<str>) {
     ui.horizontal_wrapped(|ui| {
-        ui.heading(title);
-
-        let drag_handle = ui.add(egui::Label::new("двигать").sense(egui::Sense::drag()));
-        let is_dragging = drag_handle.dragged();
-        let _drag_handle = drag_handle.on_hover_cursor(if is_dragging {
-            egui::CursorIcon::Grabbing
-        } else {
-            egui::CursorIcon::Grab
-        });
-
-        if is_dragging {
-            drag_viewport_by_pointer_delta(ctx);
+        ui.label(RichText::new(title).size(16.0).strong());
+        let detail = detail.as_ref();
+        if !detail.is_empty() {
+            ui.label(
+                RichText::new(detail)
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(168, 180, 192)),
+            );
         }
     });
 }
 
+fn glass_shadow() -> egui::Shadow {
+    egui::Shadow {
+        offset: [0, 12],
+        blur: 28,
+        spread: 0,
+        color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 88),
+    }
+}
+
 pub(crate) fn draw_bubble(ui: &mut egui::Ui, text: &str) {
-    egui::Frame::group(ui.style()).show(ui, |ui| {
+    glass_panel_frame().show(ui, |ui| {
         ui.set_width(ui.available_width() - 12.0);
         draw_dialogue_text(ui, text, false);
     });
@@ -45,31 +111,41 @@ pub(crate) fn draw_bubble(ui: &mut egui::Ui, text: &str) {
 }
 
 pub(crate) fn draw_live_bubble(ui: &mut egui::Ui, text: &str) {
-    egui::Frame::group(ui.style())
-        .fill(ui.visuals().faint_bg_color)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width() - 12.0);
-            draw_dialogue_text(ui, text, true);
-        });
+    tinted_glass_frame(
+        egui::Color32::from_rgba_unmultiplied(116, 208, 255, 36),
+        egui::Color32::from_rgba_unmultiplied(135, 220, 255, 92),
+    )
+    .show(ui, |ui| {
+        ui.set_width(ui.available_width() - 12.0);
+        draw_dialogue_text(ui, text, true);
+    });
 
     ui.add_space(8.0);
 }
 
 pub(crate) fn draw_coach_bubble(ui: &mut egui::Ui, text: &str, live: bool) {
-    egui::Frame::group(ui.style())
-        .fill(ui.visuals().faint_bg_color)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width() - 12.0);
-            ui.label(RichText::new("Тренер").strong().size(13.0));
+    let fill = if live {
+        egui::Color32::from_rgba_unmultiplied(107, 227, 179, 36)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24)
+    };
 
-            let text = if live {
-                format!("{} ...", text.trim())
-            } else {
-                text.trim().to_string()
-            };
+    tinted_glass_frame(
+        fill,
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 68),
+    )
+    .show(ui, |ui| {
+        ui.set_width(ui.available_width() - 12.0);
+        ui.label(RichText::new("Тренер").strong().size(13.0));
 
-            ui.add(egui::Label::new(text).wrap());
-        });
+        let text = if live {
+            format!("{} ...", text.trim())
+        } else {
+            text.trim().to_string()
+        };
+
+        ui.add(egui::Label::new(text).wrap());
+    });
 
     ui.add_space(8.0);
 }
@@ -84,7 +160,11 @@ pub(crate) fn draw_chat_message(ui: &mut egui::Ui, message: &CoachChatMessage) {
         CoachChatRole::Assistant => "Тренер",
     };
 
-    egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
+    tinted_glass_frame(
+        fill,
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 56),
+    )
+    .show(ui, |ui| {
         ui.set_width(ui.available_width() - 12.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new(label).strong().size(13.0));
@@ -118,25 +198,6 @@ pub(crate) fn draw_chat_message(ui: &mut egui::Ui, message: &CoachChatMessage) {
     });
 
     ui.add_space(8.0);
-}
-
-fn drag_viewport_by_pointer_delta(ctx: &egui::Context) {
-    let next_position = ctx.input(|input| {
-        let delta = input.pointer.delta();
-        if delta.length_sq() <= f32::EPSILON {
-            return None;
-        }
-
-        input
-            .viewport()
-            .outer_rect
-            .map(|outer_rect| outer_rect.min + delta)
-    });
-
-    if let Some(position) = next_position {
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position));
-        ctx.request_repaint();
-    }
 }
 
 fn draw_coach_markdown(ui: &mut egui::Ui, text: &str) {

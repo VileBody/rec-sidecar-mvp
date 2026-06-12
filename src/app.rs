@@ -1,7 +1,6 @@
 use crate::{
     asr, coach,
     context::{self, CoachChatMessage, CoachChatRole, ContextInput, HelpContextSettings},
-    platform,
     session::{self, AppPaths, RunSession, SavedRun},
     ui,
 };
@@ -19,9 +18,6 @@ use std::{
 };
 
 const COACH_AUTO_SUGGESTIONS: bool = false;
-const TRANSCRIPT_PANEL_TITLE: &str = "REC Transcript";
-const COACH_PANEL_TITLE: &str = "REC Coach";
-const STAGE_AGENDA_PANEL_TITLE: &str = "REC Stage Agenda";
 const DEFAULT_HELP_CONTEXT_DELAY_MS: u64 = 300;
 const DEFAULT_STAGE_DETECT_INTERVAL_MS: u64 = 5_000;
 const DEFAULT_CONTEXT_MAX_TRANSCRIPT_CHARS: usize = 16_000;
@@ -65,23 +61,10 @@ impl AsrLanguageSelection {
     }
 }
 
-#[derive(Clone, Copy)]
-enum PanelSide {
-    Transcript,
-    Coach,
-}
-
 pub struct RecApp {
     paths: AppPaths,
     recording: bool,
     connecting: bool,
-    transcript_open: bool,
-    transcript_panel_pinned: bool,
-    coach_panel_pinned: bool,
-    transcript_panel_width: Option<f32>,
-    coach_panel_width: Option<f32>,
-    transcript_panel_height: Option<f32>,
-    coach_panel_height: Option<f32>,
     bubbles: Vec<String>,
     live_partial: Option<String>,
     coach_bubbles: Vec<String>,
@@ -95,7 +78,6 @@ pub struct RecApp {
     coach_status: String,
     stage_agenda: Option<coach::CoachStageAgenda>,
     stage_status: String,
-    stage_panel_pinned: bool,
     force_stage_detect: bool,
     last_stage_request_sent: Instant,
     force_coach_snapshot: bool,
@@ -130,13 +112,6 @@ impl RecApp {
             paths,
             recording: false,
             connecting: false,
-            transcript_open: false,
-            transcript_panel_pinned: false,
-            coach_panel_pinned: false,
-            transcript_panel_width: None,
-            coach_panel_width: None,
-            transcript_panel_height: None,
-            coach_panel_height: None,
             bubbles: Vec::new(),
             live_partial: None,
             coach_bubbles: Vec::new(),
@@ -150,7 +125,6 @@ impl RecApp {
             coach_status: "Coach idle".to_string(),
             stage_agenda: None,
             stage_status: "Stage idle".to_string(),
-            stage_panel_pinned: false,
             force_stage_detect: true,
             last_stage_request_sent: Instant::now(),
             force_coach_snapshot: false,
@@ -173,19 +147,8 @@ impl RecApp {
         app
     }
 
-    fn open_transcript_window(&mut self) {
-        if !self.transcript_open {
-            self.transcript_panel_pinned = false;
-            self.coach_panel_pinned = false;
-        }
-
-        self.transcript_open = true;
-    }
-
-    fn close_transcript_window(&mut self) {
-        self.transcript_open = false;
-        self.transcript_panel_pinned = false;
-        self.coach_panel_pinned = false;
+    fn focus_live_workspace(&mut self) {
+        // The live workspace is embedded in the main window now.
     }
 
     fn start_new_recording(&mut self) {
@@ -201,10 +164,9 @@ impl RecApp {
         self.pending_help = None;
         self.stage_agenda = None;
         self.stage_status = "Stage detecting...".to_string();
-        self.stage_panel_pinned = false;
         self.force_stage_detect = true;
         self.current_run = Some(RunSession::new());
-        self.open_transcript_window();
+        self.focus_live_workspace();
         self.spawn_coach();
         self.spawn_worker();
         self.status = "Connecting to Inworld STT...".to_string();
@@ -217,7 +179,7 @@ impl RecApp {
             self.current_run = Some(RunSession::new());
         }
 
-        self.open_transcript_window();
+        self.focus_live_workspace();
         if self.coach_tx.is_none() {
             self.spawn_coach();
         }
@@ -256,7 +218,7 @@ impl RecApp {
             Ok(path) => {
                 self.stop_worker();
                 self.stop_coach();
-                self.close_transcript_window();
+                self.focus_live_workspace();
                 self.current_run = None;
                 self.bubbles.clear();
                 self.live_partial = None;
@@ -267,7 +229,6 @@ impl RecApp {
                 self.pending_help = None;
                 self.stage_agenda = None;
                 self.stage_status = "Stage idle".to_string();
-                self.stage_panel_pinned = false;
                 self.force_stage_detect = true;
                 self.rx = None;
                 self.status = format!("Saved and closed {}", path.display());
@@ -577,13 +538,13 @@ impl RecApp {
 
         if self.help_is_busy() {
             self.status = "Coach is already preparing help".to_string();
-            self.open_transcript_window();
+            self.focus_live_workspace();
             return;
         }
 
         if self.current_run.is_none() {
             self.status = "Start a run before asking coach for help".to_string();
-            self.open_transcript_window();
+            self.focus_live_workspace();
             return;
         }
 
@@ -593,7 +554,7 @@ impl RecApp {
 
         if self.coach_tx.is_none() {
             self.status = "Coach disabled: missing provider config".to_string();
-            self.open_transcript_window();
+            self.focus_live_workspace();
             return;
         }
 
@@ -625,7 +586,7 @@ impl RecApp {
             model_label: None,
         });
         self.set_help_stage(request_id, coach::CoachHelpStage::FreezingContext);
-        self.open_transcript_window();
+        self.focus_live_workspace();
 
         let asr_active = self.recording || self.connecting;
         if asr_active {
@@ -742,7 +703,7 @@ impl RecApp {
 
         if self.current_run.is_none() {
             self.status = "Start a run before chatting with coach".to_string();
-            self.open_transcript_window();
+            self.focus_live_workspace();
             return;
         }
 
@@ -752,7 +713,7 @@ impl RecApp {
 
         let Some(tx) = self.coach_tx.clone() else {
             self.status = "Coach disabled: missing provider config".to_string();
-            self.open_transcript_window();
+            self.focus_live_workspace();
             return;
         };
 
@@ -780,7 +741,7 @@ impl RecApp {
             help_stage_label: None,
             model_label: None,
         });
-        self.open_transcript_window();
+        self.focus_live_workspace();
 
         let request = coach::CoachChatRequest {
             id: request_id,
@@ -960,74 +921,239 @@ impl RecApp {
     }
 
     fn show_main_window(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
+        ui::apply_liquid_glass_style(ctx);
+
+        egui::TopBottomPanel::top("top_bar")
+            .frame(ui::toolbar_frame())
+            .show(ctx, |ui| {
+                self.show_top_bar(ui);
+            });
+
+        if self.current_run.is_some() {
+            egui::SidePanel::left("transcript_dock")
+                .resizable(true)
+                .default_width(300.0)
+                .width_range(250.0..=420.0)
+                .frame(ui::app_background_frame())
+                .show(ctx, |ui| {
+                    ui::glass_panel_frame().show(ui, |ui| {
+                        ui::section_header(ui, "Расшифровка", self.transcript_state_label());
+                        ui.separator();
+                        self.show_transcript_column(ui);
+                    });
+                });
+
+            egui::SidePanel::right("coach_dock")
+                .resizable(true)
+                .default_width(360.0)
+                .width_range(300.0..=480.0)
+                .frame(ui::app_background_frame())
+                .show(ctx, |ui| {
+                    ui::glass_panel_frame().show(ui, |ui| {
+                        ui::section_header(ui, "Тренер", self.coach_state_label());
+                        ui.separator();
+                        self.show_coach_column(ui);
+                    });
+                });
+
+            egui::CentralPanel::default()
+                .frame(ui::app_background_frame())
+                .show(ctx, |ui| {
+                    self.show_live_center(ui);
+                });
+        } else {
+            egui::CentralPanel::default()
+                .frame(ui::app_background_frame())
+                .show(ctx, |ui| {
+                    self.show_idle_dashboard(ui);
+                });
+        }
+    }
+
+    fn show_top_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("REC Sidecar").size(18.0).strong());
+            ui.add_space(10.0);
+            self.show_primary_controls(ui);
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let rec_label = if self.connecting {
-                    "Загрузка..."
-                } else {
-                    "● REC"
-                };
-                let rec_text = RichText::new(rec_label).size(17.0);
+            self.show_asr_language_selector(ui);
 
-                if ui
-                    .add_enabled(
-                        !self.connecting,
-                        egui::Button::new(rec_text).min_size([116.0, 38.0].into()),
-                    )
-                    .clicked()
-                {
-                    if self.recording {
-                        self.open_transcript_window();
-                        self.status = "Transcript window opened".to_string();
-                    } else if self.current_run.is_some() {
-                        self.continue_recording();
-                    } else {
-                        self.start_new_recording();
-                    }
-                }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(self.app_state_label())
+                        .size(13.0)
+                        .color(self.app_state_color()),
+                );
+            });
+        });
+    }
 
-                ui.add_space(12.0);
-                ui.heading("REC Sidecar");
-                ui.add_space(16.0);
-                self.show_asr_language_selector(ui);
+    fn show_primary_controls(&mut self, ui: &mut egui::Ui) {
+        let primary_label = if self.connecting {
+            "Отменить"
+        } else if self.recording {
+            "Остановить"
+        } else if self.current_run.is_some() {
+            "Продолжить"
+        } else {
+            "Начать REC"
+        };
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let status = if self.connecting {
-                        "connecting"
-                    } else if self.recording {
-                        "recording"
-                    } else if self.current_run.is_some() {
-                        "stopped"
-                    } else {
-                        "idle"
-                    };
+        if ui
+            .add(egui::Button::new(RichText::new(primary_label).strong()))
+            .clicked()
+        {
+            if self.connecting || self.recording {
+                self.pause_recording();
+            } else if self.current_run.is_some() {
+                self.continue_recording();
+            } else {
+                self.start_new_recording();
+            }
+        }
 
-                    ui.label(status);
+        if ui
+            .add_enabled(!self.connecting, egui::Button::new("Новый"))
+            .clicked()
+        {
+            self.start_new_recording();
+        }
+
+        if ui
+            .add_enabled(self.current_run.is_some(), egui::Button::new("Сохранить"))
+            .clicked()
+        {
+            if let Err(err) = self.save_current_run() {
+                self.status = format!("Save failed: {}", err);
+            }
+        }
+
+        if ui
+            .add_enabled(
+                self.current_run.is_some(),
+                egui::Button::new("Сохранить и закрыть"),
+            )
+            .clicked()
+        {
+            self.save_and_exit();
+        }
+
+        let help_busy = self.help_is_busy();
+        let help_label = if help_busy {
+            "готовлю..."
+        } else {
+            "Помоги"
+        };
+        if ui
+            .add_enabled(
+                self.current_run.is_some() && !help_busy,
+                egui::Button::new(help_label),
+            )
+            .clicked()
+        {
+            self.send_help_request();
+        }
+    }
+
+    fn show_live_center(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .id_salt("live_center_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                self.show_stage_agenda_card(ui);
+                ui.add_space(4.0);
+                self.show_run_history_cards(ui);
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(&self.status)
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(168, 180, 192)),
+                );
+            });
+    }
+
+    fn show_idle_dashboard(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(10.0);
+        ui::glass_panel_frame().show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Готов к звонку").size(22.0).strong());
+                ui.label(
+                    RichText::new(&self.status)
+                        .size(13.0)
+                        .color(egui::Color32::from_rgb(168, 180, 192)),
+                );
+            });
+            ui.add_space(8.0);
+            self.show_primary_controls(ui);
+        });
+
+        ui.add_space(4.0);
+        self.show_run_history_cards(ui);
+    }
+
+    fn show_run_history_cards(&mut self, ui: &mut egui::Ui) {
+        if ui.available_width() >= 700.0 {
+            ui.columns(2, |columns| {
+                ui::glass_panel_frame().show(&mut columns[0], |ui| {
+                    ui.set_width(ui.available_width());
+                    self.show_runs_menu(ui);
+                });
+                ui::glass_panel_frame().show(&mut columns[1], |ui| {
+                    ui.set_width(ui.available_width());
+                    self.show_history_menu(ui);
                 });
             });
-            ui.add_space(8.0);
-        });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.heading("Runs");
-                ui.separator();
-                ui.heading("Исторические");
+        } else {
+            ui::glass_panel_frame().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                self.show_runs_menu(ui);
             });
-            ui.add_space(8.0);
-
-            ui.columns(2, |columns| {
-                self.show_runs_menu(&mut columns[0]);
-                self.show_history_menu(&mut columns[1]);
+            ui.add_space(4.0);
+            ui::glass_panel_frame().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                self.show_history_menu(ui);
             });
+        }
+    }
 
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.separator();
-                ui.label(&self.status);
-            });
-        });
+    fn app_state_label(&self) -> &'static str {
+        if self.connecting {
+            "connecting"
+        } else if self.recording {
+            "listening"
+        } else if self.current_run.is_some() {
+            "paused"
+        } else {
+            "idle"
+        }
+    }
+
+    fn app_state_color(&self) -> egui::Color32 {
+        if self.connecting {
+            egui::Color32::from_rgb(255, 190, 95)
+        } else if self.recording {
+            egui::Color32::from_rgb(92, 231, 158)
+        } else if self.current_run.is_some() {
+            egui::Color32::from_rgb(181, 197, 214)
+        } else {
+            egui::Color32::from_rgb(124, 137, 151)
+        }
+    }
+
+    fn transcript_state_label(&self) -> &'static str {
+        if self.connecting {
+            "подключаюсь"
+        } else if self.recording {
+            "слушаю"
+        } else if self.current_run.is_some() {
+            "пауза"
+        } else {
+            "пусто"
+        }
+    }
+
+    fn coach_state_label(&self) -> &str {
+        self.coach_status.lines().next().unwrap_or("Coach idle")
     }
 
     fn show_asr_language_selector(&mut self, ui: &mut egui::Ui) {
@@ -1056,37 +1182,27 @@ impl RecApp {
     }
 
     fn show_runs_menu(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Current run");
+        ui.heading("Текущий звонок");
         ui.add_space(8.0);
 
         let title = self
             .current_run
             .as_ref()
             .map(|run| run.title.as_str())
-            .unwrap_or("No active run");
+            .unwrap_or("Нет активного звонка");
         ui.label(title);
 
         let state = if self.connecting {
-            "Starting transcription..."
+            "Подключаю транскрибацию..."
         } else if self.recording {
-            "Live transcription is running"
+            "Транскрибация идет"
         } else if self.current_run.is_some() {
-            "Stopped, ready to continue or save"
+            "Пауза, можно продолжить или сохранить"
         } else {
-            "Press REC to start a new run"
+            "Нажмите REC, чтобы начать"
         };
         ui.label(state);
         ui.add_space(12.0);
-
-        if ui
-            .add_enabled(
-                self.current_run.is_some(),
-                egui::Button::new("Открыть транскрибацию"),
-            )
-            .clicked()
-        {
-            self.open_transcript_window();
-        }
 
         if ui
             .add_enabled(self.current_run.is_some(), egui::Button::new("Сохранить"))
@@ -1106,10 +1222,10 @@ impl RecApp {
     }
 
     fn show_history_menu(&mut self, ui: &mut egui::Ui) {
-        ui.heading("History");
+        ui.heading("История");
         ui.add_space(8.0);
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Посмотреть").clicked() {
                 self.view_selected_history();
             }
@@ -1127,7 +1243,7 @@ impl RecApp {
         ui.add_space(8.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
             if self.history.is_empty() {
-                ui.label("No saved runs yet");
+                ui.label("Сохраненных звонков пока нет");
                 return;
             }
 
@@ -1142,413 +1258,228 @@ impl RecApp {
         });
     }
 
-    fn show_sidecar_panels(&mut self, ctx: &egui::Context) {
-        let (default_left, default_right, default_height, monitor_width, monitor_height) =
-            ui::side_panel_layout(ctx);
-        let max_side_width = (monitor_width * 0.34).max(320.0);
-        let max_side_height = monitor_height.max(520.0);
-        let left_width = self
-            .transcript_panel_width
-            .unwrap_or(default_left)
-            .clamp(220.0, max_side_width);
-        let right_width = self
-            .coach_panel_width
-            .unwrap_or(default_right)
-            .clamp(260.0, max_side_width);
-        let left_height = self
-            .transcript_panel_height
-            .unwrap_or(default_height)
-            .clamp(420.0, max_side_height);
-        let right_height = self
-            .coach_panel_height
-            .unwrap_or(default_height)
-            .clamp(420.0, max_side_height);
+    fn show_stage_agenda_card(&mut self, ui: &mut egui::Ui) {
+        let readiness_key = self
+            .stage_agenda
+            .as_ref()
+            .and_then(|agenda| agenda.scorecard.as_ref())
+            .map(|scorecard| scorecard.readiness.as_str())
+            .unwrap_or("pending");
 
-        self.show_transcript_panel(ctx, left_width, left_height);
-        self.show_coach_panel(ctx, right_width, right_height, monitor_width);
-    }
-
-    fn show_transcript_panel(&mut self, ctx: &egui::Context, width: f32, height: f32) {
-        ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("transcript_side_panel"),
-            egui::ViewportBuilder::default()
-                .with_title(TRANSCRIPT_PANEL_TITLE)
-                .with_decorations(false)
-                .with_resizable(true)
-                .with_always_on_top()
-                .with_position([0.0, 0.0])
-                .with_inner_size([width, height])
-                .with_min_inner_size([220.0, 420.0]),
-            |ctx, class| {
-                if class == egui::ViewportClass::Embedded {
-                    return;
-                }
-
-                if !self.transcript_panel_pinned {
-                    self.transcript_panel_pinned =
-                        platform::pin_window_to_all_spaces(TRANSCRIPT_PANEL_TITLE);
-                }
-
-                if let Some(actual_rect) = ctx.input(|input| input.viewport().inner_rect) {
-                    self.transcript_panel_width = Some(actual_rect.width().clamp(220.0, 760.0));
-                    self.transcript_panel_height = Some(actual_rect.height().clamp(420.0, 1600.0));
-                }
-
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui::show_panel_header(ctx, ui, "Расшифровка");
-                    self.show_panel_resize_controls(ui, PanelSide::Transcript);
-                    ui.separator();
-                    self.show_transcript_column(ui);
+        ui::tinted_glass_frame(
+            readiness_panel_fill(readiness_key),
+            readiness_stroke_color(readiness_key),
+        )
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if let Some(agenda) = &self.stage_agenda {
+                let readiness = agenda.scorecard.as_ref().map(|scorecard| {
+                    (
+                        scorecard.readiness.as_str(),
+                        scorecard.readiness_label.as_str(),
+                    )
                 });
+                let readiness_key = readiness.map(|(key, _)| key).unwrap_or("pending");
+                let readiness_accent = readiness_color(readiness_key);
 
-                if ctx.input(|input| input.viewport().close_requested()) {
-                    self.close_transcript_window();
-                }
-            },
-        );
-    }
-
-    fn show_coach_panel(
-        &mut self,
-        ctx: &egui::Context,
-        width: f32,
-        height: f32,
-        monitor_width: f32,
-    ) {
-        let x = (monitor_width - width).max(0.0);
-
-        ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("coach_side_panel"),
-            egui::ViewportBuilder::default()
-                .with_title(COACH_PANEL_TITLE)
-                .with_decorations(false)
-                .with_resizable(true)
-                .with_always_on_top()
-                .with_position([x, 0.0])
-                .with_inner_size([width, height])
-                .with_min_inner_size([260.0, 420.0]),
-            |ctx, class| {
-                if class == egui::ViewportClass::Embedded {
-                    return;
-                }
-
-                if !self.coach_panel_pinned {
-                    self.coach_panel_pinned = platform::pin_window_to_all_spaces(COACH_PANEL_TITLE);
-                }
-
-                if let Some(actual_rect) = ctx.input(|input| input.viewport().inner_rect) {
-                    self.coach_panel_width = Some(actual_rect.width().clamp(260.0, 760.0));
-                    self.coach_panel_height = Some(actual_rect.height().clamp(420.0, 1600.0));
-                }
-
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui::show_panel_header(ctx, ui, "Тренер");
-                    self.show_panel_resize_controls(ui, PanelSide::Coach);
-                    ui.separator();
-                    self.show_coach_column(ui);
-                });
-
-                if ctx.input(|input| input.viewport().close_requested()) {
-                    self.close_transcript_window();
-                }
-            },
-        );
-    }
-
-    fn show_panel_resize_controls(&mut self, ui: &mut egui::Ui, side: PanelSide) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("ширина").size(11.0));
-            if ui.small_button("уже").clicked() {
-                self.adjust_panel_width(side, -48.0);
-            }
-            if ui.small_button("шире").clicked() {
-                self.adjust_panel_width(side, 48.0);
-            }
-            ui.separator();
-            ui.label(RichText::new("высота").size(11.0));
-            if ui.small_button("-").clicked() {
-                self.adjust_panel_height(side, -64.0);
-            }
-            if ui.small_button("+").clicked() {
-                self.adjust_panel_height(side, 64.0);
-            }
-            if ui.small_button("сброс").clicked() {
-                match side {
-                    PanelSide::Transcript => {
-                        self.transcript_panel_width = None;
-                        self.transcript_panel_height = None;
-                    }
-                    PanelSide::Coach => {
-                        self.coach_panel_width = None;
-                        self.coach_panel_height = None;
-                    }
-                }
-            }
-        });
-    }
-
-    fn adjust_panel_width(&mut self, side: PanelSide, delta: f32) {
-        match side {
-            PanelSide::Transcript => {
-                let current = self.transcript_panel_width.unwrap_or(300.0);
-                self.transcript_panel_width = Some((current + delta).clamp(220.0, 760.0));
-            }
-            PanelSide::Coach => {
-                let current = self.coach_panel_width.unwrap_or(320.0);
-                self.coach_panel_width = Some((current + delta).clamp(260.0, 760.0));
-            }
-        }
-    }
-
-    fn adjust_panel_height(&mut self, side: PanelSide, delta: f32) {
-        match side {
-            PanelSide::Transcript => {
-                let current = self.transcript_panel_height.unwrap_or(680.0);
-                self.transcript_panel_height = Some((current + delta).clamp(420.0, 1600.0));
-            }
-            PanelSide::Coach => {
-                let current = self.coach_panel_height.unwrap_or(680.0);
-                self.coach_panel_height = Some((current + delta).clamp(420.0, 1600.0));
-            }
-        }
-    }
-
-    fn show_stage_agenda_panel(&mut self, ctx: &egui::Context) {
-        let monitor = ctx.input(|input| {
-            input
-                .viewport()
-                .monitor_size
-                .unwrap_or_else(|| egui::vec2(1440.0, 900.0))
-        });
-        let width = (monitor.x * 0.42).clamp(620.0, 860.0);
-        let height = 248.0;
-        let x = ((monitor.x - width) / 2.0).max(0.0);
-        let y = 72.0;
-
-        ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("stage_agenda_panel"),
-            egui::ViewportBuilder::default()
-                .with_title(STAGE_AGENDA_PANEL_TITLE)
-                .with_decorations(false)
-                .with_always_on_top()
-                .with_position([x, y])
-                .with_inner_size([width, height])
-                .with_min_inner_size([460.0, 180.0]),
-            |ctx, class| {
-                if class == egui::ViewportClass::Embedded {
-                    return;
-                }
-
-                if !self.stage_panel_pinned {
-                    self.stage_panel_pinned =
-                        platform::pin_window_to_all_spaces(STAGE_AGENDA_PANEL_TITLE);
-                }
-
-                let readiness_key = self
-                    .stage_agenda
-                    .as_ref()
-                    .and_then(|agenda| agenda.scorecard.as_ref())
-                    .map(|scorecard| scorecard.readiness.as_str())
-                    .unwrap_or("pending");
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::new().fill(readiness_panel_fill(readiness_key)))
-                    .show(ctx, |ui| {
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            ui.add_space(10.0);
-                            ui.vertical(|ui| {
-                                if let Some(agenda) = &self.stage_agenda {
-                                    let readiness = agenda.scorecard.as_ref().map(|scorecard| {
-                                        (
-                                            scorecard.readiness.as_str(),
-                                            scorecard.readiness_label.as_str(),
-                                        )
-                                    });
-                                    let readiness_accent = readiness_color(
-                                        readiness.map(|(key, _)| key).unwrap_or("pending"),
-                                    );
-                                    let header_fill = readiness_color(
-                                        readiness.map(|(key, _)| key).unwrap_or("pending"),
-                                    );
-                                    egui::Frame::new()
-                                        .fill(header_fill)
-                                        .corner_radius(egui::CornerRadius::same(5))
-                                        .inner_margin(egui::Margin::symmetric(8, 4))
-                                        .show(ui, |ui| {
-                                            ui.set_width(ui.available_width());
-                                            ui.horizontal_wrapped(|ui| {
-                                                if let Some(scorecard) = &agenda.scorecard {
-                                                    let counter = if scorecard.total_count > 0 {
-                                                        format!(
-                                                            "{} · {} · {}/{}",
-                                                            agenda.stage,
-                                                            scorecard.readiness_label,
-                                                            scorecard.hit_count,
-                                                            scorecard.total_count
-                                                        )
-                                                    } else {
-                                                        format!(
-                                                            "{} · {}",
-                                                            agenda.stage, scorecard.readiness_label
-                                                        )
-                                                    };
-                                                    ui.label(
-                                                        RichText::new(counter)
-                                                            .color(egui::Color32::WHITE)
-                                                            .size(13.0)
-                                                            .strong(),
-                                                    );
-                                                } else if let Some((_, label)) = readiness {
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "{} · {}",
-                                                            agenda.stage, label
-                                                        ))
-                                                        .color(egui::Color32::WHITE)
-                                                        .size(13.0)
-                                                        .strong(),
-                                                    );
-                                                }
-                                                ui.label(
-                                                    RichText::new(&agenda.title)
-                                                        .color(egui::Color32::WHITE)
-                                                        .size(12.0),
-                                                );
-                                                ui.with_layout(
-                                                    egui::Layout::right_to_left(
-                                                        egui::Align::Center,
-                                                    ),
-                                                    |ui| {
-                                                        ui.label(
-                                                            RichText::new(&agenda.model)
-                                                                .color(egui::Color32::WHITE)
-                                                                .italics()
-                                                                .size(11.0),
-                                                        );
-                                                    },
-                                                );
-                                            });
-                                        });
-                                    ui.add_space(8.0);
-                                    if let Some(scorecard) = &agenda.scorecard {
-                                        ui.label(
-                                            RichText::new("СОВЕТ")
-                                                .color(readiness_accent)
-                                                .strong()
-                                                .size(12.0),
-                                        );
-                                        ui.label(
-                                            RichText::new(&scorecard.next_action)
-                                                .color(readiness_text_color(&scorecard.readiness))
-                                                .size(20.0)
-                                                .strong(),
-                                        );
-                                        ui.add_space(8.0);
-                                        ui.horizontal_wrapped(|ui| {
-                                            for signal in &scorecard.signals {
-                                                egui::Frame::new()
-                                                    .fill(signal_badge_fill(&signal.state))
-                                                    .stroke(egui::Stroke::new(
-                                                        1.0,
-                                                        signal_color(&signal.state),
-                                                    ))
-                                                    .corner_radius(egui::CornerRadius::same(4))
-                                                    .inner_margin(egui::Margin::symmetric(7, 3))
-                                                    .show(ui, |ui| {
-                                                        ui.label(
-                                                            RichText::new(&signal.label)
-                                                                .color(signal_color(&signal.state))
-                                                                .strong()
-                                                                .size(12.0),
-                                                        );
-                                                    });
-                                            }
-                                        });
-                                        ui.add_space(8.0);
-                                        ui.label(
-                                            RichText::new(&scorecard.summary)
-                                                .color(readiness_text_color(&scorecard.readiness))
-                                                .size(13.0)
-                                                .italics(),
-                                        );
-                                        if let Some(check) = scorecard
-                                            .checks
-                                            .iter()
-                                            .find(|check| {
-                                                check.result == "miss" && check.level == "core"
-                                            })
-                                            .or_else(|| {
-                                                scorecard
-                                                    .checks
-                                                    .iter()
-                                                    .find(|check| check.result == "miss")
-                                            })
-                                            .or_else(|| {
-                                                scorecard
-                                                    .checks
-                                                    .iter()
-                                                    .find(|check| check.result == "pending")
-                                            })
-                                        {
-                                            ui.add_space(4.0);
-                                            ui.label(
-                                                RichText::new(format!("Фокус: {}", check.reason))
-                                                    .color(readiness_text_color(
-                                                        &scorecard.readiness,
-                                                    ))
-                                                    .strong()
-                                                    .size(13.0),
-                                            );
-                                        }
-                                        ui.add_space(8.0);
-                                        ui.separator();
-                                        ui.add_space(5.0);
-                                    }
-                                    ui.label(
-                                        RichText::new(format!("Цель стадии: {}", agenda.agenda))
-                                            .color(egui::Color32::from_rgb(54, 61, 68))
-                                            .size(12.5),
-                                    );
+                egui::Frame::new()
+                    .fill(readiness_accent)
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal_wrapped(|ui| {
+                            if let Some(scorecard) = &agenda.scorecard {
+                                let counter = if scorecard.total_count > 0 {
+                                    format!(
+                                        "{} · {} · {}/{}",
+                                        agenda.stage,
+                                        scorecard.readiness_label,
+                                        scorecard.hit_count,
+                                        scorecard.total_count
+                                    )
                                 } else {
-                                    egui::Frame::new()
-                                        .fill(readiness_color("pending"))
-                                        .corner_radius(egui::CornerRadius::same(5))
-                                        .inner_margin(egui::Margin::symmetric(8, 4))
-                                        .show(ui, |ui| {
-                                            ui.set_width(ui.available_width());
-                                            ui.label(
-                                                RichText::new("Определяю стадию")
-                                                    .color(egui::Color32::WHITE)
-                                                    .size(13.0)
-                                                    .strong(),
-                                            );
-                                        });
-                                    ui.add_space(10.0);
+                                    format!("{} · {}", agenda.stage, scorecard.readiness_label)
+                                };
+                                ui.label(
+                                    RichText::new(counter)
+                                        .color(egui::Color32::WHITE)
+                                        .size(13.0)
+                                        .strong(),
+                                );
+                            } else if let Some((_, label)) = readiness {
+                                ui.label(
+                                    RichText::new(format!("{} · {}", agenda.stage, label))
+                                        .color(egui::Color32::WHITE)
+                                        .size(13.0)
+                                        .strong(),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new(&agenda.stage)
+                                        .color(egui::Color32::WHITE)
+                                        .size(13.0)
+                                        .strong(),
+                                );
+                            }
+
+                            ui.label(
+                                RichText::new(&agenda.title)
+                                    .color(egui::Color32::WHITE)
+                                    .size(12.0),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
                                     ui.label(
-                                        RichText::new("СОВЕТ")
-                                            .color(readiness_color("pending"))
-                                            .strong()
-                                            .size(12.0),
+                                        RichText::new(&agenda.model)
+                                            .color(egui::Color32::WHITE)
+                                            .italics()
+                                            .size(11.0),
                                     );
-                                    ui.label(
-                                        RichText::new("Говорите — я слушаю и собираю контекст.")
-                                            .color(readiness_text_color("pending"))
-                                            .size(20.0)
-                                            .strong(),
-                                    );
-                                    ui.add_space(10.0);
-                                    ui.label(
-                                        RichText::new(&self.stage_status)
-                                            .color(readiness_text_color("pending"))
-                                            .size(12.5),
-                                    );
-                                }
-                            });
-                            ui.add_space(10.0);
+                                },
+                            );
                         });
                     });
-            },
-        );
+
+                ui.add_space(10.0);
+                if let Some(scorecard) = &agenda.scorecard {
+                    ui.label(
+                        RichText::new("СОВЕТ")
+                            .color(readiness_accent)
+                            .strong()
+                            .size(12.0),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&scorecard.next_action)
+                                .color(readiness_text_color(&scorecard.readiness))
+                                .size(21.0)
+                                .strong(),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(8.0);
+                    Self::show_score_signal_badges(ui, &scorecard.signals);
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(&scorecard.summary)
+                            .color(readiness_text_color(&scorecard.readiness))
+                            .size(13.0)
+                            .italics(),
+                    );
+                    if let Some(check) = scorecard
+                        .checks
+                        .iter()
+                        .find(|check| check.result == "miss" && check.level == "core")
+                        .or_else(|| scorecard.checks.iter().find(|check| check.result == "miss"))
+                        .or_else(|| {
+                            scorecard
+                                .checks
+                                .iter()
+                                .find(|check| check.result == "pending")
+                        })
+                    {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(format!("Фокус: {}", check.reason))
+                                .color(readiness_text_color(&scorecard.readiness))
+                                .strong()
+                                .size(13.0),
+                        );
+                    }
+                } else {
+                    ui.label(
+                        RichText::new("Сказать сейчас")
+                            .color(readiness_accent)
+                            .strong()
+                            .size(12.0),
+                    );
+                    ui.add(egui::Label::new(RichText::new(&agenda.emotion).size(18.0)).wrap());
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("Следующий ход")
+                            .color(readiness_accent)
+                            .strong()
+                            .size(12.0),
+                    );
+                    ui.add(egui::Label::new(RichText::new(&agenda.step).size(18.0)).wrap());
+                }
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!("Цель стадии: {}", agenda.agenda))
+                        .color(egui::Color32::from_rgb(178, 190, 203))
+                        .size(12.5),
+                );
+            } else {
+                egui::Frame::new()
+                    .fill(readiness_color("pending"))
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            RichText::new("Определяю стадию")
+                                .color(egui::Color32::WHITE)
+                                .size(13.0)
+                                .strong(),
+                        );
+                    });
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new("СОВЕТ")
+                        .color(readiness_color("pending"))
+                        .strong()
+                        .size(12.0),
+                );
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("Говорите, я слушаю и собираю контекст.")
+                            .color(readiness_text_color("pending"))
+                            .size(21.0)
+                            .strong(),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(&self.stage_status)
+                        .color(readiness_text_color("pending"))
+                        .size(12.5),
+                );
+            }
+        });
+    }
+
+    fn show_score_signal_badges(ui: &mut egui::Ui, signals: &[coach::CoachStageScoreSignal]) {
+        egui::Grid::new("stage_signal_badges")
+            .num_columns(3)
+            .spacing([8.0, 8.0])
+            .show(ui, |ui| {
+                for (index, signal) in signals.iter().enumerate() {
+                    egui::Frame::new()
+                        .fill(signal_badge_fill(&signal.state))
+                        .stroke(egui::Stroke::new(1.0, signal_color(&signal.state)))
+                        .corner_radius(egui::CornerRadius::same(9))
+                        .inner_margin(egui::Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.set_min_width(88.0);
+                            ui.label(
+                                RichText::new(&signal.label)
+                                    .color(signal_color(&signal.state))
+                                    .strong()
+                                    .size(12.0),
+                            );
+                        });
+
+                    if (index + 1) % 3 == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
     }
 
     fn show_transcript_column(&mut self, ui: &mut egui::Ui) {
@@ -1572,72 +1503,12 @@ impl RecApp {
             });
     }
 
-    fn show_recording_controls(&mut self, ui: &mut egui::Ui) {
-        let pause_label = if self.connecting {
-            "Отменить"
-        } else if self.recording {
-            "Остановить"
-        } else {
-            "Продолжить"
-        };
-
-        ui.horizontal_wrapped(|ui| {
-            if ui.button(pause_label).clicked() {
-                if self.connecting || self.recording {
-                    self.pause_recording();
-                } else {
-                    self.continue_recording();
-                }
-            }
-
-            if ui.button("Сохранить").clicked() {
-                if let Err(err) = self.save_current_run() {
-                    self.status = format!("Save failed: {}", err);
-                }
-            }
-
-            if ui.button("Сохранить и выйти").clicked() {
-                self.save_and_exit();
-            }
-
-            let help_busy = self.help_is_busy();
-            let help_label = if help_busy {
-                "готовлю..."
-            } else {
-                "Помоги"
-            };
-            if ui
-                .add_enabled(!help_busy, egui::Button::new(help_label))
-                .clicked()
-            {
-                self.send_help_request();
-            }
-
-            if ui.button("Скрыть").clicked() {
-                self.close_transcript_window();
-            }
-        });
-
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if self.connecting {
-                ui.add(egui::Spinner::new());
-            }
-
-            ui.label(if self.connecting {
-                self.status.as_str()
-            } else if self.recording {
-                "listening..."
-            } else {
-                "paused"
-            });
-        });
-    }
-
     fn show_coach_column(&mut self, ui: &mut egui::Ui) {
-        self.show_recording_controls(ui);
-        ui.add_space(6.0);
-        ui.label(RichText::new(&self.coach_status).size(13.0));
+        ui.label(
+            RichText::new(self.coach_state_label())
+                .size(13.0)
+                .color(egui::Color32::from_rgb(168, 180, 192)),
+        );
         ui.separator();
 
         let composer_height = 106.0;
@@ -1649,16 +1520,30 @@ impl RecApp {
             .auto_shrink([false, false])
             .max_height(scroll_height)
             .show(ui, |ui| {
-                if !self.coach_bubbles.is_empty() || self.coach_live.is_some() {
+                let has_live_suggestions = self
+                    .coach_bubbles
+                    .iter()
+                    .any(|text| !is_technical_coach_status(text))
+                    || self
+                        .coach_live
+                        .as_ref()
+                        .is_some_and(|text| !is_technical_coach_status(text));
+
+                if has_live_suggestions {
                     ui.label(RichText::new("Live-подсказки").strong());
                     ui.add_space(4.0);
 
                     for text in &self.coach_bubbles {
+                        if is_technical_coach_status(text) {
+                            continue;
+                        }
                         ui::draw_coach_bubble(ui, text, false);
                     }
 
                     if let Some(partial) = &self.coach_live {
-                        ui::draw_coach_bubble(ui, partial, true);
+                        if !is_technical_coach_status(partial) {
+                            ui::draw_coach_bubble(ui, partial, true);
+                        }
                     }
 
                     ui.separator();
@@ -1754,47 +1639,61 @@ impl RecApp {
 
 fn readiness_color(readiness: &str) -> egui::Color32 {
     match readiness {
-        "green" => egui::Color32::from_rgb(30, 160, 85),
-        "yellow" => egui::Color32::from_rgb(214, 157, 35),
-        "red" => egui::Color32::from_rgb(210, 70, 64),
-        _ => egui::Color32::from_rgb(210, 88, 42),
+        "green" => egui::Color32::from_rgb(31, 202, 111),
+        "yellow" => egui::Color32::from_rgb(245, 184, 50),
+        "red" => egui::Color32::from_rgb(238, 72, 86),
+        _ => egui::Color32::from_rgb(237, 112, 55),
     }
 }
 
 fn readiness_panel_fill(readiness: &str) -> egui::Color32 {
     match readiness {
-        "green" => egui::Color32::from_rgb(218, 252, 226),
-        "yellow" => egui::Color32::from_rgb(255, 244, 205),
-        "red" => egui::Color32::from_rgb(255, 224, 224),
-        _ => egui::Color32::from_rgb(255, 232, 218),
+        "green" => egui::Color32::from_rgba_unmultiplied(30, 190, 102, 54),
+        "yellow" => egui::Color32::from_rgba_unmultiplied(245, 184, 50, 58),
+        "red" => egui::Color32::from_rgba_unmultiplied(238, 72, 86, 64),
+        _ => egui::Color32::from_rgba_unmultiplied(237, 112, 55, 54),
+    }
+}
+
+fn readiness_stroke_color(readiness: &str) -> egui::Color32 {
+    match readiness {
+        "green" => egui::Color32::from_rgba_unmultiplied(94, 245, 163, 150),
+        "yellow" => egui::Color32::from_rgba_unmultiplied(255, 217, 104, 155),
+        "red" => egui::Color32::from_rgba_unmultiplied(255, 117, 128, 165),
+        _ => egui::Color32::from_rgba_unmultiplied(255, 151, 91, 150),
     }
 }
 
 fn readiness_text_color(readiness: &str) -> egui::Color32 {
     match readiness {
-        "green" => egui::Color32::from_rgb(15, 96, 52),
-        "yellow" => egui::Color32::from_rgb(126, 82, 12),
-        "red" => egui::Color32::from_rgb(142, 35, 32),
-        _ => egui::Color32::from_rgb(134, 52, 20),
+        "green" => egui::Color32::from_rgb(202, 255, 224),
+        "yellow" => egui::Color32::from_rgb(255, 237, 173),
+        "red" => egui::Color32::from_rgb(255, 213, 217),
+        _ => egui::Color32::from_rgb(255, 219, 195),
     }
 }
 
 fn signal_color(state: &str) -> egui::Color32 {
     match state {
-        "green" => egui::Color32::from_rgb(30, 160, 85),
-        "yellow" => egui::Color32::from_rgb(214, 157, 35),
-        "red" => egui::Color32::from_rgb(210, 70, 64),
-        _ => egui::Color32::from_rgb(142, 147, 153),
+        "green" => egui::Color32::from_rgb(101, 244, 164),
+        "yellow" => egui::Color32::from_rgb(255, 217, 104),
+        "red" => egui::Color32::from_rgb(255, 132, 142),
+        _ => egui::Color32::from_rgb(184, 195, 207),
     }
 }
 
 fn signal_badge_fill(state: &str) -> egui::Color32 {
     match state {
-        "green" => egui::Color32::from_rgb(232, 255, 238),
-        "yellow" => egui::Color32::from_rgb(255, 248, 222),
-        "red" => egui::Color32::from_rgb(255, 235, 235),
-        _ => egui::Color32::from_rgb(244, 246, 248),
+        "green" => egui::Color32::from_rgba_unmultiplied(30, 190, 102, 42),
+        "yellow" => egui::Color32::from_rgba_unmultiplied(245, 184, 50, 42),
+        "red" => egui::Color32::from_rgba_unmultiplied(238, 72, 86, 46),
+        _ => egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
     }
+}
+
+fn is_technical_coach_status(text: &str) -> bool {
+    let text = text.trim_start();
+    text.starts_with("Coach ready\nservice:") || text.starts_with("Coach connecting")
 }
 
 impl eframe::App for RecApp {
@@ -1827,14 +1726,6 @@ impl eframe::App for RecApp {
         }
         self.maybe_send_stage_request();
         self.show_main_window(ctx);
-
-        if self.current_run.is_some() {
-            self.show_stage_agenda_panel(ctx);
-        }
-
-        if self.transcript_open {
-            self.show_sidecar_panels(ctx);
-        }
 
         if self.viewer_open {
             self.show_history_viewer(ctx);
