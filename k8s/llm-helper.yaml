@@ -63,10 +63,11 @@ metadata:
     app.kubernetes.io/name: llm-helper
     app.kubernetes.io/part-of: rec-sidecar
 spec:
-  type: LoadBalancer
+  type: NodePort
   selector:
     app.kubernetes.io/name: llm-helper
   ports:
     - name: http
       port: 80
       targetPort: http
+      nodePort: 30914
