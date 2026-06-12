@@ -328,6 +328,55 @@ async def test_stage_agenda_falls_back_to_current_stage_without_502():
 
 
 @pytest.mark.anyio
+async def test_stage_agenda_returns_pending_scorecard_on_vertex_timeout():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        schema_properties = payload["generationConfig"]["responseSchema"]["properties"]
+        if "checks" in schema_properties:
+            raise httpx.ReadTimeout("scorecard timeout", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": '{"stage":"S2.2","confidence":0.9}'}
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(vertex_project="project-id", vertex_access_token="token"),
+            client,
+        )
+
+        response = await orchestrator.stage_agenda(
+            StageRequest(run_id="run", context="dialogue", current_stage=None)
+        )
+
+        assert response.stage == "S2.2"
+        assert response.provider == "vertex"
+        assert response.scorecard is not None
+        assert response.scorecard.readiness == "pending"
+        assert response.scorecard.hit_count == 0
+        assert response.scorecard.miss_count == 0
+        assert response.scorecard.ready_to_advance is False
+        assert "ReadTimeout" in response.scorecard.summary
+        assert len(calls) == 2
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_help_opener_selects_primary_model():
     calls = []
 

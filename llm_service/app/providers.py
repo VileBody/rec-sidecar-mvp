@@ -339,11 +339,14 @@ class VertexClient:
                 "responseSchema": vertex_coach_response_schema(),
             },
         }
-        response = await self.client.post(
-            self._method_url("generateContent"),
-            headers=await self._headers(),
-            json=body,
-        )
+        try:
+            response = await self.client.post(
+                self._method_url("generateContent"),
+                headers=await self._headers(),
+                json=body,
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderError("vertex", f"{exc.__class__.__name__}: {exc}") from exc
         if not response.is_success:
             raise ProviderError("vertex", response.text, response.status_code)
         text = vertex_response_text(response.json())
@@ -372,11 +375,14 @@ class VertexClient:
             "contents": [{"role": "user", "parts": [{"text": user_content}]}],
             "generationConfig": generation_config,
         }
-        response = await self.client.post(
-            self._method_url_for_model("generateContent", model),
-            headers=await self._headers(),
-            json=body,
-        )
+        try:
+            response = await self.client.post(
+                self._method_url_for_model("generateContent", model),
+                headers=await self._headers(),
+                json=body,
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderError("vertex", f"{exc.__class__.__name__}: {exc}") from exc
         if not response.is_success:
             raise ProviderError("vertex", response.text, response.status_code)
         text = vertex_response_text(response.json())
@@ -401,11 +407,14 @@ class VertexClient:
                 "responseSchema": vertex_scorecard_response_schema(),
             },
         }
-        response = await self.client.post(
-            self._method_url_for_model("generateContent", model),
-            headers=await self._headers(),
-            json=body,
-        )
+        try:
+            response = await self.client.post(
+                self._method_url_for_model("generateContent", model),
+                headers=await self._headers(),
+                json=body,
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderError("vertex", f"{exc.__class__.__name__}: {exc}") from exc
         if not response.is_success:
             raise ProviderError("vertex", response.text, response.status_code)
         text = vertex_response_text(response.json())
