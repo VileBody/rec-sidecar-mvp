@@ -34,6 +34,14 @@ spec:
           envFrom:
             - secretRef:
                 name: llm-helper-env
+          env:
+            - name: VERTEX_ADC_CREDENTIALS
+              value: /root/.config/gcloud/application_default_credentials.json
+          volumeMounts:
+            - name: gcloud-adc
+              mountPath: /root/.config/gcloud/application_default_credentials.json
+              subPath: application_default_credentials.json
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz
@@ -53,6 +61,10 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+      volumes:
+        - name: gcloud-adc
+          secret:
+            secretName: gcloud-adc
 ---
 apiVersion: v1
 kind: Service
