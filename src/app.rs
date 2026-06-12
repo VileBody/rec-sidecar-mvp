@@ -61,6 +61,12 @@ impl AsrLanguageSelection {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WindowMode {
+    Compact,
+    Expanded,
+}
+
 pub struct RecApp {
     paths: AppPaths,
     recording: bool,
@@ -94,6 +100,8 @@ pub struct RecApp {
     viewer_text: String,
     status: String,
     auto_start_pending: bool,
+    expanded_workspace: bool,
+    applied_window_mode: Option<WindowMode>,
 }
 
 impl Default for RecApp {
@@ -141,6 +149,8 @@ impl RecApp {
             viewer_text: String::new(),
             status: "Ready".to_string(),
             auto_start_pending: env_flag("REC_AUTO_START"),
+            expanded_workspace: !env_flag("REC_AUTO_START"),
+            applied_window_mode: None,
         };
 
         app.refresh_history();
@@ -166,6 +176,8 @@ impl RecApp {
         self.stage_status = "Stage detecting...".to_string();
         self.force_stage_detect = true;
         self.current_run = Some(RunSession::new());
+        self.expanded_workspace = false;
+        self.applied_window_mode = None;
         self.focus_live_workspace();
         self.spawn_coach();
         self.spawn_worker();
@@ -180,6 +192,8 @@ impl RecApp {
         }
 
         self.focus_live_workspace();
+        self.expanded_workspace = false;
+        self.applied_window_mode = None;
         if self.coach_tx.is_none() {
             self.spawn_coach();
         }
@@ -230,6 +244,8 @@ impl RecApp {
                 self.stage_agenda = None;
                 self.stage_status = "Stage idle".to_string();
                 self.force_stage_detect = true;
+                self.expanded_workspace = true;
+                self.applied_window_mode = None;
                 self.rx = None;
                 self.status = format!("Saved and closed {}", path.display());
             }
@@ -922,6 +938,21 @@ impl RecApp {
 
     fn show_main_window(&mut self, ctx: &egui::Context) {
         ui::apply_liquid_glass_style(ctx);
+        let window_mode = if self.current_run.is_some() && !self.expanded_workspace {
+            WindowMode::Compact
+        } else {
+            WindowMode::Expanded
+        };
+        self.apply_window_mode(ctx, window_mode);
+
+        if window_mode == WindowMode::Compact {
+            egui::CentralPanel::default()
+                .frame(ui::transparent_frame())
+                .show(ctx, |ui| {
+                    self.show_compact_overlay(ctx, ui);
+                });
+            return;
+        }
 
         egui::TopBottomPanel::top("top_bar")
             .frame(ui::toolbar_frame())
@@ -970,11 +1001,212 @@ impl RecApp {
         }
     }
 
+    fn apply_window_mode(&mut self, ctx: &egui::Context, mode: WindowMode) {
+        if self.applied_window_mode == Some(mode) {
+            return;
+        }
+
+        let monitor = ctx.input(|input| {
+            input
+                .viewport()
+                .monitor_size
+                .unwrap_or_else(|| egui::vec2(1440.0, 900.0))
+        });
+        let (size, min_size, position, window_level) = match mode {
+            WindowMode::Compact => {
+                let size = egui::vec2(980.0_f32.min(monitor.x - 40.0).max(760.0), 238.0);
+                let position = egui::pos2(((monitor.x - size.x) / 2.0).max(18.0), 64.0);
+                (
+                    size,
+                    egui::vec2(720.0, 190.0),
+                    position,
+                    egui::WindowLevel::AlwaysOnTop,
+                )
+            }
+            WindowMode::Expanded => (
+                egui::vec2(1320.0_f32.min(monitor.x - 80.0).max(960.0), 820.0),
+                egui::vec2(960.0, 620.0),
+                egui::pos2(((monitor.x - 1320.0) / 2.0).max(48.0), 82.0),
+                egui::WindowLevel::Normal,
+            ),
+        };
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::Transparent(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(window_level));
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min_size));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position));
+        self.applied_window_mode = Some(mode);
+    }
+
+    fn show_compact_overlay(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui::compact_overlay_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let drag = ui.add(
+                    egui::Label::new(RichText::new("REC Sidecar").size(15.0).strong())
+                        .sense(egui::Sense::click_and_drag()),
+                );
+                if drag.drag_started() || drag.dragged() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                ui.label(
+                    RichText::new(self.app_state_label())
+                        .size(12.0)
+                        .color(self.app_state_color()),
+                );
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Развернуть").clicked() {
+                        self.expanded_workspace = true;
+                        self.applied_window_mode = None;
+                    }
+                    if ui.button("Помоги").clicked() {
+                        self.send_help_request();
+                    }
+                    let pause_label = if self.connecting || self.recording {
+                        "Стоп"
+                    } else {
+                        "Продолжить"
+                    };
+                    if ui.button(pause_label).clicked() {
+                        if self.connecting || self.recording {
+                            self.pause_recording();
+                        } else {
+                            self.continue_recording();
+                        }
+                    }
+                });
+            });
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(164.0);
+                    ui.label(
+                        RichText::new(self.transcript_state_label())
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(168, 180, 192)),
+                    );
+                    let last_line = self
+                        .live_partial
+                        .as_deref()
+                        .or_else(|| self.bubbles.last().map(String::as_str))
+                        .unwrap_or("Жду речь...");
+                    ui.add(egui::Label::new(RichText::new(last_line).size(13.0)).wrap());
+                });
+
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width((ui.available_width() - 188.0).max(360.0));
+                    self.show_compact_stage_summary(ui);
+                });
+
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width(164.0);
+                    ui.label(
+                        RichText::new(self.coach_state_label())
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(168, 180, 192)),
+                    );
+                    let help_busy = self.help_is_busy();
+                    let helper_text = if help_busy {
+                        "готовлю подсказку..."
+                    } else {
+                        "готов к подсказке"
+                    };
+                    ui.label(RichText::new(helper_text).size(13.0));
+                    if ui.button("Сохранить").clicked() {
+                        if let Err(err) = self.save_current_run() {
+                            self.status = format!("Save failed: {}", err);
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    fn show_compact_stage_summary(&mut self, ui: &mut egui::Ui) {
+        let readiness_key = self
+            .stage_agenda
+            .as_ref()
+            .and_then(|agenda| agenda.scorecard.as_ref())
+            .map(|scorecard| scorecard.readiness.as_str())
+            .unwrap_or("pending");
+
+        ui::tinted_glass_frame(
+            readiness_panel_fill(readiness_key),
+            readiness_stroke_color(readiness_key),
+        )
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if let Some(agenda) = &self.stage_agenda {
+                let label = agenda
+                    .scorecard
+                    .as_ref()
+                    .map(|scorecard| {
+                        format!(
+                            "{} · {} · {}/{}",
+                            agenda.stage,
+                            scorecard.readiness_label,
+                            scorecard.hit_count,
+                            scorecard.total_count
+                        )
+                    })
+                    .unwrap_or_else(|| format!("{} · {}", agenda.stage, agenda.title));
+                ui.label(
+                    RichText::new(label)
+                        .size(12.0)
+                        .strong()
+                        .color(readiness_color(readiness_key)),
+                );
+                let advice = agenda
+                    .scorecard
+                    .as_ref()
+                    .map(|scorecard| scorecard.next_action.as_str())
+                    .unwrap_or(agenda.step.as_str());
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(advice)
+                            .size(17.0)
+                            .strong()
+                            .color(readiness_text_color(readiness_key)),
+                    )
+                    .wrap(),
+                );
+            } else {
+                ui.label(
+                    RichText::new("Определяю стадию")
+                        .size(12.0)
+                        .strong()
+                        .color(readiness_color("pending")),
+                );
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("Говорите, я слушаю и собираю контекст.")
+                            .size(17.0)
+                            .strong()
+                            .color(readiness_text_color("pending")),
+                    )
+                    .wrap(),
+                );
+            }
+        });
+    }
+
     fn show_top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("REC Sidecar").size(18.0).strong());
             ui.add_space(10.0);
             self.show_primary_controls(ui);
+            if self.current_run.is_some() && ui.button("Компактно").clicked() {
+                self.expanded_workspace = false;
+                self.applied_window_mode = None;
+            }
             ui.add_space(8.0);
             self.show_asr_language_selector(ui);
 
@@ -1697,6 +1929,10 @@ fn is_technical_coach_status(text: &str) -> bool {
 }
 
 impl eframe::App for RecApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_asr();
         self.drain_coach();

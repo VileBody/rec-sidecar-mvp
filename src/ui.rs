@@ -4,7 +4,7 @@ use eframe::egui::{self, RichText};
 pub(crate) fn apply_liquid_glass_style(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     visuals.override_text_color = Some(egui::Color32::from_rgb(235, 242, 248));
-    visuals.panel_fill = egui::Color32::from_rgb(13, 18, 28);
+    visuals.panel_fill = egui::Color32::TRANSPARENT;
     visuals.window_fill = egui::Color32::from_rgb(22, 29, 42);
     visuals.window_corner_radius = egui::CornerRadius::same(16);
     visuals.faint_bg_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18);
@@ -48,12 +48,16 @@ pub(crate) fn apply_liquid_glass_style(ctx: &egui::Context) {
 }
 
 pub(crate) fn app_background_frame() -> egui::Frame {
-    egui::Frame::new().fill(egui::Color32::from_rgb(9, 14, 23))
+    transparent_frame()
+}
+
+pub(crate) fn transparent_frame() -> egui::Frame {
+    egui::Frame::new().fill(egui::Color32::TRANSPARENT)
 }
 
 pub(crate) fn toolbar_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(egui::Color32::from_rgba_unmultiplied(18, 25, 38, 238))
+        .fill(egui::Color32::from_rgba_unmultiplied(18, 25, 38, 178))
         .stroke(egui::Stroke::new(
             1.0,
             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
@@ -63,9 +67,18 @@ pub(crate) fn toolbar_frame() -> egui::Frame {
 
 pub(crate) fn glass_panel_frame() -> egui::Frame {
     tinted_glass_frame(
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 22),
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 62),
+        egui::Color32::from_rgba_unmultiplied(42, 50, 64, 138),
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 76),
     )
+}
+
+pub(crate) fn compact_overlay_frame() -> egui::Frame {
+    tinted_glass_frame(
+        egui::Color32::from_rgba_unmultiplied(18, 24, 34, 168),
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 92),
+    )
+    .inner_margin(egui::Margin::symmetric(12, 10))
+    .outer_margin(egui::Margin::same(6))
 }
 
 pub(crate) fn tinted_glass_frame(fill: egui::Color32, stroke: egui::Color32) -> egui::Frame {
