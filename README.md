@@ -65,7 +65,7 @@ Auto live suggestions are disabled by default in code (`COACH_AUTO_SUGGESTIONS=f
 - The Inworld sender emits `end_turn`, so the latest speech can settle.
 - After `COACH_HELP_CONTEXT_DELAY_MS=300`, the UI freezes a compact help context and sends it to the coach.
 - The coach shows staged Help status: context freeze, read-aloud phrase, constructive next step, done, fallback, or error.
-- Fast opener calls the FastAPI sidecar, which races streaming Cerebras `zai-glm-4.7`, Cerebras `gpt-oss-120b`, and Vertex `gemini-3.5-flash` with `VERTEX_THINKING_LEVEL=low`; the first model to emit a token is shown. Slow constructive help streams from Vertex Gemini through the same sidecar and is capped in the Rust client by `COACH_HELP_CONSTRUCTIVE_TIMEOUT_MS=20000`.
+- Fast opener calls the FastAPI sidecar, which starts streaming Vertex `gemini-3.5-flash` (`VERTEX_THINKING_LEVEL=low`), Cerebras `zai-glm-4.7`, and Cerebras `gpt-oss-120b` in parallel. For up to `COACH_HELP_OPENER_TIMEOUT_MS=4000`, selection prefers Gemini, then ZAI, then OSS; after the window, the best ready lower-priority stream is used. Slow constructive help streams from Vertex Gemini through the same sidecar and is capped in the Rust client by `COACH_HELP_CONSTRUCTIVE_TIMEOUT_MS=20000`.
 - Help output is shaped as `Сказать сейчас` first, then a streaming `Следующий ход` from Vertex when constructive help is available.
 
 Coach logs go to `logs/rec-sidecar.coach.log`. Cerebras `prompt_cache_key` is an optimization inside the sidecar only; if a provider rejects it, the service retries without the key.

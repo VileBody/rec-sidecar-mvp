@@ -28,7 +28,7 @@ def make_settings(**overrides):
         "outbound_proxy": None,
         "timeout_secs": 30.0,
         "rate_limit_backoff_ms": 15_000,
-        "help_opener_timeout_ms": 3_000,
+        "help_opener_timeout_ms": 4_000,
         "cerebras_api_key": "test-key",
         "cerebras_api_base": "https://cerebras.test/v1",
         "cerebras_model": "zai-glm-4.7",
@@ -124,12 +124,12 @@ async def test_help_opener_selects_primary_model():
 
 
 @pytest.mark.anyio
-async def test_help_opener_stream_uses_first_delta_winner():
-    async def slow_stream() -> AsyncIterator[str]:
+async def test_help_opener_stream_waits_for_higher_priority_delta():
+    async def high_priority_stream() -> AsyncIterator[str]:
         await asyncio.sleep(0.05)
-        yield "slow answer"
+        yield "priority answer"
 
-    async def fast_stream() -> AsyncIterator[str]:
+    async def low_priority_stream() -> AsyncIterator[str]:
         yield "fast"
         yield " answer"
 
@@ -138,16 +138,18 @@ async def test_help_opener_stream_uses_first_delta_winner():
         orchestrator = LlmOrchestrator(make_settings(cerebras_api_key=None), client)
         orchestrator._opener_candidates = lambda _: [
             OpenerCandidate(
-                slot="slow",
-                provider="cerebras",
-                model="slow-model",
-                stream=slow_stream(),
+                slot="gemini",
+                priority=0,
+                provider="vertex",
+                model="gemini-3.5-flash",
+                stream=high_priority_stream(),
             ),
             OpenerCandidate(
-                slot="fast",
+                slot="oss",
+                priority=2,
                 provider="cerebras",
-                model="fast-model",
-                stream=fast_stream(),
+                model="gpt-oss-120b",
+                stream=low_priority_stream(),
             ),
         ]
 
@@ -159,9 +161,55 @@ async def test_help_opener_stream_uses_first_delta_winner():
         ]
 
         assert frames == [
-            {"event": "model", "model": "fast-model", "provider": "cerebras"},
-            {"event": "delta", "text": "fast"},
-            {"event": "delta", "text": " answer"},
+            {"event": "model", "model": "gemini-3.5-flash", "provider": "vertex"},
+            {"event": "delta", "text": "priority answer"},
+            {"event": "done"},
+        ]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_help_opener_stream_uses_lower_priority_after_timeout():
+    async def high_priority_stream() -> AsyncIterator[str]:
+        await asyncio.sleep(0.05)
+        yield "too late"
+
+    async def low_priority_stream() -> AsyncIterator[str]:
+        yield "fallback winner"
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(cerebras_api_key=None, help_opener_timeout_ms=5), client
+        )
+        orchestrator._opener_candidates = lambda _: [
+            OpenerCandidate(
+                slot="gemini",
+                priority=0,
+                provider="vertex",
+                model="gemini-3.5-flash",
+                stream=high_priority_stream(),
+            ),
+            OpenerCandidate(
+                slot="oss",
+                priority=2,
+                provider="cerebras",
+                model="gpt-oss-120b",
+                stream=low_priority_stream(),
+            ),
+        ]
+
+        frames = [
+            json.loads(frame.decode("utf-8").removeprefix("data:").strip())
+            async for frame in orchestrator.help_opener_stream(
+                HelpRequest(id=1, run_id="run", context="context")
+            )
+        ]
+
+        assert frames == [
+            {"event": "model", "model": "gpt-oss-120b", "provider": "cerebras"},
+            {"event": "delta", "text": "fallback winner"},
             {"event": "done"},
         ]
     finally:

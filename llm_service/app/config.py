@@ -12,7 +12,7 @@ DEFAULT_HELP_OPENER_SECONDARY_MODEL = "gpt-oss-120b"
 DEFAULT_VERTEX_MODEL = "gemini-3.5-flash"
 DEFAULT_TIMEOUT_SECS = 30.0
 DEFAULT_RATE_LIMIT_BACKOFF_MS = 15_000
-DEFAULT_HELP_OPENER_TIMEOUT_MS = 3_000
+DEFAULT_HELP_OPENER_TIMEOUT_MS = 4_000
 DEFAULT_REASONING_EFFORT = "none"
 DEFAULT_VERTEX_THINKING_LEVEL = "low"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -171,9 +171,9 @@ class Settings:
             return self.cerebras_model
         if self.cerebras_configured and self.vertex_configured:
             return (
-                f"fast race {self.help_opener_primary_model} + "
-                f"{self.help_opener_secondary_model} + {self.vertex_model}"
-                f"({self.vertex_thinking_level or 'default'}) / slow {self.vertex_model}"
+                f"fast priority {self.vertex_model}({self.vertex_thinking_level or 'default'}) "
+                f"-> {self.help_opener_primary_model} -> "
+                f"{self.help_opener_secondary_model} / slow {self.vertex_model}"
             )
         if self.vertex_configured:
             return self.vertex_model

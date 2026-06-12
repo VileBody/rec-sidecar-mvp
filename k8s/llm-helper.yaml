@@ -35,8 +35,12 @@ spec:
             - secretRef:
                 name: llm-helper-env
           env:
+            - name: COACH_HELP_OPENER_TIMEOUT_MS
+              value: "4000"
             - name: VERTEX_ADC_CREDENTIALS
               value: /root/.config/gcloud/application_default_credentials.json
+            - name: VERTEX_THINKING_LEVEL
+              value: low
           volumeMounts:
             - name: gcloud-adc
               mountPath: /root/.config/gcloud/application_default_credentials.json

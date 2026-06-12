@@ -5,7 +5,7 @@ import json
 import time
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Iterable
 
 import httpx
 
@@ -38,6 +38,7 @@ FALLBACK_HELP_OPENER_TEXT = (
 @dataclass
 class OpenerCandidate:
     slot: str
+    priority: int
     provider: str
     model: str | None
     stream: AsyncIterator[str] | None
@@ -189,8 +190,15 @@ class LlmOrchestrator:
         }
         deadline = time.monotonic() + timeout
 
+        first_results: dict[str, OpenerFirstDelta] = {}
+        winner: OpenerFirstDelta | None = None
+
         try:
             while pending:
+                winner = best_ready_opener_result(first_results, pending.values())
+                if winner:
+                    break
+
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -205,33 +213,43 @@ class LlmOrchestrator:
                 for task in done:
                     candidate = pending.pop(task)
                     result = await task
-                    if result.delta:
-                        await self._cancel_opener_candidates(pending)
-                        yield sse_event(
-                            {
-                                "event": "model",
-                                "model": candidate.model,
-                                "provider": candidate.provider,
-                            }
-                        )
-                        first_delta = normalize_opener_delta(result.delta, first=True)
-                        if first_delta:
-                            yield sse_event({"event": "delta", "text": first_delta})
-                        if candidate.stream is not None:
-                            async for delta in candidate.stream:
-                                delta = normalize_opener_delta(delta)
-                                if delta:
-                                    yield sse_event({"event": "delta", "text": delta})
-                        yield sse_event({"event": "done"})
-                        return
-
+                    first_results[candidate.slot] = result
                     if isinstance(result.error, ProviderError) and result.error.is_rate_limit:
                         self._opener_cooldowns[candidate.slot] = (
                             time.monotonic() + self.settings.rate_limit_backoff_ms / 1000.0
                         )
-                    await close_async_iterator(candidate.stream)
+
+            if winner is None:
+                winner = best_ready_opener_result(
+                    first_results, pending.values()
+                ) or best_opener_result(first_results.values())
+
+            if winner and winner.delta:
+                await self._cancel_opener_candidates(pending)
+                await close_opener_results(first_results.values(), keep=winner.candidate)
+                yield sse_event(
+                    {
+                        "event": "model",
+                        "model": winner.candidate.model,
+                        "provider": winner.candidate.provider,
+                    }
+                )
+                first_delta = normalize_opener_delta(winner.delta, first=True)
+                if first_delta:
+                    yield sse_event({"event": "delta", "text": first_delta})
+                if winner.candidate.stream is not None:
+                    async for delta in winner.candidate.stream:
+                        delta = normalize_opener_delta(delta)
+                        if delta:
+                            yield sse_event({"event": "delta", "text": delta})
+                yield sse_event({"event": "done"})
+                return
         finally:
             await self._cancel_opener_candidates(pending)
+            await close_opener_results(
+                first_results.values(),
+                keep=winner.candidate if winner else None,
+            )
 
         async for event in self._fallback_opener_stream():
             yield event
@@ -319,6 +337,23 @@ class LlmOrchestrator:
         use_cerebras = self.settings.provider == "cerebras" or self._auto_provider()
         use_vertex = self._prefer_vertex() or self._auto_provider()
 
+        vertex_model = self._ready_opener_model("vertex", self.settings.vertex_model)
+        if use_vertex and self.vertex.configured() and vertex_model:
+            candidates.append(
+                OpenerCandidate(
+                    slot="vertex",
+                    priority=0,
+                    provider="vertex",
+                    model=vertex_model,
+                    stream=self.vertex.stream_text(
+                        system_prompt=SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
+                        user_content=user_content,
+                        temperature=0.25,
+                        thinking_level=self.settings.vertex_thinking_level,
+                    ),
+                )
+            )
+
         if use_cerebras and self.cerebras.configured():
             for slot, model in (
                 (
@@ -339,6 +374,7 @@ class LlmOrchestrator:
                 candidates.append(
                     OpenerCandidate(
                         slot=slot,
+                        priority=1 if slot == "primary" else 2,
                         provider="cerebras",
                         model=model,
                         stream=self.cerebras.stream_text(
@@ -350,22 +386,6 @@ class LlmOrchestrator:
                         ),
                     )
                 )
-
-        vertex_model = self._ready_opener_model("vertex", self.settings.vertex_model)
-        if use_vertex and self.vertex.configured() and vertex_model:
-            candidates.append(
-                OpenerCandidate(
-                    slot="vertex",
-                    provider="vertex",
-                    model=vertex_model,
-                    stream=self.vertex.stream_text(
-                        system_prompt=SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
-                        user_content=user_content,
-                        temperature=0.25,
-                        thinking_level=self.settings.vertex_thinking_level,
-                    ),
-                )
-            )
 
         return candidates
 
@@ -422,6 +442,35 @@ def normalize_opener_delta(delta: str, first: bool = False) -> str:
     if first:
         return delta.lstrip().lstrip("\"'«»“”")
     return delta
+
+
+def best_ready_opener_result(
+    results: dict[str, OpenerFirstDelta],
+    pending_candidates: Iterable[OpenerCandidate],
+) -> OpenerFirstDelta | None:
+    best = best_opener_result(results.values())
+    if best is None:
+        return None
+    best_priority = best.candidate.priority
+    if any(candidate.priority < best_priority for candidate in pending_candidates):
+        return None
+    return best
+
+
+def best_opener_result(results: Iterable[OpenerFirstDelta]) -> OpenerFirstDelta | None:
+    successes = [result for result in results if result.delta]
+    if not successes:
+        return None
+    return min(successes, key=lambda result: result.candidate.priority)
+
+
+async def close_opener_results(
+    results: Iterable[OpenerFirstDelta], keep: OpenerCandidate | None = None
+) -> None:
+    for result in results:
+        if keep is not None and result.candidate is keep:
+            continue
+        await close_async_iterator(result.candidate.stream)
 
 
 async def close_async_iterator(stream: AsyncIterator[str] | None) -> None:
