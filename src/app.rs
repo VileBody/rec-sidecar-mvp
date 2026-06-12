@@ -1215,8 +1215,8 @@ impl RecApp {
                 .monitor_size
                 .unwrap_or_else(|| egui::vec2(1440.0, 900.0))
         });
-        let width = (monitor.x * 0.46).clamp(680.0, 920.0);
-        let height = 328.0;
+        let width = (monitor.x * 0.42).clamp(620.0, 860.0);
+        let height = 248.0;
         let x = ((monitor.x - width) / 2.0).max(0.0);
         let y = 72.0;
 
@@ -1228,7 +1228,7 @@ impl RecApp {
                 .with_always_on_top()
                 .with_position([x, y])
                 .with_inner_size([width, height])
-                .with_min_inner_size([460.0, 220.0]),
+                .with_min_inner_size([460.0, 180.0]),
             |ctx, class| {
                 if class == egui::ViewportClass::Embedded {
                     return;
@@ -1405,9 +1405,38 @@ impl RecApp {
                                             .size(12.5),
                                     );
                                 } else {
-                                    ui.heading("Stage");
-                                    ui.add_space(8.0);
-                                    ui.label(RichText::new(&self.stage_status).size(18.0).strong());
+                                    egui::Frame::new()
+                                        .fill(readiness_color("pending"))
+                                        .corner_radius(egui::CornerRadius::same(5))
+                                        .inner_margin(egui::Margin::symmetric(8, 4))
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.label(
+                                                RichText::new("Определяю стадию")
+                                                    .color(egui::Color32::WHITE)
+                                                    .size(13.0)
+                                                    .strong(),
+                                            );
+                                        });
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        RichText::new("СОВЕТ")
+                                            .color(readiness_color("pending"))
+                                            .strong()
+                                            .size(12.0),
+                                    );
+                                    ui.label(
+                                        RichText::new("Говорите — я слушаю и собираю контекст.")
+                                            .color(readiness_text_color("pending"))
+                                            .size(20.0)
+                                            .strong(),
+                                    );
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        RichText::new(&self.stage_status)
+                                            .color(readiness_text_color("pending"))
+                                            .size(12.5),
+                                    );
                                 }
                             });
                             ui.add_space(10.0);
