@@ -22,6 +22,8 @@ spec:
         app.kubernetes.io/name: llm-helper
         app.kubernetes.io/part-of: rec-sidecar
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: llm-helper
           image: ghcr.io/vilebody/rec-sidecar-mvp:main
