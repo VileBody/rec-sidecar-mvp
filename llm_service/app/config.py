@@ -10,6 +10,7 @@ DEFAULT_CEREBRAS_MODEL = "zai-glm-4.7"
 DEFAULT_HELP_OPENER_PRIMARY_MODEL = "zai-glm-4.7"
 DEFAULT_HELP_OPENER_SECONDARY_MODEL = "gpt-oss-120b"
 DEFAULT_VERTEX_MODEL = "gemini-3.5-flash"
+DEFAULT_VERTEX_STAGE_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_TIMEOUT_SECS = 30.0
 DEFAULT_RATE_LIMIT_BACKOFF_MS = 15_000
 DEFAULT_HELP_OPENER_TIMEOUT_MS = 4_000
@@ -73,6 +74,7 @@ class Settings:
     vertex_project: str | None
     vertex_location: str
     vertex_model: str
+    vertex_stage_model: str
     vertex_api_base: str
     vertex_access_token: str | None
     vertex_adc_credentials_path: str | None
@@ -127,6 +129,9 @@ class Settings:
             vertex_model=env_var("VERTEX_GEMINI_MODEL")
             or env_var("GEMINI_VERTEX_MODEL")
             or DEFAULT_VERTEX_MODEL,
+            vertex_stage_model=env_var("VERTEX_STAGE_MODEL")
+            or env_var("GEMINI_VERTEX_STAGE_MODEL")
+            or DEFAULT_VERTEX_STAGE_MODEL,
             vertex_api_base=vertex_api_base,
             vertex_access_token=env_var("VERTEX_ACCESS_TOKEN")
             or env_var("GOOGLE_OAUTH_ACCESS_TOKEN"),
@@ -173,7 +178,8 @@ class Settings:
             return (
                 f"fast priority {self.vertex_model}({self.vertex_thinking_level or 'default'}) "
                 f"-> {self.help_opener_primary_model} -> "
-                f"{self.help_opener_secondary_model} / slow {self.vertex_model}"
+                f"{self.help_opener_secondary_model} / slow {self.vertex_model} / "
+                f"stage {self.vertex_stage_model}"
             )
         if self.vertex_configured:
             return self.vertex_model

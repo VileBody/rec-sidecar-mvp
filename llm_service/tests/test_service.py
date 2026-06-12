@@ -54,6 +54,7 @@ def make_settings(**overrides):
         "vertex_project": None,
         "vertex_location": "global",
         "vertex_model": "gemini-3.5-flash",
+        "vertex_stage_model": "gemini-3.1-pro-preview",
         "vertex_api_base": "https://aiplatform.googleapis.com",
         "vertex_access_token": None,
         "vertex_adc_credentials_path": None,
@@ -159,24 +160,36 @@ async def test_cerebras_prompt_cache_retry():
 
 
 @pytest.mark.anyio
-async def test_stage_agenda_uses_gpt_oss_detection_and_fixed_mapping():
+async def test_stage_agenda_uses_vertex_stage_detection_and_fixed_mapping():
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
-        calls.append(payload)
+        calls.append((request, payload))
         return httpx.Response(
             200,
             json={
-                "choices": [
-                    {"message": {"content": '{"stage":"S3.4a","confidence":0.82}'}}
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": '{"stage":"S3.4a","confidence":0.82}'}
+                            ]
+                        }
+                    }
                 ]
             },
         )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        orchestrator = LlmOrchestrator(make_settings(), client)
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                vertex_project="project-id",
+                vertex_access_token="token",
+            ),
+            client,
+        )
 
         response = await orchestrator.stage_agenda(
             StageRequest(run_id="run", context="dialogue", current_stage=None)
@@ -185,11 +198,62 @@ async def test_stage_agenda_uses_gpt_oss_detection_and_fixed_mapping():
         assert response.stage == "S3.4a"
         assert response.title == "Objection Clarifier"
         assert response.agenda == 'выяснить истинную причину возражения ("цена или ценность?")'
-        assert response.model == "secondary-model"
+        assert response.provider == "vertex"
+        assert response.model == "gemini-3.1-pro-preview"
         assert response.confidence == 0.82
-        assert calls[0]["model"] == "secondary-model"
-        assert calls[0]["temperature"] == 0.1
-        assert "Prompt 1: Detect Where We Are" in calls[0]["messages"][0]["content"]
+        request, payload = calls[0]
+        assert payload["generationConfig"]["temperature"] == 0.0
+        assert payload["generationConfig"]["responseMimeType"] == "application/json"
+        assert "Prompt 1: Detect Where We Are" in payload["systemInstruction"]["parts"][0][
+            "text"
+        ]
+        assert "gemini-3.1-pro-preview:generateContent" in str(request.url)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_stage_agenda_falls_back_to_current_stage_without_502():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": (
+                                        "Мы сейчас обсуждаем текущую ситуацию клиента, "
+                                        "но модель не вернула JSON."
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                cerebras_api_key=None,
+                vertex_project="project-id",
+                vertex_access_token="token",
+            ),
+            client,
+        )
+
+        response = await orchestrator.stage_agenda(
+            StageRequest(run_id="run", context="dialogue", current_stage="S2.2")
+        )
+
+        assert response.stage == "S2.2"
+        assert response.provider == "fallback"
+        assert response.model == "last-known-stage"
+        assert response.confidence == 0.0
     finally:
         await client.aclose()
 

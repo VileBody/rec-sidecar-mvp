@@ -38,6 +38,8 @@ from .schemas import (
 from .stage_assets import (
     CURRENT_STAGE_AGENDA_PROMPT,
     STAGE_AGENDA_BY_TAG,
+    KNOWN_STAGES,
+    normalize_stage,
     parse_stage_detection,
     stage_detection_system_prompt,
 )
@@ -167,40 +169,80 @@ class LlmOrchestrator:
                 yield sse_event({"event": "error", "message": str(exc)})
 
     async def stage_agenda(self, request: StageRequest) -> StageAgendaResponse:
-        if not self.cerebras.configured():
-            raise ProviderError("cerebras", "stage detector requires Cerebras")
-
-        model = self.settings.help_opener_secondary_model
         user_content = (
             f"{request.context}\n\n"
             f"--- Текущий stage из предыдущего шага ---\n"
             f"{request.current_stage or '(пока неизвестен)'}\n"
         )
-        text = await self.cerebras.text(
-            model=model,
-            system_prompt=stage_detection_system_prompt(),
-            user_content=user_content,
-            temperature=0.1,
-            prompt_cache_key=f"rec-sidecar-stage-detect-v1-{request.run_id}",
-        )
-        stage, confidence = parse_stage_detection(text)
-        agenda = STAGE_AGENDA_BY_TAG[stage]
-        logger.info(
-            "stage_detect run_id=%s stage=%s model=%s confidence=%s",
+        errors: list[str] = []
+
+        if self.vertex.configured():
+            model = self.settings.vertex_stage_model
+            try:
+                text = await self.vertex.generate_stage_detection(
+                    model=model,
+                    system_prompt=stage_detection_system_prompt(),
+                    user_content=user_content,
+                    temperature=0.0,
+                    thinking_level=self.settings.vertex_thinking_level,
+                )
+                stage, confidence = parse_stage_detection(text)
+                return self._stage_response(
+                    request=request,
+                    stage=stage,
+                    confidence=confidence,
+                    provider="vertex",
+                    model=model,
+                )
+            except (ProviderError, ValueError, json.JSONDecodeError) as exc:
+                errors.append(f"vertex/{model}: {exc}")
+                logger.warning(
+                    "stage_detect provider_error run_id=%s provider=vertex model=%s error=%s",
+                    request.run_id,
+                    model,
+                    exc,
+                )
+
+        if self.cerebras.configured():
+            model = self.settings.help_opener_secondary_model
+            try:
+                text = await self.cerebras.text(
+                    model=model,
+                    system_prompt=stage_detection_system_prompt(),
+                    user_content=user_content,
+                    temperature=0.1,
+                    prompt_cache_key=f"rec-sidecar-stage-detect-v1-{request.run_id}",
+                )
+                stage, confidence = parse_stage_detection(text)
+                return self._stage_response(
+                    request=request,
+                    stage=stage,
+                    confidence=confidence,
+                    provider="cerebras",
+                    model=model,
+                )
+            except (ProviderError, ValueError, json.JSONDecodeError) as exc:
+                errors.append(f"cerebras/{model}: {exc}")
+                logger.warning(
+                    "stage_detect provider_error run_id=%s provider=cerebras model=%s error=%s",
+                    request.run_id,
+                    model,
+                    exc,
+                )
+
+        fallback_stage = self._fallback_stage(request.current_stage)
+        logger.warning(
+            "stage_detect fallback run_id=%s stage=%s errors=%s",
             request.run_id,
-            stage,
-            model,
-            confidence,
+            fallback_stage,
+            " | ".join(errors) or "no provider configured",
         )
-        return StageAgendaResponse(
-            stage=agenda.stage,
-            title=agenda.title,
-            agenda=agenda.agenda,
-            emotion=agenda.emotion,
-            step=agenda.step,
-            provider="cerebras",
-            model=model,
-            confidence=confidence,
+        return self._stage_response(
+            request=request,
+            stage=fallback_stage,
+            confidence=0.0,
+            provider="fallback",
+            model="last-known-stage",
         )
 
     async def help_opener(self, request: HelpRequest) -> OpenerResponse:
@@ -430,6 +472,41 @@ class LlmOrchestrator:
             user_content=request.content,
             temperature=0.2,
         )
+
+    def _stage_response(
+        self,
+        *,
+        request: StageRequest,
+        stage: str,
+        confidence: float | None,
+        provider: str,
+        model: str,
+    ) -> StageAgendaResponse:
+        agenda = STAGE_AGENDA_BY_TAG[stage]
+        logger.info(
+            "stage_detect run_id=%s stage=%s provider=%s model=%s confidence=%s",
+            request.run_id,
+            stage,
+            provider,
+            model,
+            confidence,
+        )
+        return StageAgendaResponse(
+            stage=agenda.stage,
+            title=agenda.title,
+            agenda=agenda.agenda,
+            emotion=agenda.emotion,
+            step=agenda.step,
+            provider=provider,
+            model=model,
+            confidence=confidence,
+        )
+
+    def _fallback_stage(self, current_stage: str | None) -> str:
+        stage = normalize_stage(current_stage or "")
+        if stage in STAGE_AGENDA_BY_TAG:
+            return stage
+        return KNOWN_STAGES[0]
 
     async def _vertex_text_stream(
         self,
