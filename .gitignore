@@ -1,0 +1,15 @@
+/target
+/runs
+/exports
+/logs
+repomix-output.xml
+.DS_Store
+.env
+.env.*
+!.env.example
+.deploy/
+.twc-venv/
+.twc.toml
+__pycache__/
+.pytest_cache/
+.venv/
