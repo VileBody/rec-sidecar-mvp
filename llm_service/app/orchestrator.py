@@ -587,6 +587,7 @@ class LlmOrchestrator:
             f"--- Текущий stage из предыдущего шага ---\n"
             f"{request.current_stage or '(пока неизвестен)'}\n"
         )
+        advice_prompt = scorecard_advice_prompt(agenda.stage, agenda)
         scorecard_task = asyncio.create_task(
             self.vertex.generate_scorecard(
                 model=model,
@@ -600,7 +601,7 @@ class LlmOrchestrator:
         def start_advice_task() -> asyncio.Task[str]:
             return asyncio.create_task(
                 self._stage_advice_text(
-                    system_prompt=scorecard_advice_prompt(agenda.stage, agenda),
+                    system_prompt=advice_prompt,
                     user_content=user_content,
                 )
             )
@@ -640,6 +641,12 @@ class LlmOrchestrator:
                 advice_task,
                 timeout=STAGE_ADVICE_TIMEOUT_SECS if advice_started_after_error else 0.5,
             )
+            if not advice:
+                advice = await self._stage_advice_cerebras(
+                    request=request,
+                    system_prompt=advice_prompt,
+                    user_content=user_content,
+                )
             logger.warning(
                 "stage_scorecard fallback run_id=%s stage=%s model=%s elapsed_ms=%s error=%s advice=%s",
                 request.run_id,
@@ -697,6 +704,40 @@ class LlmOrchestrator:
                 )
                 return text
         return clean_one_line("".join(parts))
+
+    async def _stage_advice_cerebras(
+        self, *, request: StageRequest, system_prompt: str, user_content: str
+    ) -> str | None:
+        if not self.cerebras.configured():
+            return None
+        started_at = time.monotonic()
+        model = self.settings.help_opener_secondary_model
+        try:
+            text = await self.cerebras.text(
+                model=model,
+                system_prompt=system_prompt,
+                user_content=user_content,
+                temperature=0.4,
+                prompt_cache_key=f"rec-sidecar-stage-advice-v1-{request.run_id}",
+            )
+        except ProviderError as exc:
+            logger.info(
+                "stage_scorecard advice_cerebras_error run_id=%s model=%s elapsed_ms=%s error=%s",
+                request.run_id,
+                model,
+                int((time.monotonic() - started_at) * 1000),
+                exc,
+            )
+            return None
+        text = clean_one_line(text)
+        logger.info(
+            "stage_scorecard advice_cerebras_ready run_id=%s model=%s elapsed_ms=%s chars=%s",
+            request.run_id,
+            model,
+            int((time.monotonic() - started_at) * 1000),
+            len(text),
+        )
+        return text or None
 
     async def _vertex_text_stream(
         self,
