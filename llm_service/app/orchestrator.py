@@ -29,7 +29,7 @@ from .providers import (
 from .schemas import ChatRequest, HelpRequest, LiveRequest, LiveResponse, OpenerResponse
 
 
-logger = logging.getLogger("llm_service.orchestrator")
+logger = logging.getLogger("uvicorn.error")
 HELP_TEMPERATURE = 1.0
 
 FALLBACK_HELP_OPENER_TEXT = (
