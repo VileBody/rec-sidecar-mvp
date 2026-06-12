@@ -6,7 +6,13 @@ import httpx
 import pytest
 
 from llm_service.app.config import Settings
-from llm_service.app.orchestrator import LlmOrchestrator, OpenerCandidate, sse_event
+from llm_service.app.orchestrator import (
+    ConstructivePrefixStripper,
+    LlmOrchestrator,
+    OpenerCandidate,
+    sse_event,
+    strip_constructive_prefix,
+)
 from llm_service.app.prompts import (
     SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
     SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
@@ -105,6 +111,17 @@ def test_parse_stage_detection_accepts_json_and_plain_text():
         0.8,
     )
     assert parse_stage_detection("Сейчас мы в S2.3") == ("S2.3", None)
+
+
+def test_constructive_prefix_stripper_removes_ui_heading():
+    assert strip_constructive_prefix("**Следующий ход:** Спроси про цель.") == (
+        "Спроси про цель."
+    )
+
+    stripper = ConstructivePrefixStripper()
+    assert stripper.feed("**След") == ""
+    assert stripper.feed("ующий ход:** Спроси про цель.") == "Спроси про цель."
+    assert stripper.feed(" Еще текст.") == " Еще текст."
 
 
 @pytest.mark.anyio
@@ -347,7 +364,7 @@ async def test_help_constructive_stream_sends_temperature_one():
         calls.append(json.loads(request.content))
         return httpx.Response(
             200,
-            text='[{"candidates":[{"content":{"parts":[{"text":"next step"}]}}]}]',
+            text='[{"candidates":[{"content":{"parts":[{"text":"**Следующий ход:** next step"}]}}]}]',
         )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))

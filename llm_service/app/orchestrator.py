@@ -386,12 +386,20 @@ class LlmOrchestrator:
             "Подготовь один короткий следующий ход продавцу для текущего момента звонка. "
             "Строго опирайся на текущий stage, agenda и stage -> agenda mapping."
         )
-        async for event in self._vertex_text_stream(
-            system_prompt=SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
-            user_content=user_content,
-            temperature=HELP_TEMPERATURE,
-        ):
-            yield event
+        try:
+            yield sse_event({"event": "model", "model": self.settings.vertex_model})
+            stripper = ConstructivePrefixStripper()
+            async for delta in self.vertex.stream_text(
+                system_prompt=SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
+                user_content=user_content,
+                temperature=HELP_TEMPERATURE,
+            ):
+                delta = stripper.feed(delta)
+                if delta:
+                    yield sse_event({"event": "delta", "text": delta})
+            yield sse_event({"event": "done"})
+        except ProviderError as exc:
+            yield sse_event({"event": "error", "message": str(exc)})
 
     async def _cerebras_live_structured(self, request: LiveRequest) -> dict[str, str]:
         text = await self.cerebras.text(
@@ -565,6 +573,62 @@ def normalize_opener_delta(delta: str, first: bool = False) -> str:
     if first:
         return delta.lstrip().lstrip("\"'«»“”")
     return delta
+
+
+CONSTRUCTIVE_PREFIX_MARKERS = (
+    "**следующий ход:**",
+    "следующий ход:",
+    "**следующий шаг:**",
+    "следующий шаг:",
+)
+
+
+class ConstructivePrefixStripper:
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._settled = False
+
+    def feed(self, delta: str) -> str:
+        if self._settled:
+            return delta
+
+        self._buffer += delta
+        stripped = strip_constructive_prefix(self._buffer)
+        if stripped != self._buffer:
+            self._settled = True
+            self._buffer = ""
+            return stripped
+
+        if could_be_constructive_prefix(self._buffer):
+            return ""
+
+        self._settled = True
+        text = self._buffer
+        self._buffer = ""
+        return text
+
+
+def strip_constructive_prefix(text: str) -> str:
+    candidate = constructive_prefix_candidate(text)
+    lower = candidate.lower()
+    for marker in CONSTRUCTIVE_PREFIX_MARKERS:
+        if lower.startswith(marker):
+            return candidate[len(marker) :].lstrip(" \t\r\n:-—–")
+    return text
+
+
+def could_be_constructive_prefix(text: str) -> bool:
+    candidate = constructive_prefix_candidate(text).lower()
+    return bool(candidate) and any(
+        marker.startswith(candidate) for marker in CONSTRUCTIVE_PREFIX_MARKERS
+    )
+
+
+def constructive_prefix_candidate(text: str) -> str:
+    candidate = text.lstrip()
+    while candidate.startswith(">"):
+        candidate = candidate[1:].lstrip()
+    return candidate
 
 
 def best_ready_opener_result(
