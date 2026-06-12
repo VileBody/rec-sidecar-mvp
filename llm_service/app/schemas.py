@@ -47,6 +47,51 @@ class StageRequest(StrictModel):
     current_stage: str | None = None
 
 
+class StageScoreEvidence(BaseModel):
+    speaker: str | None = None
+    quote: str
+
+
+class StageScoreCheck(BaseModel):
+    id: str
+    label: str
+    level: Literal["core", "quality", "hygiene"]
+    result: Literal["hit", "miss", "pending", "uncertain", "na"]
+    signal: Literal[
+        "balance",
+        "dialogue",
+        "pain",
+        "specificity",
+        "trust",
+        "focus",
+        "transition",
+    ]
+    reason: str
+    evidence: list[StageScoreEvidence] = []
+
+
+class StageScoreSignal(BaseModel):
+    id: Literal["balance", "dialogue", "pain", "specificity", "trust", "focus"]
+    label: str
+    state: Literal["green", "yellow", "red", "gray"]
+    detail: str
+
+
+class StageScorecard(BaseModel):
+    readiness: Literal["green", "yellow", "red", "pending"]
+    readiness_label: str
+    score: float | None = None
+    hit_count: int
+    miss_count: int
+    total_count: int
+    hard_red: bool = False
+    ready_to_advance: bool = False
+    next_action: str
+    summary: str
+    checks: list[StageScoreCheck] = []
+    signals: list[StageScoreSignal] = []
+
+
 class StageAgendaResponse(BaseModel):
     stage: str
     title: str
@@ -56,6 +101,7 @@ class StageAgendaResponse(BaseModel):
     provider: str
     model: str
     confidence: float | None = None
+    scorecard: StageScorecard | None = None
 
 
 class OpenerResponse(BaseModel):

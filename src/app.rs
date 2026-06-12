@@ -455,7 +455,15 @@ impl RecApp {
                 self.force_coach_snapshot = pushed;
             }
             coach::CoachEvent::StageAgenda(agenda) => {
-                self.stage_status = format!("{} · {}", agenda.stage, agenda.model);
+                let agenda = *agenda;
+                self.stage_status = if let Some(scorecard) = &agenda.scorecard {
+                    format!(
+                        "{} · {} · {}",
+                        agenda.stage, scorecard.readiness_label, agenda.model
+                    )
+                } else {
+                    format!("{} · {}", agenda.stage, agenda.model)
+                };
                 self.stage_agenda = Some(agenda);
                 self.force_stage_detect = false;
             }
@@ -1206,7 +1214,7 @@ impl RecApp {
                 .unwrap_or_else(|| egui::vec2(1440.0, 900.0))
         });
         let width = (monitor.x * 0.40).clamp(560.0, 760.0);
-        let height = 178.0;
+        let height = 286.0;
         let x = ((monitor.x - width) / 2.0).max(0.0);
         let y = 72.0;
 
@@ -1218,7 +1226,7 @@ impl RecApp {
                 .with_always_on_top()
                 .with_position([x, y])
                 .with_inner_size([width, height])
-                .with_min_inner_size([460.0, 140.0]),
+                .with_min_inner_size([460.0, 220.0]),
             |ctx, class| {
                 if class == egui::ViewportClass::Embedded {
                     return;
@@ -1232,9 +1240,33 @@ impl RecApp {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.add_space(8.0);
                     if let Some(agenda) = &self.stage_agenda {
+                        let readiness = agenda.scorecard.as_ref().map(|scorecard| {
+                            (
+                                scorecard.readiness.as_str(),
+                                scorecard.readiness_label.as_str(),
+                            )
+                        });
+                        let readiness_color =
+                            readiness_color(readiness.map(|(key, _)| key).unwrap_or("pending"));
                         ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("●").color(readiness_color).size(22.0));
                             ui.heading(&agenda.stage);
                             ui.label(RichText::new(&agenda.title).size(15.0));
+                            if let Some(scorecard) = &agenda.scorecard {
+                                let counter = if scorecard.total_count > 0 {
+                                    format!(
+                                        "{} · {}/{}",
+                                        scorecard.readiness_label,
+                                        scorecard.hit_count,
+                                        scorecard.total_count
+                                    )
+                                } else {
+                                    scorecard.readiness_label.clone()
+                                };
+                                ui.label(RichText::new(counter).color(readiness_color).strong());
+                            } else if let Some((_, label)) = readiness {
+                                ui.label(RichText::new(label).color(readiness_color).strong());
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -1243,11 +1275,48 @@ impl RecApp {
                             );
                         });
                         ui.add_space(6.0);
-                        ui.label(RichText::new(&agenda.agenda).size(14.0));
-                        ui.add_space(6.0);
-                        ui.label(RichText::new(&agenda.emotion).size(13.0).italics());
+                        if let Some(scorecard) = &agenda.scorecard {
+                            ui.label(RichText::new(&scorecard.next_action).size(15.0).strong());
+                            ui.add_space(6.0);
+                            ui.horizontal_wrapped(|ui| {
+                                for signal in &scorecard.signals {
+                                    ui.label(
+                                        RichText::new("●")
+                                            .color(signal_color(&signal.state))
+                                            .size(13.0),
+                                    );
+                                    ui.label(RichText::new(&signal.label).size(12.0));
+                                    ui.add_space(8.0);
+                                }
+                            });
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(&scorecard.summary).size(12.5).italics());
+                            if let Some(check) = scorecard
+                                .checks
+                                .iter()
+                                .find(|check| check.result == "miss" && check.level == "core")
+                                .or_else(|| {
+                                    scorecard.checks.iter().find(|check| check.result == "miss")
+                                })
+                                .or_else(|| {
+                                    scorecard
+                                        .checks
+                                        .iter()
+                                        .find(|check| check.result == "pending")
+                                })
+                            {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(format!("Фокус: {}", check.reason)).size(12.5),
+                                );
+                            }
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+                        }
+                        ui.label(RichText::new(&agenda.agenda).size(13.0));
                         ui.add_space(4.0);
-                        ui.label(RichText::new(&agenda.step).size(14.0));
+                        ui.label(RichText::new(&agenda.step).size(13.0));
                     } else {
                         ui.heading("Stage");
                         ui.add_space(8.0);
@@ -1456,6 +1525,24 @@ impl RecApp {
                 }
             },
         );
+    }
+}
+
+fn readiness_color(readiness: &str) -> egui::Color32 {
+    match readiness {
+        "green" => egui::Color32::from_rgb(30, 160, 85),
+        "yellow" => egui::Color32::from_rgb(214, 157, 35),
+        "red" => egui::Color32::from_rgb(210, 70, 64),
+        _ => egui::Color32::from_rgb(142, 147, 153),
+    }
+}
+
+fn signal_color(state: &str) -> egui::Color32 {
+    match state {
+        "green" => egui::Color32::from_rgb(30, 160, 85),
+        "yellow" => egui::Color32::from_rgb(214, 157, 35),
+        "red" => egui::Color32::from_rgb(210, 70, 64),
+        _ => egui::Color32::from_rgb(142, 147, 153),
     }
 }
 
@@ -1689,15 +1776,19 @@ mod tests {
         let (_dir, paths) = temp_paths();
         let mut app = RecApp::new_with_paths(paths);
 
-        app.handle_coach_event(coach::CoachEvent::StageAgenda(coach::CoachStageAgenda {
-            stage: "S2.3".to_string(),
-            title: "Target & Gap".to_string(),
-            agenda: "выяснить желаемый результат".to_string(),
-            emotion: "Очень крутая цель.".to_string(),
-            step: "Почему пока не получается?".to_string(),
-            provider: "cerebras".to_string(),
-            model: "gpt-oss-120b".to_string(),
-        }));
+        app.handle_coach_event(coach::CoachEvent::StageAgenda(
+            coach::CoachStageAgenda {
+                stage: "S2.3".to_string(),
+                title: "Target & Gap".to_string(),
+                agenda: "выяснить желаемый результат".to_string(),
+                emotion: "Очень крутая цель.".to_string(),
+                step: "Почему пока не получается?".to_string(),
+                provider: "cerebras".to_string(),
+                model: "gpt-oss-120b".to_string(),
+                scorecard: None,
+            }
+            .into(),
+        ));
 
         let agenda = app.stage_agenda.as_ref().unwrap();
         assert_eq!(agenda.stage, "S2.3");

@@ -166,6 +166,67 @@ async def test_stage_agenda_uses_vertex_stage_detection_and_fixed_mapping():
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         calls.append((request, payload))
+        schema_properties = payload["generationConfig"]["responseSchema"]["properties"]
+        if "checks" in schema_properties:
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": json.dumps(
+                                            {
+                                                "summary": "Возражение услышано и уточняется.",
+                                                "next_action": "Спроси, проблема в цене или ценности?",
+                                                "checks": [
+                                                    {
+                                                        "id": "objection_detected",
+                                                        "result": "hit",
+                                                        "reason": "Клиент выразил сомнение.",
+                                                        "evidence": [
+                                                            {
+                                                                "speaker": "Клиент",
+                                                                "quote": "Мне надо подумать.",
+                                                            }
+                                                        ],
+                                                    },
+                                                    {
+                                                        "id": "objection_clarified",
+                                                        "result": "hit",
+                                                        "reason": "Продавец уточнил причину.",
+                                                        "evidence": [],
+                                                    },
+                                                    {
+                                                        "id": "objection_type",
+                                                        "result": "hit",
+                                                        "reason": "Тип возражения понятен.",
+                                                        "evidence": [],
+                                                    },
+                                                    {
+                                                        "id": "objection_root_reason",
+                                                        "result": "hit",
+                                                        "reason": "Root reason назван.",
+                                                        "evidence": [],
+                                                    },
+                                                    {
+                                                        "id": "objection_answer_fit",
+                                                        "result": "hit",
+                                                        "reason": "Ответ попал по сути.",
+                                                        "evidence": [],
+                                                    },
+                                                ],
+                                            },
+                                            ensure_ascii=False,
+                                        )
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+            )
         return httpx.Response(
             200,
             json={
@@ -208,6 +269,14 @@ async def test_stage_agenda_uses_vertex_stage_detection_and_fixed_mapping():
             "text"
         ]
         assert "gemini-3.1-pro-preview:generateContent" in str(request.url)
+        assert response.scorecard is not None
+        assert response.scorecard.readiness == "green"
+        assert response.scorecard.ready_to_advance is True
+        assert response.scorecard.hit_count == 5
+        assert response.scorecard.miss_count == 0
+        assert response.scorecard.score == 1.0
+        assert response.scorecard.next_action == "Спроси, проблема в цене или ценности?"
+        assert len(calls) == 2
     finally:
         await client.aclose()
 

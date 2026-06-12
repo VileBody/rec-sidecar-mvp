@@ -64,7 +64,7 @@ pub struct CoachStageRequest {
     pub current_stage: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CoachStageAgenda {
     pub stage: String,
     pub title: String,
@@ -73,6 +73,51 @@ pub struct CoachStageAgenda {
     pub step: String,
     pub provider: String,
     pub model: String,
+    pub scorecard: Option<CoachStageScorecard>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct CoachStageScorecard {
+    pub readiness: String,
+    pub readiness_label: String,
+    pub score: Option<f32>,
+    pub hit_count: u32,
+    pub miss_count: u32,
+    pub total_count: u32,
+    pub hard_red: bool,
+    pub ready_to_advance: bool,
+    pub next_action: String,
+    pub summary: String,
+    #[serde(default)]
+    pub checks: Vec<CoachStageScoreCheck>,
+    #[serde(default)]
+    pub signals: Vec<CoachStageScoreSignal>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct CoachStageScoreCheck {
+    pub id: String,
+    pub label: String,
+    pub level: String,
+    pub result: String,
+    pub signal: String,
+    pub reason: String,
+    #[serde(default)]
+    pub evidence: Vec<CoachStageScoreEvidence>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct CoachStageScoreEvidence {
+    pub speaker: Option<String>,
+    pub quote: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct CoachStageScoreSignal {
+    pub id: String,
+    pub label: String,
+    pub state: String,
+    pub detail: String,
 }
 
 pub enum CoachEvent {
@@ -80,7 +125,7 @@ pub enum CoachEvent {
     Started,
     Delta(String),
     Finished,
-    StageAgenda(CoachStageAgenda),
+    StageAgenda(Box<CoachStageAgenda>),
     StageError(String),
     HelpStage(u64, CoachHelpStage),
     ChatModel(u64, String),
@@ -158,6 +203,8 @@ struct StageAgendaResponse {
     model: String,
     #[allow(dead_code)]
     confidence: Option<f32>,
+    #[serde(default)]
+    scorecard: Option<CoachStageScorecard>,
 }
 
 struct HelpOpenerOutcome {
@@ -526,7 +573,7 @@ async fn send_stage_request(
         "stage response run_id={} stage={} provider={} model={}",
         request.run_id, agenda.stage, agenda.provider, agenda.model
     ));
-    let _ = tx.send(CoachEvent::StageAgenda(CoachStageAgenda {
+    let _ = tx.send(CoachEvent::StageAgenda(Box::new(CoachStageAgenda {
         stage: agenda.stage,
         title: agenda.title,
         agenda: agenda.agenda,
@@ -534,7 +581,8 @@ async fn send_stage_request(
         step: agenda.step,
         provider: agenda.provider,
         model: agenda.model,
-    }));
+        scorecard: agenda.scorecard,
+    })));
     Ok(())
 }
 

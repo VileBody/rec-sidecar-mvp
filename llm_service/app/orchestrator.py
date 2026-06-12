@@ -35,6 +35,12 @@ from .schemas import (
     StageAgendaResponse,
     StageRequest,
 )
+from .scorecard import (
+    fallback_scorecard,
+    normalize_scorecard,
+    safe_parse_scorecard,
+    scorecard_system_prompt,
+)
 from .stage_assets import (
     CURRENT_STAGE_AGENDA_PROMPT,
     STAGE_AGENDA_BY_TAG,
@@ -187,7 +193,7 @@ class LlmOrchestrator:
                     thinking_level=self.settings.vertex_thinking_level,
                 )
                 stage, confidence = parse_stage_detection(text)
-                return self._stage_response(
+                return await self._stage_response(
                     request=request,
                     stage=stage,
                     confidence=confidence,
@@ -214,7 +220,7 @@ class LlmOrchestrator:
                     prompt_cache_key=f"rec-sidecar-stage-detect-v1-{request.run_id}",
                 )
                 stage, confidence = parse_stage_detection(text)
-                return self._stage_response(
+                return await self._stage_response(
                     request=request,
                     stage=stage,
                     confidence=confidence,
@@ -237,7 +243,7 @@ class LlmOrchestrator:
             fallback_stage,
             " | ".join(errors) or "no provider configured",
         )
-        return self._stage_response(
+        return await self._stage_response(
             request=request,
             stage=fallback_stage,
             confidence=0.0,
@@ -473,7 +479,7 @@ class LlmOrchestrator:
             temperature=0.2,
         )
 
-    def _stage_response(
+    async def _stage_response(
         self,
         *,
         request: StageRequest,
@@ -491,6 +497,7 @@ class LlmOrchestrator:
             model,
             confidence,
         )
+        scorecard = await self._stage_scorecard(request, agenda)
         return StageAgendaResponse(
             stage=agenda.stage,
             title=agenda.title,
@@ -500,6 +507,7 @@ class LlmOrchestrator:
             provider=provider,
             model=model,
             confidence=confidence,
+            scorecard=scorecard,
         )
 
     def _fallback_stage(self, current_stage: str | None) -> str:
@@ -507,6 +515,50 @@ class LlmOrchestrator:
         if stage in STAGE_AGENDA_BY_TAG:
             return stage
         return KNOWN_STAGES[0]
+
+    async def _stage_scorecard(self, request: StageRequest, agenda) -> object:
+        if not self.vertex.configured():
+            return fallback_scorecard(
+                agenda.stage,
+                agenda,
+                "Scorecard evaluator disabled: Vertex is not configured.",
+            )
+
+        try:
+            text = await self.vertex.generate_scorecard(
+                model=self.settings.vertex_stage_model,
+                system_prompt=scorecard_system_prompt(agenda.stage, agenda),
+                user_content=(
+                    f"{request.context}\n\n"
+                    f"--- Текущий stage из предыдущего шага ---\n"
+                    f"{request.current_stage or '(пока неизвестен)'}\n"
+                ),
+                temperature=0.0,
+            )
+            raw = safe_parse_scorecard(text)
+            scorecard = normalize_scorecard(stage=agenda.stage, agenda=agenda, raw=raw)
+            logger.info(
+                "stage_scorecard run_id=%s stage=%s readiness=%s score=%s hits=%s misses=%s",
+                request.run_id,
+                agenda.stage,
+                scorecard.readiness,
+                scorecard.score,
+                scorecard.hit_count,
+                scorecard.miss_count,
+            )
+            return scorecard
+        except (ProviderError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "stage_scorecard fallback run_id=%s stage=%s error=%s",
+                request.run_id,
+                agenda.stage,
+                exc,
+            )
+            return fallback_scorecard(
+                agenda.stage,
+                agenda,
+                f"Scorecard evaluator fallback: {exc}",
+            )
 
     async def _vertex_text_stream(
         self,
