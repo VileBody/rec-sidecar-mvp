@@ -55,6 +55,7 @@ from .stage_assets import (
 logger = logging.getLogger("uvicorn.error")
 HELP_TEMPERATURE = 1.0
 STAGE_SCORECARD_TIMEOUT_SECS = 5.0
+STAGE_CEREBRAS_SCORECARD_TIMEOUT_SECS = 3.0
 STAGE_ADVICE_DELAY_SECS = 1.5
 STAGE_ADVICE_TIMEOUT_SECS = 3.0
 
@@ -634,6 +635,14 @@ class LlmOrchestrator:
             return scorecard
         except (ProviderError, ValueError, json.JSONDecodeError, TimeoutError) as exc:
             reason = scorecard_error_reason(exc)
+            cerebras_scorecard = await self._stage_scorecard_cerebras(
+                request=request,
+                agenda=agenda,
+                user_content=user_content,
+                started_at=started_at,
+            )
+            if cerebras_scorecard is not None:
+                return cerebras_scorecard
             advice_started_after_error = advice_task is None
             if advice_task is None:
                 advice_task = start_advice_task()
@@ -647,6 +656,7 @@ class LlmOrchestrator:
                     system_prompt=advice_prompt,
                     user_content=user_content,
                 )
+            advice = pending_safe_advice(advice, agenda.step)
             logger.warning(
                 "stage_scorecard fallback run_id=%s stage=%s model=%s elapsed_ms=%s error=%s advice=%s",
                 request.run_id,
@@ -666,6 +676,48 @@ class LlmOrchestrator:
             await cancel_tasks(
                 *[task for task in (scorecard_task, advice_task) if task is not None]
             )
+
+    async def _stage_scorecard_cerebras(
+        self, *, request: StageRequest, agenda, user_content: str, started_at: float
+    ) -> object | None:
+        if not self.cerebras.configured():
+            return None
+        model = self.settings.help_opener_secondary_model
+        try:
+            text = await asyncio.wait_for(
+                self.cerebras.text(
+                    model=model,
+                    system_prompt=scorecard_system_prompt(agenda.stage, agenda),
+                    user_content=user_content,
+                    temperature=0.0,
+                    prompt_cache_key=f"rec-sidecar-stage-scorecard-v1-{request.run_id}",
+                ),
+                timeout=STAGE_CEREBRAS_SCORECARD_TIMEOUT_SECS,
+            )
+            raw = safe_parse_scorecard(text)
+            scorecard = normalize_scorecard(stage=agenda.stage, agenda=agenda, raw=raw)
+            logger.info(
+                "stage_scorecard fallback_provider=cerebras run_id=%s stage=%s model=%s readiness=%s score=%s hits=%s misses=%s elapsed_ms=%s",
+                request.run_id,
+                agenda.stage,
+                model,
+                scorecard.readiness,
+                scorecard.score,
+                scorecard.hit_count,
+                scorecard.miss_count,
+                int((time.monotonic() - started_at) * 1000),
+            )
+            return scorecard
+        except (ProviderError, ValueError, json.JSONDecodeError, TimeoutError) as exc:
+            logger.info(
+                "stage_scorecard cerebras_fallback_failed run_id=%s stage=%s model=%s elapsed_ms=%s error=%s",
+                request.run_id,
+                agenda.stage,
+                model,
+                int((time.monotonic() - started_at) * 1000),
+                scorecard_error_reason(exc),
+            )
+            return None
 
     async def _scorecard_advice_from_task(
         self, task: asyncio.Task[str], *, timeout: float
@@ -967,6 +1019,14 @@ def scorecard_error_reason(exc: BaseException) -> str:
     if isinstance(exc, TimeoutError):
         return f"timeout after {STAGE_SCORECARD_TIMEOUT_SECS:.0f}s"
     return str(exc) or exc.__class__.__name__
+
+
+def pending_safe_advice(advice: str | None, fallback_step: str) -> str | None:
+    if not advice:
+        return None
+    if advice.lower().startswith("переход:"):
+        return f"Уточнить: {fallback_step}"
+    return advice
 
 
 async def cancel_tasks(*tasks: asyncio.Task[Any]) -> None:

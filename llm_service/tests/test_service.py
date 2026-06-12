@@ -373,7 +373,11 @@ async def test_stage_agenda_returns_pending_scorecard_on_vertex_timeout():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
         orchestrator = LlmOrchestrator(
-            make_settings(vertex_project="project-id", vertex_access_token="token"),
+            make_settings(
+                cerebras_api_key=None,
+                vertex_project="project-id",
+                vertex_access_token="token",
+            ),
             client,
         )
 
