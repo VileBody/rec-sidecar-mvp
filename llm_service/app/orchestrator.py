@@ -673,6 +673,7 @@ class LlmOrchestrator:
 
     async def _stage_advice_text(self, *, system_prompt: str, user_content: str) -> str:
         parts: list[str] = []
+        started_at = time.monotonic()
         async for delta in self.vertex.stream_text(
             system_prompt=system_prompt,
             user_content=user_content,
@@ -680,8 +681,21 @@ class LlmOrchestrator:
             thinking_level=self.settings.vertex_thinking_level,
         ):
             parts.append(delta)
-            if sum(len(part) for part in parts) >= 260:
-                break
+            text = clean_one_line("".join(parts))
+            if len(text) >= 90 or text.endswith((".", "?", "!")):
+                logger.info(
+                    "stage_scorecard advice_ready elapsed_ms=%s chars=%s",
+                    int((time.monotonic() - started_at) * 1000),
+                    len(text),
+                )
+                return text
+            if time.monotonic() - started_at >= 2.0 and text:
+                logger.info(
+                    "stage_scorecard advice_partial elapsed_ms=%s chars=%s",
+                    int((time.monotonic() - started_at) * 1000),
+                    len(text),
+                )
+                return text
         return clean_one_line("".join(parts))
 
     async def _vertex_text_stream(
