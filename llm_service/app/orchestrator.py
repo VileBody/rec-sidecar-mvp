@@ -53,6 +53,7 @@ from .stage_assets import (
 
 logger = logging.getLogger("uvicorn.error")
 HELP_TEMPERATURE = 1.0
+STAGE_SCORECARD_TIMEOUT_SECS = 5.0
 
 FALLBACK_HELP_OPENER_TEXT = (
     "Давайте зафиксируем главный риск и разберем, что должно быть иначе, "
@@ -175,6 +176,7 @@ class LlmOrchestrator:
                 yield sse_event({"event": "error", "message": str(exc)})
 
     async def stage_agenda(self, request: StageRequest) -> StageAgendaResponse:
+        stage_started_at = time.monotonic()
         user_content = (
             f"{request.context}\n\n"
             f"--- Текущий stage из предыдущего шага ---\n"
@@ -185,6 +187,7 @@ class LlmOrchestrator:
         if self.vertex.configured():
             model = self.settings.vertex_stage_model
             try:
+                detect_started_at = time.monotonic()
                 text = await self.vertex.generate_stage_detection(
                     model=model,
                     system_prompt=stage_detection_system_prompt(),
@@ -199,6 +202,7 @@ class LlmOrchestrator:
                     confidence=confidence,
                     provider="vertex",
                     model=model,
+                    detect_elapsed_ms=int((time.monotonic() - detect_started_at) * 1000),
                 )
             except (ProviderError, ValueError, json.JSONDecodeError) as exc:
                 errors.append(f"vertex/{model}: {exc}")
@@ -212,6 +216,7 @@ class LlmOrchestrator:
         if self.cerebras.configured():
             model = self.settings.help_opener_secondary_model
             try:
+                detect_started_at = time.monotonic()
                 text = await self.cerebras.text(
                     model=model,
                     system_prompt=stage_detection_system_prompt(),
@@ -226,6 +231,7 @@ class LlmOrchestrator:
                     confidence=confidence,
                     provider="cerebras",
                     model=model,
+                    detect_elapsed_ms=int((time.monotonic() - detect_started_at) * 1000),
                 )
             except (ProviderError, ValueError, json.JSONDecodeError) as exc:
                 errors.append(f"cerebras/{model}: {exc}")
@@ -249,6 +255,7 @@ class LlmOrchestrator:
             confidence=0.0,
             provider="fallback",
             model="last-known-stage",
+            detect_elapsed_ms=int((time.monotonic() - stage_started_at) * 1000),
         )
 
     async def help_opener(self, request: HelpRequest) -> OpenerResponse:
@@ -434,6 +441,9 @@ class LlmOrchestrator:
             "Подготовь один короткий следующий ход продавцу для текущего момента звонка. "
             "Строго опирайся на текущий stage, agenda и stage -> agenda mapping."
         )
+        started_at = time.monotonic()
+        first_delta_logged = False
+        total_chars = 0
         try:
             yield sse_event({"event": "model", "model": self.settings.vertex_model})
             stripper = ConstructivePrefixStripper()
@@ -444,9 +454,36 @@ class LlmOrchestrator:
             ):
                 delta = stripper.feed(delta)
                 if delta:
+                    total_chars += len(delta)
+                    if not first_delta_logged:
+                        first_delta_logged = True
+                        logger.info(
+                            "help_constructive first_delta id=%s run_id=%s model=%s elapsed_ms=%s chars=%s",
+                            request.id,
+                            request.run_id,
+                            self.settings.vertex_model,
+                            int((time.monotonic() - started_at) * 1000),
+                            len(delta),
+                        )
                     yield sse_event({"event": "delta", "text": delta})
+            logger.info(
+                "help_constructive done id=%s run_id=%s model=%s elapsed_ms=%s chars=%s",
+                request.id,
+                request.run_id,
+                self.settings.vertex_model,
+                int((time.monotonic() - started_at) * 1000),
+                total_chars,
+            )
             yield sse_event({"event": "done"})
         except ProviderError as exc:
+            logger.info(
+                "help_constructive error id=%s run_id=%s model=%s elapsed_ms=%s error=%s",
+                request.id,
+                request.run_id,
+                self.settings.vertex_model,
+                int((time.monotonic() - started_at) * 1000),
+                exc,
+            )
             yield sse_event({"event": "error", "message": str(exc)})
 
     async def _cerebras_live_structured(self, request: LiveRequest) -> dict[str, str]:
@@ -487,17 +524,33 @@ class LlmOrchestrator:
         confidence: float | None,
         provider: str,
         model: str,
+        detect_elapsed_ms: int | None = None,
     ) -> StageAgendaResponse:
+        response_started_at = time.monotonic()
         agenda = STAGE_AGENDA_BY_TAG[stage]
         logger.info(
-            "stage_detect run_id=%s stage=%s provider=%s model=%s confidence=%s",
+            "stage_detect run_id=%s stage=%s provider=%s model=%s confidence=%s elapsed_ms=%s",
             request.run_id,
             stage,
             provider,
             model,
             confidence,
+            detect_elapsed_ms,
         )
         scorecard = await self._stage_scorecard(request, agenda)
+        response_elapsed_ms = int((time.monotonic() - response_started_at) * 1000)
+        total_elapsed_ms = (
+            detect_elapsed_ms + response_elapsed_ms
+            if detect_elapsed_ms is not None
+            else response_elapsed_ms
+        )
+        logger.info(
+            "stage_response run_id=%s stage=%s total_elapsed_ms=%s post_detect_elapsed_ms=%s",
+            request.run_id,
+            stage,
+            total_elapsed_ms,
+            response_elapsed_ms,
+        )
         return StageAgendaResponse(
             stage=agenda.stage,
             title=agenda.title,
@@ -525,29 +578,36 @@ class LlmOrchestrator:
             )
 
         try:
-            text = await self.vertex.generate_scorecard(
-                model=self.settings.vertex_stage_model,
-                system_prompt=scorecard_system_prompt(agenda.stage, agenda),
-                user_content=(
-                    f"{request.context}\n\n"
-                    f"--- Текущий stage из предыдущего шага ---\n"
-                    f"{request.current_stage or '(пока неизвестен)'}\n"
+            started_at = time.monotonic()
+            model = self.settings.vertex_model
+            text = await asyncio.wait_for(
+                self.vertex.generate_scorecard(
+                    model=model,
+                    system_prompt=scorecard_system_prompt(agenda.stage, agenda),
+                    user_content=(
+                        f"{request.context}\n\n"
+                        f"--- Текущий stage из предыдущего шага ---\n"
+                        f"{request.current_stage or '(пока неизвестен)'}\n"
+                    ),
+                    temperature=0.0,
                 ),
-                temperature=0.0,
+                timeout=STAGE_SCORECARD_TIMEOUT_SECS,
             )
             raw = safe_parse_scorecard(text)
             scorecard = normalize_scorecard(stage=agenda.stage, agenda=agenda, raw=raw)
             logger.info(
-                "stage_scorecard run_id=%s stage=%s readiness=%s score=%s hits=%s misses=%s",
+                "stage_scorecard run_id=%s stage=%s model=%s readiness=%s score=%s hits=%s misses=%s elapsed_ms=%s",
                 request.run_id,
                 agenda.stage,
+                model,
                 scorecard.readiness,
                 scorecard.score,
                 scorecard.hit_count,
                 scorecard.miss_count,
+                int((time.monotonic() - started_at) * 1000),
             )
             return scorecard
-        except (ProviderError, ValueError, json.JSONDecodeError) as exc:
+        except (ProviderError, ValueError, json.JSONDecodeError, TimeoutError) as exc:
             logger.warning(
                 "stage_scorecard fallback run_id=%s stage=%s error=%s",
                 request.run_id,

@@ -23,6 +23,7 @@ from llm_service.app.providers import (
     parse_json_suggestion,
     pop_vertex_stream_value,
 )
+from llm_service.app.scorecard import scorecard_system_prompt
 from llm_service.app.schemas import HelpRequest, StageRequest
 from llm_service.app.stage_assets import (
     KNOWN_STAGES,
@@ -104,6 +105,14 @@ def test_stage_agenda_assets_cover_detector_tags():
     }
     assert STAGE_AGENDA_BY_TAG["S3.4a"].agenda.startswith("выяснить")
     assert STAGE_AGENDA_BY_TAG["S3.5"].step.endswith("следующего контакта.")
+
+
+def test_scorecard_prompt_requires_tactical_next_action():
+    prompt = scorecard_system_prompt("S2.2", STAGE_AGENDA_BY_TAG["S2.2"])
+
+    assert "НЕ пересказывай канонический шаг статично" in prompt
+    assert 'next_action начинается с "Уточнить:"' in prompt
+    assert 'next_action начинается с "Переход:"' in prompt
 
 
 def test_parse_stage_detection_accepts_json_and_plain_text():

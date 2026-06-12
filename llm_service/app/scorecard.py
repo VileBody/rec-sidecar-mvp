@@ -517,7 +517,7 @@ def scorecard_system_prompt(stage: str, agenda: StageAgenda) -> str:
         )
         for check in definitions
     )
-    return f"""Ты realtime evaluator для high-ticket B2C sales call на русском.
+    return f"""Ты realtime evaluator и tactical sales coach для high-ticket B2C sales call на русском.
 Оцени только текущую стадию {stage} — {agenda.title}.
 
 Agenda стадии: {agenda.agenda}
@@ -531,7 +531,11 @@ Agenda стадии: {agenda.agenda}
 - Не награждай продавца за красивые слова без buyer evidence.
 - Если данных ещё мало, ставь pending, а не miss.
 - Для miss/hit дай короткую причину и 0-2 короткие цитаты evidence.
-- next_action — одна фраза, которую продавец может сказать сейчас.
+- next_action — НЕ пересказывай канонический шаг статично; дай живой совет продавцу по текущему диалогу.
+- Если readiness по смыслу red/yellow: next_action начинается с "Уточнить:" и дает 1-3 коротких вопроса или микрошагов, что ещё добрать.
+- Если readiness по смыслу green: next_action начинается с "Переход:" и дает готовую фразу перехода на следующую стадию, вопросом или мягким оффером.
+- Не пиши длинный разбор; next_action должен быть коротким, читаемым с экрана и пригодным сказать вслух.
+- Хорошие форматы: "Уточнить: 1) ... 2) ... 3) ..." или "Переход: Давайте я расскажу про формат, который как раз закрывает этот разрыв..."
 - Не считай секунды, проценты и talk ratio сам; оцени смысловые признаки из текста.
 
 Checks текущей стадии:

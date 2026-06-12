@@ -1213,8 +1213,8 @@ impl RecApp {
                 .monitor_size
                 .unwrap_or_else(|| egui::vec2(1440.0, 900.0))
         });
-        let width = (monitor.x * 0.40).clamp(560.0, 760.0);
-        let height = 286.0;
+        let width = (monitor.x * 0.46).clamp(680.0, 920.0);
+        let height = 328.0;
         let x = ((monitor.x - width) / 2.0).max(0.0);
         let y = 72.0;
 
@@ -1237,92 +1237,182 @@ impl RecApp {
                         platform::pin_window_to_all_spaces(STAGE_AGENDA_PANEL_TITLE);
                 }
 
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.add_space(8.0);
-                    if let Some(agenda) = &self.stage_agenda {
-                        let readiness = agenda.scorecard.as_ref().map(|scorecard| {
-                            (
-                                scorecard.readiness.as_str(),
-                                scorecard.readiness_label.as_str(),
-                            )
-                        });
-                        let readiness_color =
-                            readiness_color(readiness.map(|(key, _)| key).unwrap_or("pending"));
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new("●").color(readiness_color).size(22.0));
-                            ui.heading(&agenda.stage);
-                            ui.label(RichText::new(&agenda.title).size(15.0));
-                            if let Some(scorecard) = &agenda.scorecard {
-                                let counter = if scorecard.total_count > 0 {
-                                    format!(
-                                        "{} · {}/{}",
-                                        scorecard.readiness_label,
-                                        scorecard.hit_count,
-                                        scorecard.total_count
-                                    )
-                                } else {
-                                    scorecard.readiness_label.clone()
-                                };
-                                ui.label(RichText::new(counter).color(readiness_color).strong());
-                            } else if let Some((_, label)) = readiness {
-                                ui.label(RichText::new(label).color(readiness_color).strong());
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(RichText::new(&agenda.model).italics().size(11.0));
-                                },
-                            );
-                        });
-                        ui.add_space(6.0);
-                        if let Some(scorecard) = &agenda.scorecard {
-                            ui.label(RichText::new(&scorecard.next_action).size(15.0).strong());
-                            ui.add_space(6.0);
-                            ui.horizontal_wrapped(|ui| {
-                                for signal in &scorecard.signals {
-                                    ui.label(
-                                        RichText::new("●")
-                                            .color(signal_color(&signal.state))
-                                            .size(13.0),
+                let readiness_key = self
+                    .stage_agenda
+                    .as_ref()
+                    .and_then(|agenda| agenda.scorecard.as_ref())
+                    .map(|scorecard| scorecard.readiness.as_str())
+                    .unwrap_or("pending");
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(readiness_panel_fill(readiness_key)))
+                    .show(ctx, |ui| {
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            ui.vertical(|ui| {
+                                if let Some(agenda) = &self.stage_agenda {
+                                    let readiness = agenda.scorecard.as_ref().map(|scorecard| {
+                                        (
+                                            scorecard.readiness.as_str(),
+                                            scorecard.readiness_label.as_str(),
+                                        )
+                                    });
+                                    let readiness_accent = readiness_color(
+                                        readiness.map(|(key, _)| key).unwrap_or("pending"),
                                     );
-                                    ui.label(RichText::new(&signal.label).size(12.0));
+                                    let header_fill = readiness_color(
+                                        readiness.map(|(key, _)| key).unwrap_or("pending"),
+                                    );
+                                    egui::Frame::new()
+                                        .fill(header_fill)
+                                        .corner_radius(egui::CornerRadius::same(5))
+                                        .inner_margin(egui::Margin::symmetric(10, 7))
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(
+                                                    RichText::new("●")
+                                                        .color(egui::Color32::WHITE)
+                                                        .size(24.0),
+                                                );
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "{} {}",
+                                                        agenda.stage, agenda.title
+                                                    ))
+                                                    .color(egui::Color32::WHITE)
+                                                    .size(19.0)
+                                                    .strong(),
+                                                );
+                                                if let Some(scorecard) = &agenda.scorecard {
+                                                    let counter = if scorecard.total_count > 0 {
+                                                        format!(
+                                                            "{} · {}/{}",
+                                                            scorecard.readiness_label,
+                                                            scorecard.hit_count,
+                                                            scorecard.total_count
+                                                        )
+                                                    } else {
+                                                        scorecard.readiness_label.clone()
+                                                    };
+                                                    ui.label(
+                                                        RichText::new(counter)
+                                                            .color(egui::Color32::WHITE)
+                                                            .size(16.0)
+                                                            .strong(),
+                                                    );
+                                                } else if let Some((_, label)) = readiness {
+                                                    ui.label(
+                                                        RichText::new(label)
+                                                            .color(egui::Color32::WHITE)
+                                                            .size(16.0)
+                                                            .strong(),
+                                                    );
+                                                }
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.label(
+                                                            RichText::new(&agenda.model)
+                                                                .color(egui::Color32::WHITE)
+                                                                .italics()
+                                                                .size(11.0),
+                                                        );
+                                                    },
+                                                );
+                                            });
+                                        });
+                                    ui.add_space(10.0);
+                                    if let Some(scorecard) = &agenda.scorecard {
+                                        ui.label(
+                                            RichText::new("СОВЕТ")
+                                                .color(readiness_accent)
+                                                .strong()
+                                                .size(12.0),
+                                        );
+                                        ui.label(
+                                            RichText::new(&scorecard.next_action)
+                                                .color(readiness_text_color(&scorecard.readiness))
+                                                .size(18.0)
+                                                .strong(),
+                                        );
+                                        ui.add_space(8.0);
+                                        ui.horizontal_wrapped(|ui| {
+                                            for signal in &scorecard.signals {
+                                                egui::Frame::new()
+                                                    .fill(signal_badge_fill(&signal.state))
+                                                    .stroke(egui::Stroke::new(
+                                                        1.0,
+                                                        signal_color(&signal.state),
+                                                    ))
+                                                    .corner_radius(egui::CornerRadius::same(4))
+                                                    .inner_margin(egui::Margin::symmetric(7, 3))
+                                                    .show(ui, |ui| {
+                                                        ui.label(
+                                                            RichText::new(&signal.label)
+                                                                .color(signal_color(&signal.state))
+                                                                .strong()
+                                                                .size(12.0),
+                                                        );
+                                                    });
+                                            }
+                                        });
+                                        ui.add_space(8.0);
+                                        ui.label(
+                                            RichText::new(&scorecard.summary)
+                                                .color(readiness_text_color(&scorecard.readiness))
+                                                .size(13.0)
+                                                .italics(),
+                                        );
+                                        if let Some(check) = scorecard
+                                            .checks
+                                            .iter()
+                                            .find(|check| {
+                                                check.result == "miss" && check.level == "core"
+                                            })
+                                            .or_else(|| {
+                                                scorecard
+                                                    .checks
+                                                    .iter()
+                                                    .find(|check| check.result == "miss")
+                                            })
+                                            .or_else(|| {
+                                                scorecard
+                                                    .checks
+                                                    .iter()
+                                                    .find(|check| check.result == "pending")
+                                            })
+                                        {
+                                            ui.add_space(4.0);
+                                            ui.label(
+                                                RichText::new(format!("Фокус: {}", check.reason))
+                                                    .color(readiness_text_color(
+                                                        &scorecard.readiness,
+                                                    ))
+                                                    .strong()
+                                                    .size(13.0),
+                                            );
+                                        }
+                                        ui.add_space(8.0);
+                                        ui.separator();
+                                        ui.add_space(5.0);
+                                    }
+                                    ui.label(
+                                        RichText::new(format!("Цель стадии: {}", agenda.agenda))
+                                            .color(egui::Color32::from_rgb(54, 61, 68))
+                                            .size(12.5),
+                                    );
+                                } else {
+                                    ui.heading("Stage");
                                     ui.add_space(8.0);
+                                    ui.label(RichText::new(&self.stage_status).size(18.0).strong());
                                 }
                             });
-                            ui.add_space(6.0);
-                            ui.label(RichText::new(&scorecard.summary).size(12.5).italics());
-                            if let Some(check) = scorecard
-                                .checks
-                                .iter()
-                                .find(|check| check.result == "miss" && check.level == "core")
-                                .or_else(|| {
-                                    scorecard.checks.iter().find(|check| check.result == "miss")
-                                })
-                                .or_else(|| {
-                                    scorecard
-                                        .checks
-                                        .iter()
-                                        .find(|check| check.result == "pending")
-                                })
-                            {
-                                ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new(format!("Фокус: {}", check.reason)).size(12.5),
-                                );
-                            }
-                            ui.add_space(6.0);
-                            ui.separator();
-                            ui.add_space(4.0);
-                        }
-                        ui.label(RichText::new(&agenda.agenda).size(13.0));
-                        ui.add_space(4.0);
-                        ui.label(RichText::new(&agenda.step).size(13.0));
-                    } else {
-                        ui.heading("Stage");
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(&self.stage_status).size(14.0));
-                    }
-                });
+                            ui.add_space(10.0);
+                        });
+                    });
             },
         );
     }
@@ -1537,12 +1627,39 @@ fn readiness_color(readiness: &str) -> egui::Color32 {
     }
 }
 
+fn readiness_panel_fill(readiness: &str) -> egui::Color32 {
+    match readiness {
+        "green" => egui::Color32::from_rgb(218, 252, 226),
+        "yellow" => egui::Color32::from_rgb(255, 244, 205),
+        "red" => egui::Color32::from_rgb(255, 224, 224),
+        _ => egui::Color32::from_rgb(239, 242, 246),
+    }
+}
+
+fn readiness_text_color(readiness: &str) -> egui::Color32 {
+    match readiness {
+        "green" => egui::Color32::from_rgb(15, 96, 52),
+        "yellow" => egui::Color32::from_rgb(126, 82, 12),
+        "red" => egui::Color32::from_rgb(142, 35, 32),
+        _ => egui::Color32::from_rgb(67, 74, 82),
+    }
+}
+
 fn signal_color(state: &str) -> egui::Color32 {
     match state {
         "green" => egui::Color32::from_rgb(30, 160, 85),
         "yellow" => egui::Color32::from_rgb(214, 157, 35),
         "red" => egui::Color32::from_rgb(210, 70, 64),
         _ => egui::Color32::from_rgb(142, 147, 153),
+    }
+}
+
+fn signal_badge_fill(state: &str) -> egui::Color32 {
+    match state {
+        "green" => egui::Color32::from_rgb(232, 255, 238),
+        "yellow" => egui::Color32::from_rgb(255, 248, 222),
+        "red" => egui::Color32::from_rgb(255, 235, 235),
+        _ => egui::Color32::from_rgb(244, 246, 248),
     }
 }
 
