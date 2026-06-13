@@ -102,6 +102,8 @@ pub struct RecApp {
     auto_start_pending: bool,
     expanded_workspace: bool,
     applied_window_mode: Option<WindowMode>,
+    #[cfg(test)]
+    rendered_controls: Vec<String>,
 }
 
 impl Default for RecApp {
@@ -151,6 +153,8 @@ impl RecApp {
             auto_start_pending: env_flag("REC_AUTO_START"),
             expanded_workspace: !env_flag("REC_AUTO_START"),
             applied_window_mode: None,
+            #[cfg(test)]
+            rendered_controls: Vec::new(),
         };
 
         app.refresh_history();
@@ -936,6 +940,29 @@ impl RecApp {
         )
     }
 
+    fn control_button(&mut self, ui: &mut egui::Ui, label: &str) -> egui::Response {
+        self.record_rendered_control(label);
+        ui.button(label)
+    }
+
+    fn control_button_enabled(
+        &mut self,
+        ui: &mut egui::Ui,
+        enabled: bool,
+        label: &str,
+    ) -> egui::Response {
+        self.record_rendered_control(label);
+        ui.add_enabled(enabled, egui::Button::new(label))
+    }
+
+    #[cfg(test)]
+    fn record_rendered_control(&mut self, label: &str) {
+        self.rendered_controls.push(label.to_string());
+    }
+
+    #[cfg(not(test))]
+    fn record_rendered_control(&mut self, _label: &str) {}
+
     fn show_main_window(&mut self, ctx: &egui::Context) {
         ui::apply_liquid_glass_style(ctx);
         let window_mode = if self.current_run.is_some() && !self.expanded_workspace {
@@ -957,7 +984,7 @@ impl RecApp {
         egui::TopBottomPanel::top("top_bar")
             .frame(ui::toolbar_frame())
             .show(ctx, |ui| {
-                self.show_top_bar(ui);
+                self.show_top_bar(ctx, ui);
             });
 
         if self.current_run.is_some() {
@@ -996,7 +1023,7 @@ impl RecApp {
             egui::CentralPanel::default()
                 .frame(ui::app_background_frame())
                 .show(ctx, |ui| {
-                    self.show_idle_dashboard(ui);
+                    self.show_idle_dashboard(ctx, ui);
                 });
         }
     }
@@ -1060,11 +1087,14 @@ impl RecApp {
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Развернуть").clicked() {
+                    if self.control_button(ui, "Выйти").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    if self.control_button(ui, "Развернуть").clicked() {
                         self.expanded_workspace = true;
                         self.applied_window_mode = None;
                     }
-                    if ui.button("Помоги").clicked() {
+                    if self.control_button(ui, "Помоги").clicked() {
                         self.send_help_request();
                     }
                     let pause_label = if self.connecting || self.recording {
@@ -1072,7 +1102,7 @@ impl RecApp {
                     } else {
                         "Продолжить"
                     };
-                    if ui.button(pause_label).clicked() {
+                    if self.control_button(ui, pause_label).clicked() {
                         if self.connecting || self.recording {
                             self.pause_recording();
                         } else {
@@ -1120,10 +1150,13 @@ impl RecApp {
                         "готов к подсказке"
                     };
                     ui.label(RichText::new(helper_text).size(13.0));
-                    if ui.button("Сохранить").clicked() {
+                    if self.control_button(ui, "Сохранить").clicked() {
                         if let Err(err) = self.save_current_run() {
                             self.status = format!("Save failed: {}", err);
                         }
+                    }
+                    if self.control_button(ui, "Сохр. и закрыть").clicked() {
+                        self.save_and_exit();
                     }
                 });
             });
@@ -1198,12 +1231,13 @@ impl RecApp {
         });
     }
 
-    fn show_top_bar(&mut self, ui: &mut egui::Ui) {
+    fn show_top_bar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("REC Sidecar").size(18.0).strong());
             ui.add_space(10.0);
-            self.show_primary_controls(ui);
-            if self.current_run.is_some() && ui.button("Компактно").clicked() {
+            self.show_primary_controls(ctx, ui);
+            if self.current_run.is_some() && self.control_button(ui, "Компактно").clicked()
+            {
                 self.expanded_workspace = false;
                 self.applied_window_mode = None;
             }
@@ -1220,7 +1254,7 @@ impl RecApp {
         });
     }
 
-    fn show_primary_controls(&mut self, ui: &mut egui::Ui) {
+    fn show_primary_controls(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let primary_label = if self.connecting {
             "Отменить"
         } else if self.recording {
@@ -1231,6 +1265,7 @@ impl RecApp {
             "Начать REC"
         };
 
+        self.record_rendered_control(primary_label);
         if ui
             .add(egui::Button::new(RichText::new(primary_label).strong()))
             .clicked()
@@ -1244,15 +1279,15 @@ impl RecApp {
             }
         }
 
-        if ui
-            .add_enabled(!self.connecting, egui::Button::new("Новый"))
+        if self
+            .control_button_enabled(ui, !self.connecting, "Новый")
             .clicked()
         {
             self.start_new_recording();
         }
 
-        if ui
-            .add_enabled(self.current_run.is_some(), egui::Button::new("Сохранить"))
+        if self
+            .control_button_enabled(ui, self.current_run.is_some(), "Сохранить")
             .clicked()
         {
             if let Err(err) = self.save_current_run() {
@@ -1260,11 +1295,8 @@ impl RecApp {
             }
         }
 
-        if ui
-            .add_enabled(
-                self.current_run.is_some(),
-                egui::Button::new("Сохранить и закрыть"),
-            )
+        if self
+            .control_button_enabled(ui, self.current_run.is_some(), "Сохранить и закрыть")
             .clicked()
         {
             self.save_and_exit();
@@ -1276,14 +1308,15 @@ impl RecApp {
         } else {
             "Помоги"
         };
-        if ui
-            .add_enabled(
-                self.current_run.is_some() && !help_busy,
-                egui::Button::new(help_label),
-            )
+        if self
+            .control_button_enabled(ui, self.current_run.is_some() && !help_busy, help_label)
             .clicked()
         {
             self.send_help_request();
+        }
+
+        if self.control_button(ui, "Выйти").clicked() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -1304,7 +1337,7 @@ impl RecApp {
             });
     }
 
-    fn show_idle_dashboard(&mut self, ui: &mut egui::Ui) {
+    fn show_idle_dashboard(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         ui::glass_panel_frame().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -1316,7 +1349,7 @@ impl RecApp {
                 );
             });
             ui.add_space(8.0);
-            self.show_primary_controls(ui);
+            self.show_primary_controls(ctx, ui);
         });
 
         ui.add_space(4.0);
@@ -1458,15 +1491,15 @@ impl RecApp {
         ui.add_space(8.0);
 
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Посмотреть").clicked() {
+            if self.control_button(ui, "Посмотреть").clicked() {
                 self.view_selected_history();
             }
 
-            if ui.button("Выгрузить").clicked() {
+            if self.control_button(ui, "Выгрузить").clicked() {
                 self.export_selected_history();
             }
 
-            if ui.button("Обновить").clicked() {
+            if self.control_button(ui, "Обновить").clicked() {
                 self.refresh_history();
                 self.status = "History refreshed".to_string();
             }
@@ -1810,6 +1843,7 @@ impl RecApp {
                 });
 
             ui.vertical(|ui| {
+                self.record_rendered_control("Отправить");
                 if ui
                     .add_sized([button_width, 28.0], egui::Button::new("Отправить"))
                     .clicked()
@@ -1824,6 +1858,7 @@ impl RecApp {
                 } else {
                     "Помоги"
                 };
+                self.record_rendered_control(help_label);
                 if ui
                     .add_enabled_ui(!help_busy, |ui| {
                         ui.add_sized([button_width, 28.0], egui::Button::new(help_label))
@@ -2033,12 +2068,54 @@ mod tests {
         (dir, paths)
     }
 
-    fn run_headless_frame(app: &mut RecApp) {
+    fn run_headless_frame(app: &mut RecApp) -> egui::FullOutput {
+        app.rendered_controls.clear();
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        ctx.run(egui::RawInput::default(), |ctx| {
             app.update(ctx, &mut frame);
+        })
+    }
+
+    fn active_test_app(paths: AppPaths) -> RecApp {
+        let mut app = RecApp::new_with_paths(paths);
+        app.current_run = Some(RunSession {
+            id: "run".to_string(),
+            title: "Run".to_string(),
+            path: None,
         });
+        app.recording = true;
+        app.coach_status = "Coach ready".to_string();
+        app.stage_agenda = Some(coach::CoachStageAgenda {
+            stage: "S2.3".to_string(),
+            title: "Target & Gap".to_string(),
+            agenda: "выяснить желаемый результат".to_string(),
+            emotion: "Очень крутая цель.".to_string(),
+            step: "Почему пока не получается?".to_string(),
+            provider: "cerebras".to_string(),
+            model: "gpt-oss-120b".to_string(),
+            scorecard: None,
+        });
+        app
+    }
+
+    fn assert_controls_include(app: &RecApp, expected: &[&str]) {
+        for label in expected {
+            assert!(
+                app.rendered_controls.iter().any(|actual| actual == label),
+                "missing UI control `{}`; rendered controls: {:?}",
+                label,
+                app.rendered_controls
+            );
+        }
+    }
+
+    fn root_viewport_commands(output: &egui::FullOutput) -> &[egui::ViewportCommand] {
+        output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|viewport| viewport.commands.as_slice())
+            .unwrap_or(&[])
     }
 
     #[test]
@@ -2046,11 +2123,98 @@ mod tests {
         let (_dir, paths) = temp_paths();
         let mut app = RecApp::new_with_paths(paths);
 
-        run_headless_frame(&mut app);
+        let _ = run_headless_frame(&mut app);
 
         assert_eq!(app.status, "Ready");
         assert!(!app.recording);
         assert!(app.history.is_empty());
+    }
+
+    #[test]
+    fn compact_overlay_renders_critical_controls_and_window_mode() {
+        let (_dir, paths) = temp_paths();
+        let mut app = active_test_app(paths);
+        app.expanded_workspace = false;
+
+        let output = run_headless_frame(&mut app);
+
+        assert_controls_include(
+            &app,
+            &[
+                "Стоп",
+                "Помоги",
+                "Развернуть",
+                "Сохранить",
+                "Сохр. и закрыть",
+                "Выйти",
+            ],
+        );
+        let commands = root_viewport_commands(&output);
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Transparent(true))),
+            "compact overlay must keep transparent viewport; commands: {:?}",
+            commands
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Decorations(false))),
+            "compact overlay must be borderless; commands: {:?}",
+            commands
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop)
+            )),
+            "compact overlay must stay above the call app; commands: {:?}",
+            commands
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                egui::ViewportCommand::InnerSize(size) if size.y <= 260.0
+            )),
+            "compact overlay must stay small; commands: {:?}",
+            commands
+        );
+    }
+
+    #[test]
+    fn expanded_workspace_renders_full_control_surface() {
+        let (_dir, paths) = temp_paths();
+        let mut app = active_test_app(paths);
+        app.expanded_workspace = true;
+
+        let output = run_headless_frame(&mut app);
+
+        assert_controls_include(
+            &app,
+            &[
+                "Остановить",
+                "Новый",
+                "Сохранить",
+                "Сохранить и закрыть",
+                "Помоги",
+                "Выйти",
+                "Компактно",
+                "Посмотреть",
+                "Выгрузить",
+                "Обновить",
+                "Отправить",
+            ],
+        );
+        let commands = root_viewport_commands(&output);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal)
+            )),
+            "expanded workspace should be a normal window; commands: {:?}",
+            commands
+        );
     }
 
     #[test]
@@ -2233,7 +2397,7 @@ mod tests {
             created_at: Instant::now(),
         });
 
-        run_headless_frame(&mut app);
+        let _ = run_headless_frame(&mut app);
 
         assert!(app.help_is_busy());
     }
