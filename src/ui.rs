@@ -36,8 +36,8 @@ pub(crate) fn apply_liquid_glass_style(ctx: &egui::Context) {
     );
     visuals.widgets.open.bg_fill = visuals.widgets.hovered.bg_fill;
     visuals.widgets.open.bg_stroke = visuals.widgets.hovered.bg_stroke;
-    visuals.window_shadow = glass_shadow();
-    visuals.popup_shadow = glass_shadow();
+    visuals.window_shadow = egui::Shadow::NONE;
+    visuals.popup_shadow = egui::Shadow::NONE;
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
@@ -72,13 +72,36 @@ pub(crate) fn glass_panel_frame() -> egui::Frame {
     )
 }
 
-pub(crate) fn compact_overlay_frame() -> egui::Frame {
-    tinted_glass_frame(
-        egui::Color32::from_rgba_unmultiplied(18, 24, 34, 168),
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 92),
-    )
-    .inner_margin(egui::Margin::symmetric(12, 10))
-    .outer_margin(egui::Margin::same(6))
+pub(crate) fn paint_compact_overlay_background(ui: &egui::Ui, rect: egui::Rect) {
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(16),
+        egui::Color32::from_rgba_unmultiplied(25, 27, 31, 226),
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 46),
+        ),
+        egui::StrokeKind::Inside,
+    );
+}
+
+pub(crate) fn compact_panel_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(37, 42, 51, 210))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 31),
+        ))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::same(12))
+}
+
+pub(crate) fn compact_signal_panel_frame(stroke: egui::Color32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(39, 44, 52, 216))
+        .stroke(egui::Stroke::new(1.0, stroke))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::same(12))
 }
 
 pub(crate) fn tinted_glass_frame(fill: egui::Color32, stroke: egui::Color32) -> egui::Frame {
@@ -88,7 +111,6 @@ pub(crate) fn tinted_glass_frame(fill: egui::Color32, stroke: egui::Color32) -> 
         .corner_radius(egui::CornerRadius::same(18))
         .inner_margin(egui::Margin::same(14))
         .outer_margin(egui::Margin::same(8))
-        .shadow(glass_shadow())
 }
 
 pub(crate) fn section_header(ui: &mut egui::Ui, title: &str, detail: impl AsRef<str>) {
@@ -103,15 +125,6 @@ pub(crate) fn section_header(ui: &mut egui::Ui, title: &str, detail: impl AsRef<
             );
         }
     });
-}
-
-fn glass_shadow() -> egui::Shadow {
-    egui::Shadow {
-        offset: [0, 12],
-        blur: 28,
-        spread: 0,
-        color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 88),
-    }
 }
 
 pub(crate) fn draw_bubble(ui: &mut egui::Ui, text: &str) {

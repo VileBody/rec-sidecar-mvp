@@ -2,6 +2,8 @@
 /runs
 /exports
 /logs
+/screenshots/
+/sales_scripts/audio/
 repomix-output.xml
 .DS_Store
 .env

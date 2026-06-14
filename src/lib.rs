@@ -17,12 +17,12 @@ pub fn run() -> eframe::Result {
         })
         .unwrap_or(false);
     let initial_size = if auto_start {
-        [980.0, 238.0]
+        [980.0, 300.0]
     } else {
         [1320.0, 820.0]
     };
     let min_size = if auto_start {
-        [760.0, 190.0]
+        [460.0, 300.0]
     } else {
         [960.0, 620.0]
     };

@@ -24,6 +24,22 @@ const DEFAULT_CONTEXT_MAX_TRANSCRIPT_CHARS: usize = 16_000;
 const DEFAULT_CONTEXT_MAX_CHAT_CHARS: usize = 4_000;
 const DEFAULT_CONTEXT_MAX_LIVE_PARTIAL_CHARS: usize = 1_200;
 const DEFAULT_CONTEXT_MAX_COACH_MESSAGES: usize = 6;
+const COMPACT_DEFAULT_WIDTH: f32 = 980.0;
+const COMPACT_DEFAULT_HEIGHT: f32 = 300.0;
+const COMPACT_MIN_WIDTH: f32 = 460.0;
+const COMPACT_HORIZONTAL_MIN_HEIGHT: f32 = 300.0;
+const COMPACT_VERTICAL_MIN_HEIGHT: f32 = 640.0;
+const COMPACT_LAYOUT_BREAKPOINT_WIDTH: f32 = 720.0;
+const COMPACT_MAX_HEIGHT: f32 = 720.0;
+const COMPACT_HEADER_HEIGHT: f32 = 34.0;
+const COMPACT_RESIZE_HANDLE_HEIGHT: f32 = 16.0;
+const COMPACT_OVERLAY_EDGE_MARGIN_X: f32 = 0.0;
+const COMPACT_OVERLAY_EDGE_MARGIN_Y: f32 = 0.0;
+const COMPACT_OVERLAY_INNER_MARGIN: f32 = 10.0;
+const COMPACT_OVERLAY_CHROME_HEIGHT: f32 = 72.0;
+const COMPACT_VERTICAL_TRANSCRIPT_MIN_HEIGHT: f32 = 132.0;
+const COMPACT_VERTICAL_INSTRUCTION_MIN_HEIGHT: f32 = 180.0;
+const COMPACT_VERTICAL_HELP_MIN_HEIGHT: f32 = 132.0;
 
 struct PendingHelpRequest {
     id: u64,
@@ -102,8 +118,12 @@ pub struct RecApp {
     auto_start_pending: bool,
     expanded_workspace: bool,
     applied_window_mode: Option<WindowMode>,
+    compact_size: egui::Vec2,
+    compact_position: Option<egui::Pos2>,
     #[cfg(test)]
     rendered_controls: Vec<String>,
+    #[cfg(test)]
+    rendered_affordances: Vec<String>,
 }
 
 impl Default for RecApp {
@@ -153,8 +173,12 @@ impl RecApp {
             auto_start_pending: env_flag("REC_AUTO_START"),
             expanded_workspace: !env_flag("REC_AUTO_START"),
             applied_window_mode: None,
+            compact_size: egui::vec2(COMPACT_DEFAULT_WIDTH, COMPACT_DEFAULT_HEIGHT),
+            compact_position: None,
             #[cfg(test)]
             rendered_controls: Vec::new(),
+            #[cfg(test)]
+            rendered_affordances: Vec::new(),
         };
 
         app.refresh_history();
@@ -955,6 +979,26 @@ impl RecApp {
         ui.add_enabled(enabled, egui::Button::new(label))
     }
 
+    fn display_control_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        enabled: bool,
+        record_label: &str,
+        display_label: &str,
+    ) -> egui::Response {
+        self.record_rendered_control(record_label);
+        let mut button = egui::Button::new(RichText::new(display_label).size(11.5))
+            .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 19))
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 34),
+            ));
+        if record_label == "Помоги" {
+            button = button.fill(egui::Color32::from_rgba_unmultiplied(67, 209, 125, 34));
+        }
+        ui.add_enabled(enabled, button)
+    }
+
     #[cfg(test)]
     fn record_rendered_control(&mut self, label: &str) {
         self.rendered_controls.push(label.to_string());
@@ -962,6 +1006,14 @@ impl RecApp {
 
     #[cfg(not(test))]
     fn record_rendered_control(&mut self, _label: &str) {}
+
+    #[cfg(test)]
+    fn record_rendered_affordance(&mut self, label: &str) {
+        self.rendered_affordances.push(label.to_string());
+    }
+
+    #[cfg(not(test))]
+    fn record_rendered_affordance(&mut self, _label: &str) {}
 
     fn show_main_window(&mut self, ctx: &egui::Context) {
         ui::apply_liquid_glass_style(ctx);
@@ -1028,24 +1080,99 @@ impl RecApp {
         }
     }
 
+    fn compact_size_for_monitor(&self, monitor: egui::Vec2) -> egui::Vec2 {
+        let max_width = (monitor.x - 40.0).max(COMPACT_MIN_WIDTH);
+        let max_height = self.compact_max_height(monitor);
+        let width = self.compact_size.x.clamp(COMPACT_MIN_WIDTH, max_width);
+        let min_height = Self::compact_min_height_for_width(width);
+        egui::vec2(width, self.compact_size.y.clamp(min_height, max_height))
+    }
+
+    fn compact_max_height(&self, monitor: egui::Vec2) -> f32 {
+        COMPACT_MAX_HEIGHT.min(
+            (monitor.y - 120.0)
+                .max(COMPACT_HORIZONTAL_MIN_HEIGHT)
+                .max(COMPACT_VERTICAL_MIN_HEIGHT),
+        )
+    }
+
+    fn compact_min_height_for_width(width: f32) -> f32 {
+        if width < COMPACT_LAYOUT_BREAKPOINT_WIDTH {
+            COMPACT_VERTICAL_MIN_HEIGHT
+        } else {
+            COMPACT_HORIZONTAL_MIN_HEIGHT
+        }
+    }
+
+    fn compact_is_vertical(&self) -> bool {
+        self.compact_size.x < COMPACT_LAYOUT_BREAKPOINT_WIDTH
+    }
+
+    fn compact_default_position(&self, monitor: egui::Vec2, size: egui::Vec2) -> egui::Pos2 {
+        egui::pos2(((monitor.x - size.x) / 2.0).max(18.0), 56.0)
+    }
+
+    fn monitor_size(ctx: &egui::Context) -> egui::Vec2 {
+        ctx.input(|input| {
+            input
+                .viewport()
+                .monitor_size
+                .unwrap_or_else(|| egui::vec2(1440.0, 900.0))
+        })
+    }
+
+    fn remember_compact_geometry(&mut self, ctx: &egui::Context) {
+        let viewport = ctx.input(|input| input.viewport().clone());
+        let monitor = viewport
+            .monitor_size
+            .unwrap_or_else(|| egui::vec2(1440.0, 900.0));
+        if let Some(inner_rect) = viewport.inner_rect {
+            if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
+                self.compact_size = egui::vec2(
+                    inner_rect
+                        .width()
+                        .clamp(COMPACT_MIN_WIDTH, monitor.x.max(COMPACT_MIN_WIDTH)),
+                    inner_rect.height().clamp(
+                        Self::compact_min_height_for_width(inner_rect.width()),
+                        self.compact_max_height(monitor),
+                    ),
+                );
+            }
+        }
+        if let Some(outer_rect) = viewport.outer_rect {
+            self.compact_position = Some(outer_rect.min);
+        }
+    }
+
+    #[cfg(test)]
+    fn resize_compact_overlay(&mut self, ctx: &egui::Context, requested_size: egui::Vec2) {
+        let monitor = Self::monitor_size(ctx);
+        self.compact_size = requested_size;
+        let size = self.compact_size_for_monitor(monitor);
+        self.compact_size = size;
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+        ctx.request_repaint();
+    }
+
     fn apply_window_mode(&mut self, ctx: &egui::Context, mode: WindowMode) {
         if self.applied_window_mode == Some(mode) {
             return;
         }
 
-        let monitor = ctx.input(|input| {
-            input
-                .viewport()
-                .monitor_size
-                .unwrap_or_else(|| egui::vec2(1440.0, 900.0))
-        });
+        let monitor = Self::monitor_size(ctx);
         let (size, min_size, position, window_level) = match mode {
             WindowMode::Compact => {
-                let size = egui::vec2(980.0_f32.min(monitor.x - 40.0).max(760.0), 238.0);
-                let position = egui::pos2(((monitor.x - size.x) / 2.0).max(18.0), 64.0);
+                let size = self.compact_size_for_monitor(monitor);
+                self.compact_size = size;
+                let position = self
+                    .compact_position
+                    .unwrap_or_else(|| self.compact_default_position(monitor, size));
                 (
                     size,
-                    egui::vec2(720.0, 190.0),
+                    egui::vec2(
+                        COMPACT_MIN_WIDTH,
+                        Self::compact_min_height_for_width(size.x),
+                    ),
                     position,
                     egui::WindowLevel::AlwaysOnTop,
                 )
@@ -1069,114 +1196,414 @@ impl RecApp {
     }
 
     fn show_compact_overlay(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        ui::compact_overlay_frame().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let drag = ui.add(
-                    egui::Label::new(RichText::new("REC Sidecar").size(15.0).strong())
-                        .sense(egui::Sense::click_and_drag()),
-                );
-                if drag.drag_started() || drag.dragged() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        self.remember_compact_geometry(ctx);
+        self.enforce_compact_viewport_bounds(ctx);
+        let panel_min_height = (self.compact_size.y - COMPACT_OVERLAY_CHROME_HEIGHT).max(
+            Self::compact_min_height_for_width(self.compact_size.x) - COMPACT_OVERLAY_CHROME_HEIGHT,
+        );
+        let available_rect = ui.available_rect_before_wrap();
+        let root_rect = available_rect.shrink2(egui::vec2(
+            COMPACT_OVERLAY_EDGE_MARGIN_X,
+            COMPACT_OVERLAY_EDGE_MARGIN_Y,
+        ));
+        let content_rect = root_rect.shrink(COMPACT_OVERLAY_INNER_MARGIN);
+        ui.allocate_rect(root_rect, egui::Sense::hover());
+        ui::paint_compact_overlay_background(ui, root_rect);
+
+        let mut overlay_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("compact_overlay_content")
+                .max_rect(content_rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        overlay_ui.set_width(content_rect.width());
+        overlay_ui.set_min_height(panel_min_height);
+        self.show_compact_header(ctx, &mut overlay_ui);
+        overlay_ui.add_space(6.0);
+        self.show_compact_workflow(&mut overlay_ui);
+        self.show_compact_resize_affordances(ui, available_rect);
+    }
+
+    fn enforce_compact_viewport_bounds(&mut self, ctx: &egui::Context) {
+        let viewport = ctx.input(|input| input.viewport().clone());
+        let monitor = viewport
+            .monitor_size
+            .unwrap_or_else(|| egui::vec2(1440.0, 900.0));
+        let size = self.compact_size_for_monitor(monitor);
+        self.compact_size = size;
+        let min_size = egui::vec2(
+            COMPACT_MIN_WIDTH,
+            Self::compact_min_height_for_width(size.x),
+        );
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min_size));
+
+        if let Some(inner_rect) = viewport.inner_rect {
+            let current = inner_rect.size();
+            if current.x + 0.5 < size.x || current.y + 0.5 < size.y {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+            }
+        }
+    }
+
+    fn show_compact_header(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        self.record_rendered_affordance("compact-drag-header");
+        let app_state = self.app_state_label();
+        let app_state_color = self.app_state_color();
+        let stage_label = self.compact_stage_label();
+        let pause_label = if self.connecting || self.recording {
+            "Стоп"
+        } else {
+            "Продолжить"
+        };
+        let help_busy = self.help_is_busy();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
+            let reserved_controls_width = if pause_label == "Продолжить" {
+                500.0
+            } else {
+                455.0
+            };
+            let drag_width = if ui.available_width() < COMPACT_LAYOUT_BREAKPOINT_WIDTH {
+                ui.available_width()
+            } else {
+                (ui.available_width() - reserved_controls_width)
+                    .clamp(150.0, ui.available_width().max(150.0))
+            };
+            let (drag_rect, drag_response) = ui.allocate_exact_size(
+                egui::vec2(drag_width, COMPACT_HEADER_HEIGHT),
+                egui::Sense::click_and_drag(),
+            );
+            let drag_response = drag_response.on_hover_and_drag_cursor(egui::CursorIcon::Grab);
+            if drag_response.drag_started_by(egui::PointerButton::Primary) {
+                self.remember_compact_geometry(ctx);
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+
+            let painter = ui.painter();
+            let grab_color = egui::Color32::from_rgba_unmultiplied(235, 242, 248, 120);
+            let text_color = egui::Color32::from_rgb(235, 242, 248);
+            for row in 0..2 {
+                for col in 0..3 {
+                    let center = egui::pos2(
+                        drag_rect.left() + 8.0 + col as f32 * 6.0,
+                        drag_rect.center().y - 3.5 + row as f32 * 7.0,
+                    );
+                    painter.circle_filled(center, 1.5, grab_color);
                 }
-                ui.label(
-                    RichText::new(self.app_state_label())
-                        .size(12.0)
-                        .color(self.app_state_color()),
-                );
+            }
+            painter.text(
+                egui::pos2(drag_rect.left() + 30.0, drag_rect.center().y - 6.0),
+                egui::Align2::LEFT_CENTER,
+                "REC Sidecar",
+                egui::FontId::proportional(13.0),
+                text_color,
+            );
+            painter.text(
+                egui::pos2(drag_rect.left() + 30.0, drag_rect.center().y + 9.0),
+                egui::Align2::LEFT_CENTER,
+                format!("{} · {}", app_state, stage_label),
+                egui::FontId::proportional(11.0),
+                app_state_color,
+            );
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.control_button(ui, "Выйти").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    if self.control_button(ui, "Развернуть").clicked() {
-                        self.expanded_workspace = true;
-                        self.applied_window_mode = None;
-                    }
-                    if self.control_button(ui, "Помоги").clicked() {
-                        self.send_help_request();
-                    }
-                    let pause_label = if self.connecting || self.recording {
-                        "Стоп"
-                    } else {
-                        "Продолжить"
-                    };
-                    if self.control_button(ui, pause_label).clicked() {
-                        if self.connecting || self.recording {
-                            self.pause_recording();
-                        } else {
-                            self.continue_recording();
-                        }
-                    }
-                });
+            if self
+                .display_control_button(ui, true, pause_label, pause_label)
+                .clicked()
+            {
+                if self.connecting || self.recording {
+                    self.pause_recording();
+                } else {
+                    self.continue_recording();
+                }
+            }
+
+            if self
+                .display_control_button(ui, !help_busy, "Помоги", "Помоги")
+                .on_disabled_hover_text("Тренер уже готовит подсказку")
+                .clicked()
+            {
+                self.send_help_request();
+            }
+
+            if self
+                .display_control_button(ui, self.current_run.is_some(), "Сохранить", "Сохр.")
+                .on_hover_text("Сохранить запись")
+                .clicked()
+            {
+                if let Err(err) = self.save_current_run() {
+                    self.status = format!("Save failed: {}", err);
+                }
+            }
+
+            if self
+                .display_control_button(
+                    ui,
+                    self.current_run.is_some(),
+                    "Сохр. и закрыть",
+                    "Сохр.+закр.",
+                )
+                .on_hover_text("Сохранить и закрыть запись")
+                .clicked()
+            {
+                self.save_and_exit();
+            }
+
+            if self
+                .display_control_button(ui, true, "Развернуть", "Разв.")
+                .on_hover_text("Развернуть рабочее окно")
+                .clicked()
+            {
+                self.remember_compact_geometry(ctx);
+                self.expanded_workspace = true;
+                self.applied_window_mode = None;
+            }
+
+            if self
+                .display_control_button(ui, true, "Выйти", "Выйти")
+                .clicked()
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
+    }
+
+    fn compact_stage_label(&self) -> String {
+        self.stage_agenda
+            .as_ref()
+            .map(|agenda| agenda.stage.clone())
+            .unwrap_or_else(|| "stage pending".to_string())
+    }
+
+    fn show_compact_workflow(&mut self, ui: &mut egui::Ui) {
+        let available_height =
+            (ui.available_height() - COMPACT_RESIZE_HANDLE_HEIGHT - 8.0).max(0.0);
+        if self.compact_is_vertical() {
+            self.record_rendered_affordance("compact-layout-vertical");
+            let section_gap = 8.0;
+            let base_height = COMPACT_VERTICAL_TRANSCRIPT_MIN_HEIGHT
+                + COMPACT_VERTICAL_INSTRUCTION_MIN_HEIGHT
+                + COMPACT_VERTICAL_HELP_MIN_HEIGHT;
+            let content_height = (available_height - section_gap * 2.0).max(base_height);
+            let extra_height = content_height - base_height;
+            let transcript_height = COMPACT_VERTICAL_TRANSCRIPT_MIN_HEIGHT + extra_height * 0.22;
+            let instruction_height = COMPACT_VERTICAL_INSTRUCTION_MIN_HEIGHT + extra_height * 0.48;
+            let help_height = COMPACT_VERTICAL_HELP_MIN_HEIGHT + extra_height * 0.30;
+
+            ui.vertical(|ui| {
+                self.show_compact_transcript_panel(ui, ui.available_width(), transcript_height);
+                compact_section_separator(ui, section_gap);
+                self.show_compact_instruction_panel(ui, ui.available_width(), instruction_height);
+                compact_section_separator(ui, section_gap);
+                self.show_compact_help_chat_panel(ui, ui.available_width(), help_height);
             });
+        } else {
+            self.record_rendered_affordance("compact-layout-horizontal");
+            let content_height = available_height.max(170.0);
+            let total_width = ui.available_width();
+            let gap_width = 12.0;
+            let transcript_width = (total_width * 0.24).clamp(190.0, 270.0);
+            let help_width = (total_width * 0.22).clamp(170.0, 250.0);
+            let instruction_width =
+                (total_width - transcript_width - help_width - gap_width * 2.0).max(0.0);
 
-            ui.separator();
             ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(164.0);
+                ui.spacing_mut().item_spacing.x = 0.0;
+                self.show_compact_transcript_panel(ui, transcript_width, content_height);
+                compact_vertical_separator(ui, gap_width, content_height);
+                self.show_compact_instruction_panel(ui, instruction_width, content_height);
+                compact_vertical_separator(ui, gap_width, content_height);
+                self.show_compact_help_chat_panel(ui, help_width, content_height);
+            });
+        }
+    }
+
+    fn show_compact_transcript_panel(&mut self, ui: &mut egui::Ui, width: f32, height: f32) {
+        self.record_rendered_affordance("compact-transcript-panel");
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui::compact_panel_frame().show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.set_width(ui.available_width());
+                    ui.set_min_height(compact_panel_inner_height(height));
+                    ui.label(RichText::new("Транскрипт").size(12.0).strong());
                     ui.label(
                         RichText::new(self.transcript_state_label())
-                            .size(12.0)
+                            .size(10.5)
                             .color(egui::Color32::from_rgb(168, 180, 192)),
                     );
+                    ui.separator();
                     let last_line = self
                         .live_partial
                         .as_deref()
                         .or_else(|| self.bubbles.last().map(String::as_str))
                         .unwrap_or("Жду речь...");
-                    ui.add(egui::Label::new(RichText::new(last_line).size(13.0)).wrap());
+                    egui::ScrollArea::vertical()
+                        .id_salt("compact_transcript_scroll")
+                        .auto_shrink([false, false])
+                        .max_height((height - 96.0).max(36.0))
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(RichText::new(last_line).size(12.5)).wrap());
+                        });
                 });
-
-                ui.separator();
-                ui.vertical(|ui| {
-                    ui.set_width((ui.available_width() - 188.0).max(360.0));
-                    self.show_compact_stage_summary(ui);
-                });
-
-                ui.separator();
-                ui.vertical(|ui| {
-                    ui.set_width(164.0);
-                    ui.label(
-                        RichText::new(self.coach_state_label())
-                            .size(12.0)
-                            .color(egui::Color32::from_rgb(168, 180, 192)),
-                    );
-                    let help_busy = self.help_is_busy();
-                    let helper_text = if help_busy {
-                        "готовлю подсказку..."
-                    } else {
-                        "готов к подсказке"
-                    };
-                    ui.label(RichText::new(helper_text).size(13.0));
-                    if self.control_button(ui, "Сохранить").clicked() {
-                        if let Err(err) = self.save_current_run() {
-                            self.status = format!("Save failed: {}", err);
-                        }
-                    }
-                    if self.control_button(ui, "Сохр. и закрыть").clicked() {
-                        self.save_and_exit();
-                    }
-                });
-            });
-        });
+            },
+        );
     }
 
-    fn show_compact_stage_summary(&mut self, ui: &mut egui::Ui) {
+    fn show_compact_instruction_panel(&mut self, ui: &mut egui::Ui, width: f32, height: f32) {
+        self.record_rendered_affordance("compact-instruction-panel");
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(width);
+                self.show_compact_stage_summary(ui, height);
+            },
+        );
+    }
+
+    fn show_compact_help_chat_panel(&mut self, ui: &mut egui::Ui, width: f32, height: f32) {
+        self.record_rendered_affordance("compact-help-chat-panel");
+        let help_text = self.compact_help_chat_text();
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui::compact_panel_frame().show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.set_width(ui.available_width());
+                    ui.set_min_height(compact_panel_inner_height(height));
+                    ui.label(RichText::new("Помоги / чат").size(12.0).strong());
+                    ui.label(
+                        RichText::new(self.coach_state_label())
+                            .size(10.5)
+                            .color(egui::Color32::from_rgb(168, 180, 192)),
+                    );
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt("compact_help_chat_scroll")
+                        .auto_shrink([false, false])
+                        .max_height((height - 96.0).max(36.0))
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(RichText::new(help_text).size(12.5)).wrap());
+                        });
+                });
+            },
+        );
+    }
+
+    fn compact_help_chat_text(&self) -> String {
+        if let Some(text) = self
+            .coach_live
+            .as_deref()
+            .filter(|text| !text.trim().is_empty() && !is_technical_coach_status(text))
+        {
+            return text.trim().to_string();
+        }
+
+        if let Some(text) = self
+            .coach_bubbles
+            .iter()
+            .rev()
+            .find(|text| !text.trim().is_empty() && !is_technical_coach_status(text))
+        {
+            return text.trim().to_string();
+        }
+
+        if let Some(message) = self.coach_chat_messages.iter().rev().find(|message| {
+            message.role == CoachChatRole::Assistant && !message.text.trim().is_empty()
+        }) {
+            return message.text.trim().to_string();
+        }
+
+        if self.help_is_busy() {
+            "Готовлю подсказку...".to_string()
+        } else {
+            "Нажмите «Помоги», чтобы получить следующую реплику или вопрос.".to_string()
+        }
+    }
+
+    fn show_compact_resize_affordances(&mut self, ui: &mut egui::Ui, window_rect: egui::Rect) {
+        self.record_rendered_affordance("compact-resize-handle");
+        self.record_rendered_affordance("compact-resize-right");
+        self.record_rendered_affordance("compact-resize-bottom");
+        self.record_rendered_affordance("compact-resize-corner");
+
+        let grip_color = egui::Color32::from_rgba_unmultiplied(220, 235, 245, 155);
+        let edge_thickness = 18.0;
+        let corner_size = 34.0;
+        let border_rect = window_rect;
+        let bottom_rect = egui::Rect::from_min_max(
+            egui::pos2(
+                border_rect.left() + 120.0,
+                border_rect.bottom() - edge_thickness,
+            ),
+            egui::pos2(border_rect.right() - corner_size, border_rect.bottom()),
+        );
+        let right_rect = egui::Rect::from_min_max(
+            egui::pos2(
+                border_rect.right() - edge_thickness,
+                border_rect.top() + 70.0,
+            ),
+            egui::pos2(border_rect.right(), border_rect.bottom() - corner_size),
+        );
+        let corner_rect = egui::Rect::from_min_max(
+            egui::pos2(
+                border_rect.right() - corner_size,
+                border_rect.bottom() - corner_size,
+            ),
+            border_rect.right_bottom(),
+        );
+
+        let painter = ui.painter();
+
+        painter.line_segment(
+            [
+                egui::pos2(bottom_rect.center().x - 34.0, bottom_rect.center().y + 2.0),
+                egui::pos2(bottom_rect.center().x + 34.0, bottom_rect.center().y + 2.0),
+            ],
+            egui::Stroke::new(2.0, grip_color),
+        );
+        painter.line_segment(
+            [
+                egui::pos2(right_rect.center().x + 2.0, right_rect.center().y - 28.0),
+                egui::pos2(right_rect.center().x + 2.0, right_rect.center().y + 28.0),
+            ],
+            egui::Stroke::new(2.0, grip_color),
+        );
+        for offset in [0.0, 7.0, 14.0] {
+            painter.line_segment(
+                [
+                    egui::pos2(
+                        corner_rect.right() - 24.0 + offset,
+                        corner_rect.bottom() - 7.0,
+                    ),
+                    egui::pos2(
+                        corner_rect.right() - 7.0,
+                        corner_rect.bottom() - 24.0 + offset,
+                    ),
+                ],
+                egui::Stroke::new(2.0, grip_color),
+            );
+        }
+    }
+
+    fn show_compact_stage_summary(&mut self, ui: &mut egui::Ui, height: f32) {
         let readiness_key = self
             .stage_agenda
             .as_ref()
             .and_then(|agenda| agenda.scorecard.as_ref())
             .map(|scorecard| scorecard.readiness.as_str())
-            .unwrap_or("pending");
-
-        ui::tinted_glass_frame(
-            readiness_panel_fill(readiness_key),
-            readiness_stroke_color(readiness_key),
-        )
-        .show(ui, |ui| {
+            .unwrap_or("yellow");
+        let signal = compact_readiness_color(readiness_key);
+        let frame = ui::compact_signal_panel_frame(compact_readiness_stroke_color(readiness_key));
+        let response = frame.show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
             ui.set_width(ui.available_width());
+            ui.set_min_height(compact_panel_inner_height(height));
             if let Some(agenda) = &self.stage_agenda {
                 let label = agenda
                     .scorecard
@@ -1191,44 +1618,68 @@ impl RecApp {
                         )
                     })
                     .unwrap_or_else(|| format!("{} · {}", agenda.stage, agenda.title));
-                ui.label(
-                    RichText::new(label)
-                        .size(12.0)
-                        .strong()
-                        .color(readiness_color(readiness_key)),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Инструкция").size(12.0).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        compact_signal_badge(ui, compact_readiness_label(readiness_key), signal);
+                    });
+                });
+                ui.label(RichText::new(label).size(10.5).strong().color(signal));
+                ui.separator();
                 let advice = agenda
                     .scorecard
                     .as_ref()
                     .map(|scorecard| scorecard.next_action.as_str())
                     .unwrap_or(agenda.step.as_str());
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(advice)
-                            .size(17.0)
-                            .strong()
-                            .color(readiness_text_color(readiness_key)),
-                    )
-                    .wrap(),
-                );
+                egui::ScrollArea::vertical()
+                    .id_salt("compact_instruction_scroll")
+                    .auto_shrink([false, false])
+                    .max_height((height - 104.0).max(44.0))
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(advice)
+                                    .size(15.5)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(241, 244, 247)),
+                            )
+                            .wrap(),
+                        );
+                    });
             } else {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Инструкция").size(12.0).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        compact_signal_badge(ui, "Желтый", signal);
+                    });
+                });
                 ui.label(
                     RichText::new("Определяю стадию")
-                        .size(12.0)
+                        .size(10.5)
                         .strong()
-                        .color(readiness_color("pending")),
+                        .color(signal),
                 );
+                ui.separator();
                 ui.add(
                     egui::Label::new(
                         RichText::new("Говорите, я слушаю и собираю контекст.")
-                            .size(17.0)
+                            .size(15.5)
                             .strong()
-                            .color(readiness_text_color("pending")),
+                            .color(egui::Color32::from_rgb(241, 244, 247)),
                     )
                     .wrap(),
                 );
             }
         });
+        let rect = response.response.rect;
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(rect.left(), rect.top() + 2.0),
+                egui::pos2(rect.left() + 3.0, rect.bottom() - 2.0),
+            ),
+            egui::CornerRadius::same(2),
+            signal,
+        );
     }
 
     fn show_top_bar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -1913,6 +2364,85 @@ fn readiness_color(readiness: &str) -> egui::Color32 {
     }
 }
 
+fn compact_readiness_color(readiness: &str) -> egui::Color32 {
+    match readiness {
+        "green" => egui::Color32::from_rgb(67, 209, 125),
+        "red" => egui::Color32::from_rgb(238, 106, 111),
+        _ => egui::Color32::from_rgb(229, 184, 77),
+    }
+}
+
+fn compact_readiness_stroke_color(readiness: &str) -> egui::Color32 {
+    match readiness {
+        "green" => egui::Color32::from_rgba_unmultiplied(67, 209, 125, 118),
+        "red" => egui::Color32::from_rgba_unmultiplied(238, 106, 111, 122),
+        _ => egui::Color32::from_rgba_unmultiplied(229, 184, 77, 118),
+    }
+}
+
+fn compact_readiness_label(readiness: &str) -> &'static str {
+    match readiness {
+        "green" => "Зеленый",
+        "red" => "Красный",
+        _ => "Желтый",
+    }
+}
+
+fn compact_signal_badge(ui: &mut egui::Ui, label: &str, color: egui::Color32) {
+    let fill = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 32);
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 112),
+        ))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(7, 3))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let center = ui.cursor().min + egui::vec2(3.0, 6.0);
+                ui.painter().circle_filled(center, 3.0, color);
+                ui.add_space(9.0);
+                ui.label(RichText::new(label).size(10.0).strong().color(color));
+            });
+        });
+}
+
+fn compact_panel_inner_height(outer_height: f32) -> f32 {
+    (outer_height - 32.0).max(56.0)
+}
+
+fn compact_section_separator(ui: &mut egui::Ui, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.left(), rect.center().y),
+            egui::pos2(rect.right(), rect.center().y),
+        ],
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+        ),
+    );
+}
+
+fn compact_vertical_separator(ui: &mut egui::Ui, width: f32, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.center().x, rect.top()),
+            egui::pos2(rect.center().x, rect.bottom()),
+        ],
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 54),
+        ),
+    );
+}
+
 fn readiness_panel_fill(readiness: &str) -> egui::Color32 {
     match readiness {
         "green" => egui::Color32::from_rgba_unmultiplied(30, 190, 102, 54),
@@ -2070,6 +2600,7 @@ mod tests {
 
     fn run_headless_frame(app: &mut RecApp) -> egui::FullOutput {
         app.rendered_controls.clear();
+        app.rendered_affordances.clear();
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
         ctx.run(egui::RawInput::default(), |ctx| {
@@ -2110,12 +2641,32 @@ mod tests {
         }
     }
 
+    fn assert_affordances_include(app: &RecApp, expected: &[&str]) {
+        for label in expected {
+            assert!(
+                app.rendered_affordances
+                    .iter()
+                    .any(|actual| actual == label),
+                "missing UI affordance `{}`; rendered affordances: {:?}",
+                label,
+                app.rendered_affordances
+            );
+        }
+    }
+
     fn root_viewport_commands(output: &egui::FullOutput) -> &[egui::ViewportCommand] {
         output
             .viewport_output
             .get(&egui::ViewportId::ROOT)
             .map(|viewport| viewport.commands.as_slice())
             .unwrap_or(&[])
+    }
+
+    fn command_inner_size(commands: &[egui::ViewportCommand]) -> Option<egui::Vec2> {
+        commands.iter().find_map(|command| match command {
+            egui::ViewportCommand::InnerSize(size) => Some(*size),
+            _ => None,
+        })
     }
 
     #[test]
@@ -2149,6 +2700,20 @@ mod tests {
                 "Выйти",
             ],
         );
+        assert_affordances_include(
+            &app,
+            &[
+                "compact-drag-header",
+                "compact-resize-handle",
+                "compact-resize-right",
+                "compact-resize-bottom",
+                "compact-resize-corner",
+                "compact-layout-horizontal",
+                "compact-transcript-panel",
+                "compact-instruction-panel",
+                "compact-help-chat-panel",
+            ],
+        );
         let commands = root_viewport_commands(&output);
         assert!(
             commands
@@ -2165,6 +2730,13 @@ mod tests {
             commands
         );
         assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Resizable(true))),
+            "compact overlay should keep native resize; commands: {:?}",
+            commands
+        );
+        assert!(
             commands.iter().any(|command| matches!(
                 command,
                 egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop)
@@ -2175,9 +2747,105 @@ mod tests {
         assert!(
             commands.iter().any(|command| matches!(
                 command,
-                egui::ViewportCommand::InnerSize(size) if size.y <= 260.0
+                egui::ViewportCommand::InnerSize(size)
+                    if size.x <= 1_000.0 && size.y >= COMPACT_HORIZONTAL_MIN_HEIGHT
             )),
-            "compact overlay must stay small; commands: {:?}",
+            "compact overlay must stay compact but tall enough to keep every panel visible; commands: {:?}",
+            commands
+        );
+    }
+
+    #[test]
+    fn compact_vertical_layout_keeps_all_workflow_panels_visible() {
+        let (_dir, paths) = temp_paths();
+        let mut app = active_test_app(paths);
+        app.expanded_workspace = false;
+        app.compact_size = egui::vec2(520.0, COMPACT_VERTICAL_MIN_HEIGHT);
+
+        let output = run_headless_frame(&mut app);
+
+        assert_affordances_include(
+            &app,
+            &[
+                "compact-layout-vertical",
+                "compact-transcript-panel",
+                "compact-instruction-panel",
+                "compact-help-chat-panel",
+            ],
+        );
+        let commands = root_viewport_commands(&output);
+        assert!(
+            matches!(
+                command_inner_size(commands),
+                Some(size)
+                    if size.x == 520.0 && size.y >= COMPACT_VERTICAL_MIN_HEIGHT
+            ),
+            "vertical compact layout must reserve enough height for every panel; commands: {:?}",
+            commands
+        );
+    }
+
+    #[test]
+    fn compact_manual_resize_clamps_and_emits_inner_size() {
+        let (_dir, paths) = temp_paths();
+        let mut app = active_test_app(paths);
+        let ctx = egui::Context::default();
+
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            app.resize_compact_overlay(ctx, egui::vec2(920.0, 360.0));
+        });
+        let commands = root_viewport_commands(&output);
+        assert_eq!(app.compact_size.x, 920.0);
+        assert_eq!(app.compact_size.y, 360.0);
+        assert!(
+            matches!(command_inner_size(commands), Some(size) if size.x == 920.0 && size.y == 360.0),
+            "manual resize must send the new compact inner size; commands: {:?}",
+            commands
+        );
+
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            app.resize_compact_overlay(ctx, egui::vec2(320.0, 120.0));
+        });
+        let commands = root_viewport_commands(&output);
+        assert_eq!(app.compact_size.x, COMPACT_MIN_WIDTH);
+        assert_eq!(app.compact_size.y, COMPACT_VERTICAL_MIN_HEIGHT);
+        assert!(
+            matches!(
+                command_inner_size(commands),
+                Some(size)
+                    if size.x == COMPACT_MIN_WIDTH && size.y == COMPACT_VERTICAL_MIN_HEIGHT
+            ),
+            "manual resize must clamp so workflow panels cannot disappear; commands: {:?}",
+            commands
+        );
+    }
+
+    #[test]
+    fn compact_height_survives_expand_and_return() {
+        let (_dir, paths) = temp_paths();
+        let mut app = active_test_app(paths);
+        app.expanded_workspace = false;
+        app.compact_size.y = 336.0;
+
+        let output = run_headless_frame(&mut app);
+        let commands = root_viewport_commands(&output);
+        assert!(
+            matches!(command_inner_size(commands), Some(size) if size.y == 336.0),
+            "compact should enter with stored manual height; commands: {:?}",
+            commands
+        );
+
+        app.expanded_workspace = true;
+        app.applied_window_mode = None;
+        let _ = run_headless_frame(&mut app);
+
+        app.expanded_workspace = false;
+        app.applied_window_mode = None;
+        let output = run_headless_frame(&mut app);
+        let commands = root_viewport_commands(&output);
+        assert!(
+            matches!(command_inner_size(commands), Some(size) if size.y == 336.0),
+            "compact should preserve manual height after expanded mode; commands: {:?}",
             commands
         );
     }

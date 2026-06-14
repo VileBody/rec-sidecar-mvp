@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>REC Sidecar Overlay Layout Prototype</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #edf2e8;
+      --glass: rgba(25, 27, 31, 0.88);
+      --glass-strong: rgba(32, 35, 41, 0.9);
+      --panel: rgba(37, 42, 51, 0.82);
+      --panel-soft: rgba(43, 48, 58, 0.76);
+      --stroke: rgba(255, 255, 255, 0.12);
+      --stroke-strong: rgba(255, 255, 255, 0.18);
+      --text: #f1f4f7;
+      --muted: #9ca7b3;
+      --green: #43d17d;
+      --yellow: #e5b84d;
+      --red: #ee6a6f;
+      --shadow: 0 16px 34px rgba(0, 0, 0, 0.3);
+      --radius: 12px;
+      --gap: 8px;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.94) 0 28%, transparent 28%),
+        radial-gradient(circle at 80% 30%, rgba(157, 210, 127, 0.55), transparent 32%),
+        linear-gradient(135deg, #dbeec4, #b6d4aa 52%, #e8e6a9);
+      color: var(--text);
+      padding: 28px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      font-weight: 700;
+      color: #17212c;
+    }
+
+    .note {
+      max-width: 980px;
+      margin: 0 0 22px;
+      color: #485461;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 28px;
+      align-items: start;
+    }
+
+    .case-title {
+      margin: 0 0 8px;
+      color: #1b2632;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .stage {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 360px;
+      padding: 18px;
+      border: 1px solid rgba(21, 31, 42, 0.16);
+      background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.88) 0 30%, transparent 30%),
+        repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.035) 0 1px, transparent 1px 72px),
+        linear-gradient(135deg, rgba(205, 229, 165, 0.72), rgba(137, 183, 120, 0.5));
+      border-radius: 12px;
+      overflow: visible;
+    }
+
+    .overlay {
+      container-type: inline-size;
+      width: var(--w);
+      height: var(--h);
+      min-width: 460px;
+      min-height: 280px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) 14px;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid var(--stroke-strong);
+      border-radius: 16px;
+      background: var(--glass);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px) saturate(1.05);
+      overflow: hidden;
+    }
+
+    .overlay.sandbox {
+      resize: both;
+      overflow: hidden;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(190px, 1fr) auto;
+      gap: 8px;
+      align-items: start;
+      min-height: 42px;
+    }
+
+    .drag-zone {
+      min-height: 38px;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      cursor: grab;
+    }
+
+    .grip {
+      display: grid;
+      grid-template-columns: repeat(3, 4px);
+      gap: 3px;
+      opacity: 0.75;
+    }
+
+    .grip span {
+      width: 3px;
+      height: 3px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.76);
+    }
+
+    .brand {
+      min-width: 0;
+    }
+
+    .brand strong {
+      display: block;
+      font-size: 12.5px;
+      line-height: 1.1;
+    }
+
+    .brand span {
+      display: block;
+      margin-top: 2px;
+      color: var(--green);
+      font-size: 10.5px;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 5px;
+      max-width: 620px;
+    }
+
+    button {
+      height: 28px;
+      padding: 0 9px;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-radius: 6px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.075);
+      font: inherit;
+      font-size: 11.5px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    button.primary {
+      border-color: rgba(67, 209, 125, 0.34);
+      background: rgba(67, 209, 125, 0.13);
+      color: #d8fbe7;
+    }
+
+    .body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(180px, 0.78fr) minmax(300px, 1.8fr) minmax(190px, 0.9fr);
+      gap: var(--gap);
+    }
+
+    .panel {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      border: 1px solid var(--stroke);
+      border-radius: var(--radius);
+      background: linear-gradient(90deg, rgba(255, 255, 255, 0.035), transparent 42%), var(--panel);
+      overflow: hidden;
+    }
+
+    .panel header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 11px 13px 4px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .meta {
+      padding: 0 13px 8px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
+    }
+
+    .scroll {
+      min-height: 0;
+      overflow: auto;
+      padding: 10px 13px 13px;
+      border-top: 1px solid rgba(255, 255, 255, 0.09);
+      font-size: 12.5px;
+      line-height: 1.36;
+    }
+
+    .instruction {
+      --status: var(--yellow);
+      --status-soft: rgba(229, 184, 77, 0.12);
+      position: relative;
+      border-color: color-mix(in srgb, var(--status), transparent 54%);
+      background:
+        linear-gradient(90deg, var(--status-soft), transparent 58%),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.035), transparent 42%),
+        var(--panel-soft);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.035);
+    }
+
+    .instruction::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      border-radius: var(--radius) 0 0 var(--radius);
+      background: var(--status);
+    }
+
+    .ready-green {
+      --status: var(--green);
+      --status-soft: rgba(67, 209, 125, 0.12);
+    }
+
+    .ready-yellow {
+      --status: var(--yellow);
+      --status-soft: rgba(229, 184, 77, 0.14);
+    }
+
+    .ready-red {
+      --status: var(--red);
+      --status-soft: rgba(238, 106, 111, 0.13);
+    }
+
+    .instruction .meta {
+      color: color-mix(in srgb, var(--status), white 18%);
+      font-weight: 700;
+    }
+
+    .instruction .scroll {
+      font-size: 15.5px;
+      line-height: 1.24;
+      font-weight: 620;
+      border-color: rgba(255, 255, 255, 0.08);
+    }
+
+    .signal {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 7px;
+      border: 1px solid color-mix(in srgb, var(--status), transparent 52%);
+      border-radius: 999px;
+      color: color-mix(in srgb, var(--status), white 22%);
+      background: var(--status-soft);
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .signal::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--status);
+      box-shadow: 0 0 12px var(--status);
+    }
+
+    .resize-grip {
+      position: relative;
+      min-height: 14px;
+    }
+
+    .resize-grip::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 5px;
+      width: 72px;
+      height: 2px;
+      transform: translateX(-50%);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.36);
+    }
+
+    .resize-grip::after {
+      content: "";
+      position: absolute;
+      right: 2px;
+      bottom: 0;
+      width: 28px;
+      height: 2px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.5);
+    }
+
+    .wide { --w: 980px; --h: 300px; }
+    .medium { --w: 760px; --h: 360px; }
+    .vertical { --w: 560px; --h: 560px; }
+    .narrow { --w: 460px; --h: 640px; }
+
+    @container (max-width: 719px) {
+      .overlay {
+        min-height: 520px;
+      }
+
+      .topbar {
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+
+      .actions {
+        justify-content: flex-start;
+      }
+
+      .body {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(112px, 0.82fr) minmax(150px, 1.12fr) minmax(124px, 0.9fr);
+      }
+
+      .instruction .scroll {
+        font-size: 17px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      body {
+        padding: 16px;
+      }
+
+      .matrix {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h1>REC Sidecar Overlay Layout Prototype</h1>
+  <p class="note">
+    Contract: три рабочие зоны всегда остаются видимыми. При ширине от 720px и выше layout горизонтальный:
+    транскрипт | инструкция | помоги/чат. Ниже 720px layout становится вертикальным:
+    транскрипт / инструкция / помоги/чат. Текст не масштабируется от viewport, контент скроллится внутри секций.
+  </p>
+
+  <main class="matrix">
+    <section>
+      <p class="case-title">Wide horizontal, 980 x 300</p>
+      <div class="stage">
+        <div class="overlay wide">
+          <div class="topbar">
+            <div class="drag-zone">
+              <div class="grip"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+              <div class="brand"><strong>REC Sidecar</strong><span>listening · S2.2 Current Reality</span></div>
+            </div>
+            <div class="actions">
+              <button>Стоп</button><button class="primary">Помоги</button><button>Сохр.</button><button>Сохр.+закр.</button><button>Разв.</button><button>Выйти</button>
+            </div>
+          </div>
+          <div class="body">
+            <section class="panel"><header>Транскрипт</header><div class="meta">слушаю</div><div class="scroll">Клиент: денег сейчас мало, уже покупал обучение, боюсь опять потратить впустую.</div></section>
+            <section class="panel instruction ready-yellow"><header>Инструкция <span class="signal">Желтый</span></header><div class="meta">S2.2 · мало данных · 0/0</div><div class="scroll">Уточнить: какая сейчас ситуация с финансами и какие основные преграды мешают зарабатывать больше.</div></section>
+            <section class="panel"><header>Помоги / чат</header><div class="meta">Coach ready</div><div class="scroll">Спросите коротко: “Что именно сейчас больше всего давит: долг, нестабильный доход или страх повторить прошлый опыт?”</div></section>
+          </div>
+          <div class="resize-grip"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <p class="case-title">Medium horizontal, 760 x 360</p>
+      <div class="stage">
+        <div class="overlay medium">
+          <div class="topbar">
+            <div class="drag-zone">
+              <div class="grip"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+              <div class="brand"><strong>REC Sidecar</strong><span>listening · S2.3 Target & Gap</span></div>
+            </div>
+            <div class="actions">
+              <button>Стоп</button><button class="primary">Помоги</button><button>Сохр.</button><button>Сохр.+закр.</button><button>Разв.</button><button>Выйти</button>
+            </div>
+          </div>
+          <div class="body">
+            <section class="panel"><header>Транскрипт</header><div class="meta">слушаю</div><div class="scroll">Хочу стабильнее, чтобы не зависеть от сезонности, но пока не понимаю, с чего начать.</div></section>
+            <section class="panel instruction ready-green"><header>Инструкция <span class="signal">Зеленый</span></header><div class="meta">S2.3 · target/gap</div><div class="scroll">Выяснить желаемый результат и почему клиент пока не может сделать его самостоятельно.</div></section>
+            <section class="panel"><header>Помоги / чат</header><div class="meta">готов к подсказке</div><div class="scroll">“А что для вас будет доказательством, что решение реально сработало?”</div></section>
+          </div>
+          <div class="resize-grip"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <p class="case-title">Vertical, 560 x 560</p>
+      <div class="stage">
+        <div class="overlay vertical">
+          <div class="topbar">
+            <div class="drag-zone">
+              <div class="grip"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+              <div class="brand"><strong>REC Sidecar</strong><span>listening · S3.4a Objection Clarifier</span></div>
+            </div>
+            <div class="actions">
+              <button>Стоп</button><button class="primary">Помоги</button><button>Сохр.</button><button>Сохр.+закр.</button><button>Разв.</button><button>Выйти</button>
+            </div>
+          </div>
+          <div class="body">
+            <section class="panel"><header>Транскрипт</header><div class="meta">слушаю</div><div class="scroll">Клиент: надо подумать, сумма большая, не хочу принимать решение прямо сейчас.</div></section>
+            <section class="panel instruction ready-red"><header>Инструкция <span class="signal">Красный</span></header><div class="meta">S3.4a · objection</div><div class="scroll">Уточнить честно: сейчас проблема в цене или в ценности продукта?</div></section>
+            <section class="panel"><header>Помоги / чат</header><div class="meta">Coach ready</div><div class="scroll">Не давить. Сначала признать сомнение, потом спросить: “Если отделить эмоцию от цифры, что именно не сходится?”</div></section>
+          </div>
+          <div class="resize-grip"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <p class="case-title">Narrow vertical, 460 x 640</p>
+      <div class="stage">
+        <div class="overlay narrow">
+          <div class="topbar">
+            <div class="drag-zone">
+              <div class="grip"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+              <div class="brand"><strong>REC Sidecar</strong><span>listening · S3.3 Bank Option</span></div>
+            </div>
+            <div class="actions">
+              <button>Стоп</button><button class="primary">Помоги</button><button>Сохр.</button><button>Сохр.+закр.</button><button>Разв.</button><button>Выйти</button>
+            </div>
+          </div>
+          <div class="body">
+            <section class="panel"><header>Транскрипт</header><div class="meta">слушаю</div><div class="scroll">Клиент: ценность вижу, но полмиллиона сейчас доставать не готов.</div></section>
+            <section class="panel instruction ready-green"><header>Инструкция <span class="signal">Зеленый</span></header><div class="meta">S3.3 · payment</div><div class="scroll">Предложить удобный платеж через банк и проверить реакцию без давления.</div></section>
+            <section class="panel"><header>Помоги / чат</header><div class="meta">готов к подсказке</div><div class="scroll">“Понимаю, вытаскивать крупную сумму из оборотки непросто; есть вариант через банк с платежом около 15к в месяц, как тебе такой формат?”</div></section>
+          </div>
+          <div class="resize-grip"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <p class="case-title">Resizable sandbox</p>
+      <div class="stage">
+        <div class="overlay sandbox wide">
+          <div class="topbar">
+            <div class="drag-zone">
+              <div class="grip"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+              <div class="brand"><strong>REC Sidecar</strong><span>drag zone · resize bottom-right</span></div>
+            </div>
+            <div class="actions">
+              <button>Стоп</button><button class="primary">Помоги</button><button>Сохр.</button><button>Сохр.+закр.</button><button>Разв.</button><button>Выйти</button>
+            </div>
+          </div>
+          <div class="body">
+            <section class="panel"><header>Транскрипт</header><div class="meta">always visible</div><div class="scroll">Эта панель не исчезает; при нехватке места скроллится внутри.</div></section>
+            <section class="panel instruction ready-yellow"><header>Инструкция <span class="signal">Желтый</span></header><div class="meta">always visible</div><div class="scroll">Главная подсказка остается в отдельной центральной/средней зоне.</div></section>
+            <section class="panel"><header>Помоги / чат</header><div class="meta">always visible</div><div class="scroll">Последняя подсказка или чат остаются доступными в третьей зоне.</div></section>
+          </div>
+          <div class="resize-grip"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
