@@ -70,6 +70,14 @@ kubectl apply -f k8s/llm-helper.yaml
 
 `llm-helper` is exposed as `NodePort` `30914`, so the desktop app can use `COACH_LLM_SERVICE_URL=http://<node-external-ip>:30914`.
 
+The browser-only roleplay UI can be deployed separately with:
+
+```bash
+kubectl apply -f k8s/fresh-start-chat.yaml
+```
+
+It is exposed as `NodePort` `30915`.
+
 Auto live suggestions are disabled by default in code (`COACH_AUTO_SUGGESTIONS=false`) to avoid provider rate limits. The manual `Помоги` flow is pull-based:
 
 - UI sends an ASR `Flush { reason: "help" }` command.
@@ -119,6 +127,17 @@ Open `http://127.0.0.1:8097`, type the seller line, and the app will:
 - play the buyer reply locally and save both WAVs under `logs/live_client_chat/`
 
 This mode pairs well with `REC_SIDECAR_SYSTEM_AUDIO=true cargo run` because the Rust app can now listen to the desktop/system output instead of relying on mic bleed.
+
+For the browser-only seller/client roleplay loop, run:
+
+```bash
+python3 fresh-start/chat_loop_app.py --host 127.0.0.1 --port 8101
+```
+
+Open `http://127.0.0.1:8101`. The page keeps two async loops alive:
+
+- the buyer reply streams in as text
+- a parallel ZAI -> Gemini lane refreshes stage, scorecard, and the seller's next line while the client reply is still unfolding
 
 The Rust STT client sends this config by default:
 

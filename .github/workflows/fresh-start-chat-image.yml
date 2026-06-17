@@ -1,0 +1,38 @@
+name: fresh-start chat image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "fresh-start/**"
+      - "llm_service/app/**"
+      - "scripts/live_client_voice_agent.py"
+      - "sales_scripts/glubina_kazan_10_call_scripts_v1.md"
+      - ".github/workflows/fresh-start-chat-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./fresh-start/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/vilebody/rec-sidecar-mvp-fresh-start:latest
+            ghcr.io/vilebody/rec-sidecar-mvp-fresh-start:${{ github.sha }}

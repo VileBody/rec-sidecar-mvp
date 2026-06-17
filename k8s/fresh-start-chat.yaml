@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fresh-start-chat
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: fresh-start-chat
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fresh-start-chat
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fresh-start-chat
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: fresh-start-chat
+          image: ghcr.io/vilebody/rec-sidecar-mvp-fresh-start:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8101
+          envFrom:
+            - secretRef:
+                name: llm-helper-env
+          env:
+            - name: COACH_HELP_OPENER_TIMEOUT_MS
+              value: "4000"
+            - name: VERTEX_ADC_CREDENTIALS
+              value: /root/.config/gcloud/application_default_credentials.json
+            - name: VERTEX_THINKING_LEVEL
+              value: low
+          volumeMounts:
+            - name: gcloud-adc
+              mountPath: /root/.config/gcloud/application_default_credentials.json
+              subPath: application_default_credentials.json
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: gcloud-adc
+          secret:
+            secretName: gcloud-adc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fresh-start-chat
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: fresh-start-chat
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: fresh-start-chat
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30915

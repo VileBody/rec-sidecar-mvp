@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fresh Start Chat Loop</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d12;
+      --panel: #10141c;
+      --panel-2: #171c26;
+      --border: rgba(255,255,255,0.08);
+      --text: #eef2ff;
+      --muted: #97a0b4;
+      --accent: #77d7a8;
+      --warn: #f0c36c;
+      --danger: #ff8b8b;
+      --seller: #7ea8ff;
+      --client: #ef8a8a;
+      --shadow: 0 16px 48px rgba(0,0,0,0.28);
+      --green-bg: rgba(119, 215, 168, 0.14);
+      --green-border: rgba(119, 215, 168, 0.35);
+      --yellow-bg: rgba(240, 195, 108, 0.14);
+      --yellow-border: rgba(240, 195, 108, 0.35);
+      --red-bg: rgba(255, 139, 139, 0.14);
+      --red-border: rgba(255, 139, 139, 0.35);
+      --gray-bg: rgba(255,255,255,0.05);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #0a0d13 0%, #111621 100%);
+      color: var(--text);
+    }
+
+    .shell {
+      width: min(1280px, 100%);
+      margin: 0 auto;
+      padding: 18px;
+      display: grid;
+      gap: 16px;
+      min-height: 100vh;
+    }
+
+    .topbar,
+    .chat-card,
+    .panel {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .topbar {
+      padding: 16px 18px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    .title {
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .subtitle {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .select,
+    .button {
+      height: 40px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .select {
+      min-width: 210px;
+      padding: 0 12px;
+    }
+
+    .button {
+      padding: 0 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .button.primary { background: linear-gradient(180deg, #2f81ff, #245fd1); }
+    .button.accent { background: linear-gradient(180deg, #2da56f, #1f8759); }
+    .button.ghost { background: rgba(255,255,255,0.05); }
+    .button:disabled { opacity: 0.45; cursor: default; }
+
+    .meta {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .pill {
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05);
+      color: var(--muted);
+    }
+
+    .pill.ready { color: var(--accent); }
+    .pill.seller_thinking,
+    .pill.client_reply,
+    .pill.booting { color: var(--warn); }
+    .pill.error { color: var(--danger); }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+      gap: 16px;
+      min-height: 0;
+    }
+
+    .chat-card {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 72vh;
+      overflow: hidden;
+    }
+
+    .chat-head {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .chat-head h2,
+    .panel h3 {
+      margin: 0;
+      font-size: 17px;
+    }
+
+    .chat-log {
+      padding: 18px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .bubble-row {
+      display: flex;
+      width: 100%;
+    }
+
+    .bubble-row.seller { justify-content: flex-end; }
+    .bubble-row.client { justify-content: flex-start; }
+
+    .bubble {
+      width: min(78%, 680px);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      padding: 12px 14px;
+      line-height: 1.45;
+      background: rgba(255,255,255,0.03);
+    }
+
+    .bubble-row.seller .bubble {
+      background: rgba(126, 168, 255, 0.12);
+      border-color: rgba(126, 168, 255, 0.24);
+    }
+
+    .bubble-row.client .bubble {
+      background: rgba(239, 138, 138, 0.1);
+      border-color: rgba(239, 138, 138, 0.22);
+    }
+
+    .speaker {
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 7px;
+      font-weight: 700;
+    }
+
+    .text {
+      font-size: 16px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .empty {
+      margin: auto 0;
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      padding: 22px;
+      color: var(--muted);
+      text-align: center;
+      background: rgba(255,255,255,0.02);
+    }
+
+    .current-reply {
+      border-top: 1px solid var(--border);
+      padding: 16px 18px 18px;
+      display: grid;
+      gap: 12px;
+      background: rgba(255,255,255,0.02);
+    }
+
+    .reply-card {
+      border-radius: 16px;
+      padding: 14px;
+      border: 1px solid rgba(126, 168, 255, 0.26);
+      background: rgba(126, 168, 255, 0.1);
+    }
+
+    .reply-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .reply-title {
+      font-size: 13px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 700;
+    }
+
+    .reply-meta {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .reply-text {
+      font-size: 18px;
+      line-height: 1.45;
+    }
+
+    .reply-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .side {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-height: 0;
+    }
+
+    .panel {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .panel-copy {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .stage-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .stage-main {
+      display: grid;
+      gap: 6px;
+    }
+
+    .stage-tag {
+      font-size: 22px;
+      font-weight: 800;
+    }
+
+    .stage-title {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .readiness {
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 800;
+      border: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    .readiness.green { background: var(--green-bg); border-color: var(--green-border); color: var(--accent); }
+    .readiness.yellow { background: var(--yellow-bg); border-color: var(--yellow-border); color: var(--warn); }
+    .readiness.red { background: var(--red-bg); border-color: var(--red-border); color: var(--danger); }
+    .readiness.pending,
+    .readiness.gray { background: var(--gray-bg); color: var(--muted); }
+
+    .kv {
+      display: grid;
+      gap: 4px;
+    }
+
+    .kv-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .kv-value {
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    .signals {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .signal {
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+    }
+
+    .signal.green { background: var(--green-bg); border-color: var(--green-border); color: var(--accent); }
+    .signal.yellow { background: var(--yellow-bg); border-color: var(--yellow-border); color: var(--warn); }
+    .signal.red { background: var(--red-bg); border-color: var(--red-border); color: var(--danger); }
+    .signal.gray { color: var(--muted); }
+
+    .route-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .route-box {
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      padding: 12px;
+      background: rgba(255,255,255,0.03);
+    }
+
+    .route-box strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .error {
+      display: none;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 139, 139, 0.25);
+      background: rgba(255, 139, 139, 0.12);
+      color: #ffd7d7;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 980px) {
+      .shell { padding: 12px; }
+      .layout { grid-template-columns: 1fr; }
+      .chat-card { min-height: auto; }
+      .bubble,
+      .reply-card { width: 100%; }
+      .select, .button { width: 100%; }
+      .controls { width: 100%; }
+      .route-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="topbar">
+      <div>
+        <div class="title">Fresh Start Chat Loop</div>
+        <div class="subtitle">Gemini пишет реплику продавца, вредный клиент отвечает, ZAI двигает stage и обновляет аналитику.</div>
+      </div>
+      <div class="controls">
+        <select id="script-select" class="select"></select>
+        <select id="persona-select" class="select">
+          <option value="hostile">Hostile</option>
+          <option value="cold">Cold</option>
+          <option value="neutral">Neutral</option>
+        </select>
+        <button id="reset-btn" class="button ghost">Новый диалог</button>
+      </div>
+      <div class="meta">
+        <div id="status-pill" class="pill">Загружаюсь…</div>
+        <div id="run-pill" class="pill">Run: —</div>
+      </div>
+    </div>
+
+    <div id="error-box" class="error"></div>
+
+    <div class="layout">
+      <section class="chat-card">
+        <div class="chat-head">
+          <h2>Диалог</h2>
+          <div id="chat-meta" class="pill">Ожидание</div>
+        </div>
+        <div id="chat-log" class="chat-log"></div>
+        <div class="current-reply">
+          <div id="current-reply" class="reply-card"></div>
+          <div class="reply-actions">
+            <button id="copy-btn" class="button primary">Скопировать реплику</button>
+            <button id="advance-btn" class="button accent">Клиент отвечает</button>
+            <button id="regen-btn" class="button ghost">Перегенерить</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side">
+        <section class="panel">
+          <div class="stage-head">
+            <div class="stage-main">
+              <div id="stage-tag" class="stage-tag">S2.1</div>
+              <div id="stage-title" class="stage-title">Старт</div>
+            </div>
+            <div id="readiness-pill" class="readiness pending">pending</div>
+          </div>
+          <div class="kv">
+            <div class="kv-label">Agenda</div>
+            <div id="stage-agenda" class="kv-value">—</div>
+          </div>
+          <div class="kv">
+            <div class="kv-label">Step</div>
+            <div id="stage-step" class="kv-value">—</div>
+          </div>
+          <div class="kv">
+            <div class="kv-label">Scorecard</div>
+            <div id="stage-summary" class="panel-copy">Метрики появятся после первого ответа клиента.</div>
+          </div>
+          <div id="signals" class="signals"></div>
+        </section>
+
+        <section class="panel">
+          <h3>Маршрут</h3>
+          <div class="route-grid">
+            <div class="route-box">
+              <strong>ZAI</strong>
+              <div id="route-zai" class="panel-copy">Жду первый ход.</div>
+            </div>
+            <div class="route-box">
+              <strong>Gemini</strong>
+              <div id="route-gemini" class="panel-copy">Открывашка появится автоматически.</div>
+            </div>
+            <div class="route-box">
+              <strong>Latency</strong>
+              <div id="route-latency" class="panel-copy">—</div>
+            </div>
+            <div class="route-box">
+              <strong>Сценарий</strong>
+              <div id="route-scenario" class="panel-copy">—</div>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      snapshot: null,
+      busy: false,
+      pollTimer: null,
+    };
+
+    const els = {
+      scriptSelect: document.getElementById("script-select"),
+      personaSelect: document.getElementById("persona-select"),
+      resetBtn: document.getElementById("reset-btn"),
+      copyBtn: document.getElementById("copy-btn"),
+      advanceBtn: document.getElementById("advance-btn"),
+      regenBtn: document.getElementById("regen-btn"),
+      statusPill: document.getElementById("status-pill"),
+      runPill: document.getElementById("run-pill"),
+      chatMeta: document.getElementById("chat-meta"),
+      chatLog: document.getElementById("chat-log"),
+      currentReply: document.getElementById("current-reply"),
+      errorBox: document.getElementById("error-box"),
+      stageTag: document.getElementById("stage-tag"),
+      stageTitle: document.getElementById("stage-title"),
+      readinessPill: document.getElementById("readiness-pill"),
+      stageAgenda: document.getElementById("stage-agenda"),
+      stageStep: document.getElementById("stage-step"),
+      stageSummary: document.getElementById("stage-summary"),
+      signals: document.getElementById("signals"),
+      routeZai: document.getElementById("route-zai"),
+      routeGemini: document.getElementById("route-gemini"),
+      routeLatency: document.getElementById("route-latency"),
+      routeScenario: document.getElementById("route-scenario"),
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function statusLabel(status) {
+      return {
+        booting: "Поднимаюсь",
+        ready: "Готов",
+        seller_thinking: "Gemini пишет",
+        client_reply: "Клиент в стриме",
+        error: "Нужна правка",
+      }[status] || status;
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try {
+          const data = await response.json();
+          detail = data.detail || detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+      return response.json();
+    }
+
+    function populateSelect(selectEl, items, selectedValue, mapper) {
+      const current = Array.from(selectEl.options).map((option) => option.value).join("|");
+      const incoming = items.map((item) => mapper(item).value).join("|");
+      if (current !== incoming) {
+        selectEl.innerHTML = "";
+        for (const item of items) {
+          const { value, label } = mapper(item);
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          selectEl.appendChild(option);
+        }
+      }
+      if (selectedValue !== undefined && selectedValue !== null) {
+        selectEl.value = String(selectedValue);
+      }
+    }
+
+    function renderMessages(snapshot) {
+      const items = snapshot.messages || [];
+      if (!items.length) {
+        els.chatLog.innerHTML = `
+          <div class="empty">
+            Первая реплика продавца уже готова ниже. Скопируй ее, затем нажми «Клиент отвечает».
+          </div>
+        `;
+        return;
+      }
+      els.chatLog.innerHTML = items.map((message) => `
+        <div class="bubble-row ${message.role}">
+          <div class="bubble">
+            <div class="speaker">${escapeHtml(message.speaker)}</div>
+            <div class="text">${
+              message.id === snapshot.activeClientMessageId && !message.text
+                ? "..."
+                : escapeHtml(message.text)
+            }</div>
+          </div>
+        </div>
+      `).join("");
+      els.chatLog.scrollTop = els.chatLog.scrollHeight;
+    }
+
+    function renderPendingSeller(snapshot) {
+      const pending = snapshot.pendingSeller;
+      if (!pending || (!pending.text && !snapshot.turnActive)) {
+        els.currentReply.innerHTML = `
+          <div class="reply-head">
+            <div class="reply-title">Следующая реплика</div>
+            <div class="reply-meta">ждем</div>
+          </div>
+          <div class="reply-text">Нажми «Новый диалог» или «Перегенерить».</div>
+        `;
+        return;
+      }
+      if (!pending && snapshot.turnActive) {
+        els.currentReply.innerHTML = `
+          <div class="reply-head">
+            <div class="reply-title">Следующая реплика продавца</div>
+            <div class="reply-meta">ZAI смотрит на частичный ответ клиента</div>
+          </div>
+          <div class="reply-text">Пока держим текущий контекст и ждем, когда Gemini обновит фразу.</div>
+        `;
+        return;
+      }
+      els.currentReply.innerHTML = `
+        <div class="reply-head">
+          <div class="reply-title">Следующая реплика продавца</div>
+          <div class="reply-meta">${escapeHtml(pending.model || "—")} · ${escapeHtml(pending.kind || "reply")} · ${pending.streaming ? "streaming" : "ready"}</div>
+        </div>
+        <div class="reply-text">${escapeHtml(pending.text || "...")}</div>
+      `;
+    }
+
+    function renderStage(snapshot) {
+      const stage = snapshot.stage || {};
+      const scorecard = stage.scorecard || null;
+      const readinessClass = (scorecard?.readiness || "pending").toLowerCase();
+      const readinessText = scorecard?.readiness_label || scorecard?.readiness || snapshot.stageStatus || "pending";
+
+      els.stageTag.textContent = stage.stage || "—";
+      els.stageTitle.textContent = stage.title || "Стадия еще не определена";
+      els.stageAgenda.textContent = stage.agenda || "—";
+      els.stageStep.textContent = stage.step || "—";
+      els.readinessPill.className = `readiness ${readinessClass}`;
+      els.readinessPill.textContent = readinessText;
+
+      if (scorecard) {
+        const meta = `${scorecard.hit_count}/${scorecard.total_count} · ${scorecard.summary || ""}`;
+        const next = scorecard.next_action ? `\n\nСледующее действие: ${scorecard.next_action}` : "";
+        els.stageSummary.textContent = `${meta}${next}`;
+      } else if (snapshot.stageStatus === "scoring") {
+        els.stageSummary.textContent = "ZAI уже определил stage, scorecard догружается…";
+      } else {
+        els.stageSummary.textContent = "Метрики появятся после первого ответа клиента.";
+      }
+
+      const signals = scorecard?.signals || [];
+      els.signals.innerHTML = signals.map((signal) => `
+        <div class="signal ${escapeHtml(signal.state)}">${escapeHtml(signal.label)}</div>
+      `).join("");
+    }
+
+    function renderRoute(snapshot) {
+      const route = snapshot.lastRoute || {};
+      els.routeZai.textContent = route.currentStage
+        ? `${route.previousStage || "—"} -> ${route.currentStage} · ${route.detectorModel || "zai"} · ${route.analysisKind || "turn"}`
+        : "Жду первый ход.";
+      els.routeGemini.textContent = snapshot.pendingSeller?.model
+        ? `${snapshot.pendingSeller.model} · ${snapshot.pendingSeller.kind || "reply"} · ${snapshot.pendingSeller.streaming ? "streaming" : "ready"}`
+        : snapshot.turnActive
+          ? "ZAI еще не попросил новую реплику."
+          : "Реплика еще не готова.";
+
+      const latencies = [];
+      if (route.clientFirstDeltaMs) latencies.push(`client first ${route.clientFirstDeltaMs}ms`);
+      if (route.clientLatencyMs) latencies.push(`client ${route.clientLatencyMs}ms`);
+      if (route.replyGateLatencyMs) latencies.push(`gate ${route.replyGateLatencyMs}ms`);
+      if (route.stageLatencyMs) latencies.push(`stage ${route.stageLatencyMs}ms`);
+      if (route.sellerLatencyMs) latencies.push(`seller ${route.sellerLatencyMs}ms`);
+      els.routeLatency.textContent = latencies.length ? latencies.join(" · ") : "—";
+
+      const scriptLabel = snapshot.scriptOptions?.find(
+        (item) => Number(item.number) === Number(snapshot.config?.script)
+      );
+      els.routeScenario.textContent = scriptLabel
+        ? `${scriptLabel.number}. ${scriptLabel.title} · ${snapshot.config?.persona_mode || "hostile"}`
+        : "—";
+    }
+
+    function render(snapshot) {
+      state.snapshot = snapshot;
+      els.statusPill.className = `pill ${snapshot.status}`;
+      els.statusPill.textContent = statusLabel(snapshot.status);
+      els.runPill.textContent = `Run: ${snapshot.runId || "—"}`;
+      els.chatMeta.textContent = snapshot.turnActive
+        ? "client stream + ZAI/Gemini reaction"
+        : snapshot.stageStatus === "scoring"
+          ? "ZAI -> Gemini"
+          : "Roleplay loop";
+      els.errorBox.style.display = snapshot.error ? "block" : "none";
+      els.errorBox.textContent = snapshot.error || "";
+
+      populateSelect(
+        els.scriptSelect,
+        snapshot.scriptOptions || [],
+        snapshot.config?.script,
+        (item) => ({ value: String(item.number), label: `${item.number}. ${item.title}` }),
+      );
+      els.personaSelect.value = snapshot.config?.persona_mode || "hostile";
+
+      const disabled = state.busy;
+      els.scriptSelect.disabled = disabled;
+      els.personaSelect.disabled = disabled;
+      els.resetBtn.disabled = disabled;
+      els.copyBtn.disabled = disabled || !snapshot.pendingSeller?.text;
+      els.advanceBtn.disabled = disabled || !snapshot.canAdvance;
+      els.regenBtn.disabled = disabled || snapshot.turnActive;
+
+      renderMessages(snapshot);
+      renderPendingSeller(snapshot);
+      renderStage(snapshot);
+      renderRoute(snapshot);
+      managePolling(snapshot);
+    }
+
+    function managePolling(snapshot) {
+      const shouldPoll =
+        !state.busy && (
+          snapshot.turnActive ||
+          snapshot.replyStreaming ||
+          snapshot.stageStatus === "scoring" ||
+          snapshot.stageStatus === "reacting" ||
+          snapshot.status === "seller_thinking" ||
+          snapshot.status === "client_reply"
+        );
+      if (shouldPoll && !state.pollTimer) {
+        state.pollTimer = setInterval(async () => {
+          try {
+            render(await api("/api/session"));
+          } catch (_) {}
+        }, 800);
+      }
+      if (!shouldPoll && state.pollTimer) {
+        clearInterval(state.pollTimer);
+        state.pollTimer = null;
+      }
+    }
+
+    async function runAction(action) {
+      state.busy = true;
+      if (state.snapshot) render(state.snapshot);
+      try {
+        render(await action());
+      } catch (error) {
+        if (state.snapshot) {
+          state.snapshot.status = "error";
+          state.snapshot.error = error.message;
+          render(state.snapshot);
+        } else {
+          els.errorBox.style.display = "block";
+          els.errorBox.textContent = error.message;
+        }
+      } finally {
+        state.busy = false;
+        if (state.snapshot) render(state.snapshot);
+      }
+    }
+
+    els.resetBtn.addEventListener("click", () => runAction(() => api("/api/session/reset", {
+      method: "POST",
+      body: JSON.stringify({
+        script: Number(els.scriptSelect.value || 2),
+        persona_mode: els.personaSelect.value || "hostile",
+      }),
+    })));
+
+    els.advanceBtn.addEventListener("click", () => runAction(() => api("/api/advance", {
+      method: "POST",
+      body: JSON.stringify({}),
+    })));
+
+    els.regenBtn.addEventListener("click", () => runAction(() => api("/api/seller/regenerate", {
+      method: "POST",
+      body: JSON.stringify({}),
+    })));
+
+    els.copyBtn.addEventListener("click", async () => {
+      const text = state.snapshot?.pendingSeller?.text;
+      if (!text) return;
+      await navigator.clipboard.writeText(text);
+      const old = els.copyBtn.textContent;
+      els.copyBtn.textContent = "Скопировано";
+      setTimeout(() => {
+        els.copyBtn.textContent = old;
+      }, 900);
+    });
+
+    async function boot() {
+      render(await api("/api/session"));
+    }
+
+    boot().catch((error) => {
+      els.errorBox.style.display = "block";
+      els.errorBox.textContent = error.message;
+    });
+  </script>
+</body>
+</html>
