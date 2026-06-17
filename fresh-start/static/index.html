@@ -411,7 +411,7 @@
     <div class="topbar">
       <div>
         <div class="title">Fresh Start Chat Loop</div>
-        <div class="subtitle">Gemini пишет реплику продавца, вредный клиент отвечает, ZAI двигает stage и обновляет аналитику.</div>
+        <div class="subtitle">Браузерный цикл roleplay: Gemini пишет продавца, вредный клиент отвечает, stage и метрики живут рядом и переключаются по mode.</div>
       </div>
       <div class="controls">
         <select id="script-select" class="select"></select>
@@ -420,6 +420,7 @@
           <option value="cold">Cold</option>
           <option value="neutral">Neutral</option>
         </select>
+        <select id="reply-mode-select" class="select"></select>
         <button id="reset-btn" class="button ghost">Новый диалог</button>
       </div>
       <div class="meta">
@@ -475,11 +476,11 @@
           <h3>Маршрут</h3>
           <div class="route-grid">
             <div class="route-box">
-              <strong>ZAI</strong>
+              <strong>Detector</strong>
               <div id="route-zai" class="panel-copy">Жду первый ход.</div>
             </div>
             <div class="route-box">
-              <strong>Gemini</strong>
+              <strong>Reply</strong>
               <div id="route-gemini" class="panel-copy">Открывашка появится автоматически.</div>
             </div>
             <div class="route-box">
@@ -487,7 +488,7 @@
               <div id="route-latency" class="panel-copy">—</div>
             </div>
             <div class="route-box">
-              <strong>Сценарий</strong>
+              <strong>Config</strong>
               <div id="route-scenario" class="panel-copy">—</div>
             </div>
           </div>
@@ -507,6 +508,7 @@
     const els = {
       scriptSelect: document.getElementById("script-select"),
       personaSelect: document.getElementById("persona-select"),
+      replyModeSelect: document.getElementById("reply-mode-select"),
       resetBtn: document.getElementById("reset-btn"),
       copyBtn: document.getElementById("copy-btn"),
       advanceBtn: document.getElementById("advance-btn"),
@@ -619,12 +621,15 @@
         return;
       }
       if (!pending && snapshot.turnActive) {
+        const liveHint = snapshot.config?.reply_mode === "zai_stage_reactive"
+          ? "ZAI смотрит на частичный ответ клиента"
+          : "Gemini пересобирает ответ на лету";
         els.currentReply.innerHTML = `
           <div class="reply-head">
             <div class="reply-title">Следующая реплика продавца</div>
-            <div class="reply-meta">ZAI смотрит на частичный ответ клиента</div>
+            <div class="reply-meta">${escapeHtml(liveHint)}</div>
           </div>
-          <div class="reply-text">Пока держим текущий контекст и ждем, когда Gemini обновит фразу.</div>
+          <div class="reply-text">Пока держим текущий контекст и ждем следующий usable refresh реплики.</div>
         `;
         return;
       }
@@ -655,7 +660,7 @@
         const next = scorecard.next_action ? `\n\nСледующее действие: ${scorecard.next_action}` : "";
         els.stageSummary.textContent = `${meta}${next}`;
       } else if (snapshot.stageStatus === "scoring") {
-        els.stageSummary.textContent = "ZAI уже определил stage, scorecard догружается…";
+        els.stageSummary.textContent = "Stage уже определен, scorecard догружается…";
       } else {
         els.stageSummary.textContent = "Метрики появятся после первого ответа клиента.";
       }
@@ -668,13 +673,17 @@
 
     function renderRoute(snapshot) {
       const route = snapshot.lastRoute || {};
+      const detectorProvider = route.detectorProvider || (snapshot.config?.reply_mode === "zai_stage_reactive" ? "cerebras/zai" : "vertex");
+      const detectorModel = route.detectorModel || "—";
       els.routeZai.textContent = route.currentStage
-        ? `${route.previousStage || "—"} -> ${route.currentStage} · ${route.detectorModel || "zai"} · ${route.analysisKind || "turn"}`
-        : "Жду первый ход.";
+        ? `${route.previousStage || "—"} -> ${route.currentStage} · ${detectorProvider} · ${detectorModel} · ${route.analysisKind || "turn"}`
+        : snapshot.config?.reply_mode === "zai_stage_reactive"
+          ? "Жду первый ход. ZAI включится на клиентском стриме."
+          : "Жду первый ход. Vertex stage-check сработает по текущему mode.";
       els.routeGemini.textContent = snapshot.pendingSeller?.model
-        ? `${snapshot.pendingSeller.model} · ${snapshot.pendingSeller.kind || "reply"} · ${snapshot.pendingSeller.streaming ? "streaming" : "ready"}`
+        ? `${snapshot.pendingSeller.model} · ${snapshot.pendingSeller.kind || "reply"} · ${snapshot.pendingSeller.streaming ? "streaming" : "ready"} · ${route.replyTriggerReason || "reply"}`
         : snapshot.turnActive
-          ? "ZAI еще не попросил новую реплику."
+          ? "Жду нового триггера для реплики."
           : "Реплика еще не готова.";
 
       const latencies = [];
@@ -688,9 +697,12 @@
       const scriptLabel = snapshot.scriptOptions?.find(
         (item) => Number(item.number) === Number(snapshot.config?.script)
       );
+      const replyMode = snapshot.replyModeOptions?.find(
+        (item) => item.value === snapshot.config?.reply_mode
+      );
       els.routeScenario.textContent = scriptLabel
-        ? `${scriptLabel.number}. ${scriptLabel.title} · ${snapshot.config?.persona_mode || "hostile"}`
-        : "—";
+        ? `${scriptLabel.number}. ${scriptLabel.title} · ${snapshot.config?.persona_mode || "hostile"} · ${replyMode?.label || snapshot.config?.reply_mode || "mode"}`
+        : `${snapshot.config?.persona_mode || "hostile"} · ${replyMode?.label || snapshot.config?.reply_mode || "mode"}`;
     }
 
     function render(snapshot) {
@@ -699,11 +711,11 @@
       els.statusPill.textContent = statusLabel(snapshot.status);
       els.runPill.textContent = `Run: ${snapshot.runId || "—"}`;
       els.chatMeta.textContent = snapshot.turnActive
-        ? "client stream + ZAI/Gemini reaction"
+        ? `client stream + ${snapshot.config?.reply_mode || "reaction"}`
         : !state.streamConnected
           ? "переподключаю live stream"
         : snapshot.stageStatus === "scoring"
-          ? "ZAI -> Gemini"
+          ? `${snapshot.config?.reply_mode || "mode"} -> scoring`
           : "Roleplay loop";
       els.errorBox.style.display = snapshot.error ? "block" : "none";
       els.errorBox.textContent = snapshot.error || "";
@@ -715,10 +727,17 @@
         (item) => ({ value: String(item.number), label: `${item.number}. ${item.title}` }),
       );
       els.personaSelect.value = snapshot.config?.persona_mode || "hostile";
+      populateSelect(
+        els.replyModeSelect,
+        snapshot.replyModeOptions || [],
+        snapshot.config?.reply_mode,
+        (item) => ({ value: item.value, label: item.label }),
+      );
 
       const disabled = state.busy;
       els.scriptSelect.disabled = disabled;
       els.personaSelect.disabled = disabled;
+      els.replyModeSelect.disabled = disabled;
       els.resetBtn.disabled = disabled;
       els.copyBtn.disabled = disabled || !snapshot.pendingSeller?.text;
       els.advanceBtn.disabled = disabled || !snapshot.canAdvance;
@@ -786,6 +805,7 @@
       body: JSON.stringify({
         script: Number(els.scriptSelect.value || 2),
         persona_mode: els.personaSelect.value || "hostile",
+        reply_mode: els.replyModeSelect.value || "zai_stage_reactive",
       }),
     })));
 
