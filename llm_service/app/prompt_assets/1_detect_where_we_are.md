@@ -11,57 +11,57 @@
 
 ## Стадии и критерии
 
-S2.1 — Frame / Установка фрейма
+S2.1 — Интро / рамка
 - Цель: снять напряжение, объяснить правила CustDev
 - Критерий входа: звонок начался, клиент ещё не понял формат
 - Критерий выхода: frame_set = true
 
-S2.2 — Current Reality / Точка А
+S2.2 — Квалификация: текущая ситуация
 - Цель: собрать факты о текущей ситуации и боли
 - Критерий входа: frame_set = true, current_context = unknown
 - Критерий выхода: current_context = known, pain_detected = true
 
-S2.3 — Target & Gap / Точка Б
+S2.3 — Квалификация: цель и разрыв
 - Цель: выявить цели клиента и разрыв
 - Критерий входа: current_context known, target/gap unknown
 - Критерий выхода: target = known, gap = known
 
-S2.4 — Motive / Истинный мотив
+S2.4 — Мотив / доверие
 - Цель: понять, зачем клиент пришёл
 - Критерий входа: target/gap known, motive unknown
 - Критерий выхода: motive = known, trust_signal = true
 
-S2.5 — Pivot / Разворот
+S2.5 — Переход к офферу
 - Цель: разрешение на переход к офферу / презентации
 - Критерий входа: текущий контекст, pain, target, gap, motive известны
 - Критерий выхода: permission_to_pitch = true
 
-S3.1 — Pitch / Озвучивание оффера
-- Цель: озвучить оффер, чек, партнерскую модель
+S3.1 — Питч
+- Цель: озвучить оффер и связать формат с задачей клиента
 - Критерий входа: permission_to_pitch = true
-- Критерий выхода: offer_explained = true, price_named = true
+- Критерий выхода: offer_explained = true, client_checkin_done = true
 
-S3.2 — Value Test / Проверка ценности
+S3.2 — Проверка ценности
 - Цель: проверить, видит ли клиент ценность продукта
 - Критерий входа: offer_explained = true, value_confirmed unknown
-- Критерий выхода: client response received
+- Критерий выхода: value_confirmed = true OR value_objection_classified = true
 
-S3.3 — Bank Option / Downsell
-- Цель: ценность подтверждена, денег нет
-- Критерий входа: value_confirmed = true, cash_available = false, main_objection = "нет денег"
-- Критерий выхода: bank_option_presented = true, client_reaction_received = true
+S3.3 — Цена / условия участия
+- Цель: после value buy-in назвать цену/условия и проверить реакцию
+- Критерий входа: value_confirmed = true, price_named = false OR price_named = true, payment_reaction unknown
+- Критерий выхода: price_named = true, client_reaction_received = true
 
-S3.4a — Objection Clarifier
+S3.4a — Возражение: уточняющий вопрос
 - Цель: выяснить истинную причину возражения ("цена или ценность?")
-- Критерий входа: price named, client says "надо подумать", value unknown
+- Критерий входа: price/terms named, client raises price/value/time/trust/risk/stakeholder objection
 - Критерий выхода: objection_type classified
 
-S3.4b — Second Zoom Parking
+S3.4b — Возражение: мягкий перенос
 - Цель: снять давление, запланировать второй созвон
 - Критерий входа: client refusal / credit fear / soft no
 - Критерий выхода: second call scheduled OR hard refusal
 
-S3.5 — Follow-up / Потеряшки
+S3.5 — Фоллоу-ап / возврат лида
 - Цель: выяснить причину отказа, сохранить лид
 - Критерий входа: client disappeared OR sent refusal
 - Критерий выхода: refusal reason collected OR next contact scheduled OR lead dead

@@ -6,18 +6,18 @@ use crate::{
 };
 use chrono::Local;
 use eframe::egui::{self, RichText};
+use serde_json::{json, Value};
 use std::{
-    env, io,
+    env, fs, io,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
-        Arc,
+        Arc, OnceLock,
     },
     time::{Duration, Instant},
 };
 
-const COACH_AUTO_SUGGESTIONS: bool = false;
 const DEFAULT_HELP_CONTEXT_DELAY_MS: u64 = 300;
 const DEFAULT_STAGE_DETECT_INTERVAL_MS: u64 = 5_000;
 const DEFAULT_CONTEXT_MAX_TRANSCRIPT_CHARS: usize = 16_000;
@@ -40,6 +40,7 @@ const COMPACT_OVERLAY_CHROME_HEIGHT: f32 = 72.0;
 const COMPACT_VERTICAL_TRANSCRIPT_MIN_HEIGHT: f32 = 132.0;
 const COMPACT_VERTICAL_INSTRUCTION_MIN_HEIGHT: f32 = 180.0;
 const COMPACT_VERTICAL_HELP_MIN_HEIGHT: f32 = 132.0;
+const DEFAULT_STAGE_UI_STATE_PATH: &str = "logs/rec-sidecar.stage-ui.json";
 
 struct PendingHelpRequest {
     id: u64,
@@ -100,6 +101,7 @@ pub struct RecApp {
     coach_status: String,
     stage_agenda: Option<coach::CoachStageAgenda>,
     stage_status: String,
+    stage_export_sequence: u64,
     force_stage_detect: bool,
     last_stage_request_sent: Instant,
     force_coach_snapshot: bool,
@@ -155,6 +157,7 @@ impl RecApp {
             coach_status: "Coach idle".to_string(),
             stage_agenda: None,
             stage_status: "Stage idle".to_string(),
+            stage_export_sequence: 0,
             force_stage_detect: true,
             last_stage_request_sent: Instant::now(),
             force_coach_snapshot: false,
@@ -204,6 +207,7 @@ impl RecApp {
         self.stage_status = "Stage detecting...".to_string();
         self.force_stage_detect = true;
         self.current_run = Some(RunSession::new());
+        self.export_stage_ui_state();
         self.expanded_workspace = false;
         self.applied_window_mode = None;
         self.focus_live_workspace();
@@ -272,6 +276,7 @@ impl RecApp {
                 self.stage_agenda = None;
                 self.stage_status = "Stage idle".to_string();
                 self.force_stage_detect = true;
+                self.export_stage_ui_state();
                 self.expanded_workspace = true;
                 self.applied_window_mode = None;
                 self.rx = None;
@@ -429,6 +434,12 @@ impl RecApp {
                 self.live_partial = None;
                 self.bubbles.push(text);
             }
+            asr::AsrEvent::StageAgenda(agenda) => {
+                self.apply_stage_agenda(*agenda);
+            }
+            asr::AsrEvent::StageError(message) => {
+                self.stage_status = message;
+            }
             asr::AsrEvent::Error(message) => {
                 self.connecting = false;
                 self.recording = false;
@@ -476,17 +487,7 @@ impl RecApp {
                 self.force_coach_snapshot = pushed;
             }
             coach::CoachEvent::StageAgenda(agenda) => {
-                let agenda = *agenda;
-                self.stage_status = if let Some(scorecard) = &agenda.scorecard {
-                    format!(
-                        "{} · {} · {}",
-                        agenda.stage, scorecard.readiness_label, agenda.model
-                    )
-                } else {
-                    format!("{} · {}", agenda.stage, agenda.model)
-                };
-                self.stage_agenda = Some(agenda);
-                self.force_stage_detect = false;
+                self.apply_stage_agenda(*agenda);
             }
             coach::CoachEvent::StageError(message) => {
                 self.stage_status = message;
@@ -533,6 +534,155 @@ impl RecApp {
             coach::CoachEvent::Stopped => {
                 self.coach_status = "Coach stopped".to_string();
             }
+        }
+    }
+
+    fn apply_stage_agenda(&mut self, agenda: coach::CoachStageAgenda) {
+        if let Some(current) = self.stage_agenda.as_ref() {
+            if stage_is_backward(&current.stage, &agenda.stage) {
+                coach::log_event(format!(
+                    "stage backward ignored current_stage={} incoming_stage={} model={}",
+                    current.stage, agenda.stage, agenda.model
+                ));
+                self.stage_status = format!(
+                    "{} · удерживаю, откат {} игнорирован · {}",
+                    current.stage, agenda.stage, agenda.model
+                );
+                self.force_stage_detect = false;
+                return;
+            }
+        }
+
+        self.stage_status = if let Some(scorecard) = &agenda.scorecard {
+            format!(
+                "{} · {} · {}",
+                agenda.stage, scorecard.readiness_label, agenda.model
+            )
+        } else {
+            format!("{} · {}", agenda.stage, agenda.model)
+        };
+        self.stage_agenda = Some(agenda);
+        self.force_stage_detect = false;
+        self.export_stage_ui_state();
+    }
+
+    fn export_stage_ui_state(&mut self) {
+        self.stage_export_sequence = self.stage_export_sequence.saturating_add(1);
+        let path = stage_ui_state_path();
+        let value = self.stage_ui_state_value();
+        if let Err(err) = write_json_atomic(&path, &value) {
+            coach::log_event(format!(
+                "stage ui state export failed path={} error={}",
+                path.display(),
+                err
+            ));
+        }
+    }
+
+    fn stage_ui_state_value(&self) -> Value {
+        let run_id = self
+            .current_run
+            .as_ref()
+            .map(|run| run.id.as_str())
+            .unwrap_or("");
+
+        if let Some(agenda) = &self.stage_agenda {
+            let scorecard = agenda.scorecard.as_ref();
+            let advice = scorecard
+                .map(|scorecard| speakable_stage_action(&scorecard.next_action))
+                .unwrap_or_else(|| speakable_stage_action(&agenda.step));
+            let visible_label = scorecard
+                .map(|scorecard| {
+                    format!(
+                        "{} · {} · {} · {}/{}",
+                        agenda.stage,
+                        agenda.title,
+                        scorecard.readiness_label,
+                        scorecard.hit_count,
+                        scorecard.total_count
+                    )
+                })
+                .unwrap_or_else(|| format!("{} · {}", agenda.stage, agenda.title));
+            let checks = scorecard
+                .map(|scorecard| {
+                    scorecard
+                        .checks
+                        .iter()
+                        .map(|check| {
+                            json!({
+                                "id": check.id,
+                                "label": check.label,
+                                "level": check.level,
+                                "result": check.result,
+                                "signal": check.signal,
+                                "reason": check.reason,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let signals = scorecard
+                .map(|scorecard| {
+                    scorecard
+                        .signals
+                        .iter()
+                        .map(|signal| {
+                            json!({
+                                "id": signal.id,
+                                "label": signal.label,
+                                "state": signal.state,
+                                "detail": signal.detail,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            json!({
+                "source": "rust-ui",
+                "sequence": self.stage_export_sequence,
+                "updated_at_ms": Local::now().timestamp_millis(),
+                "run_id": run_id,
+                "has_stage": true,
+                "status": self.stage_status,
+                "stage": agenda.stage,
+                "title": agenda.title,
+                "agenda": agenda.agenda,
+                "emotion": agenda.emotion,
+                "step": agenda.step,
+                "provider": agenda.provider,
+                "model": agenda.model,
+                "visible_label": visible_label,
+                "speakable_next_action": advice,
+                "scorecard": {
+                    "readiness": scorecard.map(|scorecard| scorecard.readiness.as_str()).unwrap_or(""),
+                    "readiness_label": scorecard.map(|scorecard| scorecard.readiness_label.as_str()).unwrap_or(""),
+                    "score": scorecard.and_then(|scorecard| scorecard.score),
+                    "hit_count": scorecard.map(|scorecard| scorecard.hit_count).unwrap_or(0),
+                    "miss_count": scorecard.map(|scorecard| scorecard.miss_count).unwrap_or(0),
+                    "total_count": scorecard.map(|scorecard| scorecard.total_count).unwrap_or(0),
+                    "hard_red": scorecard.map(|scorecard| scorecard.hard_red).unwrap_or(false),
+                    "ready_to_advance": scorecard.map(|scorecard| scorecard.ready_to_advance).unwrap_or(false),
+                    "next_action": scorecard.map(|scorecard| scorecard.next_action.as_str()).unwrap_or(""),
+                    "summary": scorecard.map(|scorecard| scorecard.summary.as_str()).unwrap_or(""),
+                    "checks": checks,
+                    "signals": signals,
+                }
+            })
+        } else {
+            json!({
+                "source": "rust-ui",
+                "sequence": self.stage_export_sequence,
+                "updated_at_ms": Local::now().timestamp_millis(),
+                "run_id": run_id,
+                "has_stage": false,
+                "status": self.stage_status,
+                "stage": null,
+                "title": null,
+                "visible_label": self.stage_status,
+                "speakable_next_action": "",
+                "scorecard": null,
+            })
         }
     }
 
@@ -828,6 +978,7 @@ impl RecApp {
         let snapshot = coach::CoachSnapshot {
             run_id,
             content,
+            current_text: self.current_coach_reply_text(),
             force: self.force_coach_snapshot,
         };
 
@@ -838,6 +989,9 @@ impl RecApp {
     }
 
     fn maybe_send_stage_request(&mut self) {
+        if stage_audio_live_enabled() && !stage_rest_fallback_enabled() {
+            return;
+        }
         if self.coach_tx.is_none() || self.current_run.is_none() {
             return;
         }
@@ -919,6 +1073,25 @@ impl RecApp {
                     step: agenda.step.as_str(),
                 }),
         }
+    }
+
+    fn current_coach_reply_text(&self) -> Option<String> {
+        if let Some(text) = self
+            .coach_live
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty() && !is_technical_coach_status(text))
+        {
+            return Some(text.to_string());
+        }
+
+        self.coach_bubbles
+            .iter()
+            .rev()
+            .map(String::as_str)
+            .map(str::trim)
+            .find(|text| !text.is_empty() && !is_technical_coach_status(text))
+            .map(ToString::to_string)
     }
 
     fn render_transcript(&self) -> String {
@@ -1610,8 +1783,9 @@ impl RecApp {
                     .as_ref()
                     .map(|scorecard| {
                         format!(
-                            "{} · {} · {}/{}",
+                            "{} · {} · {} · {}/{}",
                             agenda.stage,
+                            agenda.title,
                             scorecard.readiness_label,
                             scorecard.hit_count,
                             scorecard.total_count
@@ -1629,8 +1803,8 @@ impl RecApp {
                 let advice = agenda
                     .scorecard
                     .as_ref()
-                    .map(|scorecard| scorecard.next_action.as_str())
-                    .unwrap_or(agenda.step.as_str());
+                    .map(|scorecard| speakable_stage_action(&scorecard.next_action))
+                    .unwrap_or_else(|| speakable_stage_action(&agenda.step));
                 egui::ScrollArea::vertical()
                     .id_salt("compact_instruction_scroll")
                     .auto_shrink([false, false])
@@ -2068,7 +2242,7 @@ impl RecApp {
                     );
                     ui.add(
                         egui::Label::new(
-                            RichText::new(&scorecard.next_action)
+                            RichText::new(speakable_stage_action(&scorecard.next_action))
                                 .color(readiness_text_color(&scorecard.readiness))
                                 .size(21.0)
                                 .strong(),
@@ -2522,7 +2696,7 @@ impl eframe::App for RecApp {
             }
         }
 
-        if COACH_AUTO_SUGGESTIONS {
+        if coach_auto_suggestions_enabled() {
             self.maybe_send_coach_snapshot();
         }
         self.maybe_send_stage_request();
@@ -2550,11 +2724,91 @@ fn help_context_delay() -> Duration {
     ))
 }
 
+fn coach_auto_suggestions_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| env_bool("COACH_AUTO_SUGGESTIONS", true))
+}
+
 fn stage_detect_interval() -> Duration {
     Duration::from_millis(env_u64(
         "COACH_STAGE_DETECT_INTERVAL_MS",
         DEFAULT_STAGE_DETECT_INTERVAL_MS,
     ))
+}
+
+fn stage_audio_live_enabled() -> bool {
+    env_flag("COACH_STAGE_AUDIO_LIVE")
+        || env_flag("COACH_STAGE_LIVE_AUDIO")
+        || env_flag("COACH_STAGE_AUDIO_LIVE_ENABLED")
+}
+
+fn stage_rest_fallback_enabled() -> bool {
+    env_flag("COACH_STAGE_REST_FALLBACK")
+}
+
+fn stage_rank(stage: &str) -> Option<usize> {
+    match stage.trim().to_ascii_lowercase().as_str() {
+        "s2.1" => Some(0),
+        "s2.2" => Some(1),
+        "s2.3" => Some(2),
+        "s2.4" => Some(3),
+        "s2.5" => Some(4),
+        "s3.1" => Some(5),
+        "s3.2" => Some(6),
+        "s3.3" => Some(7),
+        "s3.4a" => Some(8),
+        "s3.4b" => Some(9),
+        "s3.5" => Some(10),
+        _ => None,
+    }
+}
+
+fn stage_is_backward(current_stage: &str, incoming_stage: &str) -> bool {
+    matches!(
+        (stage_rank(current_stage), stage_rank(incoming_stage)),
+        (Some(current), Some(incoming)) if incoming < current
+    )
+}
+
+fn speakable_stage_action(text: &str) -> &str {
+    let trimmed = text.trim();
+    for prefix in [
+        "Уточнить:",
+        "Переход:",
+        "Сказать:",
+        "Скажите:",
+        "Скажи:",
+        "Спросить:",
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return rest.trim();
+        }
+    }
+    trimmed
+}
+
+fn stage_ui_state_path() -> PathBuf {
+    env_var("REC_STAGE_UI_STATE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_STAGE_UI_STATE_PATH))
+}
+
+fn write_json_atomic(path: &Path, value: &Value) -> io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("stage-ui.json");
+    let tmp_path = path.with_file_name(format!(".{}.tmp", file_name));
+    let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
+    fs::write(&tmp_path, bytes)?;
+    fs::rename(tmp_path, path)
 }
 
 fn env_var(name: &str) -> Option<String> {
@@ -2570,7 +2824,7 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-fn env_flag(name: &str) -> bool {
+fn env_bool(name: &str, default: bool) -> bool {
     env_var(name)
         .map(|value| {
             matches!(
@@ -2578,7 +2832,11 @@ fn env_flag(name: &str) -> bool {
                 "1" | "true" | "yes" | "on"
             )
         })
-        .unwrap_or(false)
+        .unwrap_or(default)
+}
+
+fn env_flag(name: &str) -> bool {
+    env_bool(name, false)
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -3021,6 +3279,49 @@ mod tests {
         assert_eq!(agenda.stage, "S2.3");
         assert_eq!(agenda.model, "gpt-oss-120b");
         assert_eq!(app.stage_status, "S2.3 · gpt-oss-120b");
+    }
+
+    #[test]
+    fn stage_agenda_does_not_move_backward() {
+        let (_dir, paths) = temp_paths();
+        let mut app = RecApp::new_with_paths(paths);
+        app.apply_stage_agenda(coach::CoachStageAgenda {
+            stage: "S2.3".to_string(),
+            title: "Target & Gap".to_string(),
+            agenda: "выяснить желаемый результат".to_string(),
+            emotion: "Очень крутая цель.".to_string(),
+            step: "Почему пока не получается?".to_string(),
+            provider: "vertex-live-audio".to_string(),
+            model: "gemini-live".to_string(),
+            scorecard: None,
+        });
+
+        app.apply_stage_agenda(coach::CoachStageAgenda {
+            stage: "S2.2".to_string(),
+            title: "Current Reality".to_string(),
+            agenda: "узнать текущую ситуацию".to_string(),
+            emotion: "Понимаю.".to_string(),
+            step: "Подскажи, что сейчас с финансами?".to_string(),
+            provider: "vertex-live-audio".to_string(),
+            model: "gemini-live".to_string(),
+            scorecard: None,
+        });
+
+        let agenda = app.stage_agenda.as_ref().unwrap();
+        assert_eq!(agenda.stage, "S2.3");
+        assert!(app.stage_status.contains("откат S2.2 игнорирован"));
+    }
+
+    #[test]
+    fn stage_action_display_strips_instruction_prefix() {
+        assert_eq!(
+            speakable_stage_action("Уточнить: Что нужно организовать до 7 июля?"),
+            "Что нужно организовать до 7 июля?"
+        );
+        assert_eq!(
+            speakable_stage_action("Переход: Давайте я расскажу про формат."),
+            "Давайте я расскажу про формат."
+        );
     }
 
     #[test]

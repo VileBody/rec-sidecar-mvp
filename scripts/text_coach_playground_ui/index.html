@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Coach Text Roleplay</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1017;
+      --panel: rgba(18, 23, 32, 0.95);
+      --panel-2: rgba(29, 35, 48, 0.96);
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #edf2ff;
+      --muted: #99a6bf;
+      --seller-soft: rgba(82, 144, 255, 0.16);
+      --client-soft: rgba(255, 255, 255, 0.05);
+      --accent: #50d297;
+      --warn: #ebb453;
+      --danger: #ff7f7f;
+      --shadow: 0 24px 72px rgba(0, 0, 0, 0.3);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(83, 136, 255, 0.17), transparent 32%),
+        linear-gradient(180deg, #12161f 0%, #0a0d13 100%);
+      color: var(--text);
+      padding: 20px;
+    }
+
+    .app {
+      width: min(1400px, 100%);
+      margin: 0 auto;
+      min-height: calc(100vh - 40px);
+      border-radius: 24px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      box-shadow: var(--shadow);
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .topbar {
+      padding: 20px 22px 18px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+    }
+
+    .title-row, .controls-row, .meta-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .title-row { margin-bottom: 14px; }
+    .controls-row { margin-bottom: 12px; }
+
+    .title {
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    .subtitle {
+      margin-top: 4px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .status-pill, .meta-pill {
+      border-radius: 999px;
+      padding: 9px 14px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05);
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .status-pill.ready { color: var(--accent); }
+    .status-pill.booting,
+    .status-pill.seller_thinking,
+    .status-pill.client_reply,
+    .status-pill.detecting_stage,
+    .status-pill.helping { color: var(--warn); }
+    .status-pill.error { color: var(--danger); }
+
+    .select, .button {
+      height: 42px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .select {
+      min-width: 220px;
+      padding: 0 14px;
+    }
+
+    .button {
+      padding: 0 16px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .button.primary { background: linear-gradient(180deg, #2f81ff, #245fd1); }
+    .button.accent { background: linear-gradient(180deg, #2da56f, #1d8557); }
+    .button.ghost { background: rgba(255,255,255,0.05); }
+    .button:disabled { opacity: 0.45; cursor: default; }
+
+    .error {
+      display: none;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 127, 127, 0.25);
+      background: rgba(255, 127, 127, 0.12);
+      color: #ffd0d0;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(380px, 0.85fr);
+      min-height: 0;
+    }
+
+    .panel {
+      min-height: 0;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel + .panel {
+      border-left: 1px solid var(--border);
+    }
+
+    .panel-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 14px;
+    }
+
+    .timeline {
+      overflow-y: auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding-right: 4px;
+    }
+
+    .message-row {
+      display: flex;
+      width: 100%;
+    }
+
+    .message-row.seller { justify-content: flex-end; }
+    .message-row.client { justify-content: flex-start; }
+
+    .bubble {
+      max-width: 86%;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      padding: 14px 16px;
+      line-height: 1.45;
+    }
+
+    .message-row.seller .bubble {
+      background: linear-gradient(180deg, rgba(82,144,255,0.18), rgba(82,144,255,0.1));
+      border-color: rgba(82, 144, 255, 0.28);
+    }
+
+    .message-row.client .bubble {
+      background: var(--client-soft);
+    }
+
+    .speaker {
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .text {
+      font-size: 16px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .empty {
+      min-height: 220px;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      border-radius: 20px;
+      border: 1px dashed rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.02);
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .cards {
+      overflow-y: auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding-right: 4px;
+    }
+
+    .card {
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      padding: 16px;
+    }
+
+    .card-header {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .card-meta {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+      line-height: 1.4;
+    }
+
+    .card-text {
+      font-size: 16px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .divider {
+      height: 1px;
+      background: rgba(255,255,255,0.1);
+      margin: 14px 0;
+    }
+
+    .card-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .mini-note {
+      margin-top: 14px;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    @media (max-width: 980px) {
+      body { padding: 12px; }
+      .app { min-height: calc(100vh - 24px); }
+      .workspace { grid-template-columns: 1fr; }
+      .panel + .panel { border-left: 0; border-top: 1px solid var(--border); }
+      .select, .button { width: 100%; }
+      .bubble { max-width: 92%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div class="title-row">
+        <div>
+          <div class="title">Coach Text Roleplay</div>
+          <div class="subtitle">Ты играешь продавца: твоя текущая реплика приходит из LLM, ты ее озвучиваешь, затем жмешь кнопку и клиент отвечает как реакция.</div>
+        </div>
+        <div id="status-pill" class="status-pill">Загружаюсь…</div>
+      </div>
+
+      <div class="controls-row">
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <select id="script-select" class="select"></select>
+          <select id="persona-select" class="select">
+            <option value="hostile">Hostile</option>
+            <option value="cold">Cold</option>
+            <option value="neutral">Neutral</option>
+          </select>
+        </div>
+        <button id="new-session-btn" class="button ghost">Новый диалог</button>
+      </div>
+
+      <div class="meta-row">
+        <div id="meta-run" class="meta-pill">Run: —</div>
+        <div id="meta-service" class="meta-pill">Service: —</div>
+      </div>
+
+      <div id="error-box" class="error"></div>
+    </div>
+
+    <div class="workspace">
+      <div class="panel">
+        <div class="panel-title">Диалог</div>
+        <div id="timeline" class="timeline"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Подсказки</div>
+        <div id="cards" class="cards"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      snapshot: null,
+      busy: false,
+    };
+
+    const scriptSelect = document.getElementById("script-select");
+    const personaSelect = document.getElementById("persona-select");
+    const newSessionBtn = document.getElementById("new-session-btn");
+    const statusPill = document.getElementById("status-pill");
+    const errorBox = document.getElementById("error-box");
+    const metaRun = document.getElementById("meta-run");
+    const metaService = document.getElementById("meta-service");
+    const timelineEl = document.getElementById("timeline");
+    const cardsEl = document.getElementById("cards");
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function statusLabel(status) {
+      return {
+        booting: "Поднимаюсь",
+        ready: "Готов",
+        seller_thinking: "Генерирую реплику продавца",
+        client_reply: "Клиент отвечает",
+        detecting_stage: "Определяю stage",
+        helping: "Готовлю помощь",
+        error: "Нужна правка",
+      }[status] || status;
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try {
+          const data = await response.json();
+          detail = data.detail || detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+      return response.json();
+    }
+
+    function populateSelect(selectEl, items, selectedValue, mapper) {
+      const current = Array.from(selectEl.options).map((option) => option.value).join("|");
+      const incoming = items.map((item) => mapper(item).value).join("|");
+      if (current !== incoming) {
+        selectEl.innerHTML = "";
+        for (const item of items) {
+          const { value, label } = mapper(item);
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          selectEl.appendChild(option);
+        }
+      }
+      if (selectedValue !== undefined && selectedValue !== null) {
+        selectEl.value = String(selectedValue);
+      }
+    }
+
+    function renderTimeline(snapshot) {
+      const messages = snapshot.messages || [];
+      if (!messages.length) {
+        timelineEl.innerHTML = `
+          <div class="empty">
+            Стенд сам держит текущую реплику продавца справа. Ты озвучиваешь ее и жмешь «Клиент отвечает».
+          </div>
+        `;
+        return;
+      }
+
+      timelineEl.innerHTML = messages.map((message) => `
+        <div class="message-row ${message.role}">
+          <div class="bubble">
+            <div class="speaker">${escapeHtml(message.speaker)}</div>
+            <div class="text">${escapeHtml(message.text)}</div>
+          </div>
+        </div>
+      `).join("");
+      timelineEl.scrollTop = timelineEl.scrollHeight;
+    }
+
+    function stageCard(stage) {
+      if (!stage) {
+        return `
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Stage</div>
+              <div class="card-meta">пока нет</div>
+            </div>
+            <div class="card-text">Когда захочешь проверить, где вы находитесь по переговорам, нажми «Определить stage».</div>
+          </div>
+        `;
+      }
+
+      const scorecard = stage.scorecard;
+      const scoreMeta = scorecard
+        ? `${escapeHtml(scorecard.readiness_label || scorecard.readiness)} · ${scorecard.hit_count}/${scorecard.total_count}`
+        : `${escapeHtml(stage.provider)} · ${escapeHtml(stage.model)}`;
+      const scoreSummary = scorecard
+        ? `<div class="divider"></div><div class="card-text"><strong>Scorecard:</strong> ${escapeHtml(scorecard.summary || "")}</div>`
+        : "";
+
+      return `
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">${escapeHtml(stage.stage)} · ${escapeHtml(stage.title)}</div>
+            <div class="card-meta">${scoreMeta}</div>
+          </div>
+          <div class="card-text"><strong>Agenda:</strong> ${escapeHtml(stage.agenda)}</div>
+          <div class="divider"></div>
+          <div class="card-text"><strong>Step:</strong> ${escapeHtml(stage.step)}</div>
+          ${scoreSummary}
+        </div>
+      `;
+    }
+
+    function sellerCard(snapshot) {
+      const seller = snapshot.currentSellerLine;
+      if (!seller || !seller.text) {
+        return `
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Твоя текущая реплика</div>
+              <div class="card-meta">пока нет</div>
+            </div>
+            <div class="card-text">Нажми «Новый диалог» или «Перегенерить», чтобы получить стартовую фразу продавца.</div>
+          </div>
+        `;
+      }
+
+      return `
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Твоя текущая реплика</div>
+            <div class="card-meta">${escapeHtml(seller.model || "—")} · ${escapeHtml(seller.kind || "reply")}</div>
+          </div>
+          <div class="card-text">${escapeHtml(seller.text)}</div>
+          <div class="card-actions">
+            <button id="advance-btn" class="button primary">Клиент отвечает</button>
+            <button id="refresh-btn" class="button ghost">Перегенерить</button>
+          </div>
+          <div class="mini-note">Сначала зачитываешь эту фразу как продавец. Потом жмешь «Клиент отвечает», и система добавляет реакцию клиента и автоматически готовит тебе следующую реплику.</div>
+        </div>
+      `;
+    }
+
+    function helpCard(helpResult) {
+      if (!helpResult) {
+        return `
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Помоги</div>
+              <div class="card-meta">пока нет</div>
+            </div>
+            <div class="card-text">Если текущую реплику хочется усилить или смягчить, жми «Помоги».</div>
+          </div>
+        `;
+      }
+
+      return `
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Помоги</div>
+            <div class="card-meta">${escapeHtml(helpResult.openerModel || "—")} / ${escapeHtml(helpResult.constructiveModel || "—")}</div>
+          </div>
+          <div class="card-text"><strong>Сказать сейчас:</strong>\n${escapeHtml(helpResult.openerText || "")}</div>
+          <div class="divider"></div>
+          <div class="card-text"><strong>Следующий ход:</strong>\n${escapeHtml(helpResult.constructiveText || "")}</div>
+        </div>
+      `;
+    }
+
+    function renderCards(snapshot) {
+      cardsEl.innerHTML = [
+        sellerCard(snapshot),
+        `
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Действия</div>
+              <div class="card-meta">shared backend</div>
+            </div>
+            <div class="card-actions">
+              <button id="help-btn" class="button accent">Помоги</button>
+              <button id="stage-btn" class="button ghost">Определить stage</button>
+            </div>
+          </div>
+        `,
+        helpCard(snapshot.helpResult),
+        stageCard(snapshot.stage),
+      ].join("");
+
+      const advanceBtn = document.getElementById("advance-btn");
+      const refreshBtn = document.getElementById("refresh-btn");
+      const helpBtn = document.getElementById("help-btn");
+      const stageBtn = document.getElementById("stage-btn");
+
+      if (advanceBtn) {
+        advanceBtn.disabled = state.busy;
+        advanceBtn.addEventListener("click", () => runAction(() => api("/api/seller/advance", {
+          method: "POST",
+          body: JSON.stringify({}),
+        })));
+      }
+      if (refreshBtn) {
+        refreshBtn.disabled = state.busy;
+        refreshBtn.addEventListener("click", () => runAction(() => api("/api/seller/refresh", {
+          method: "POST",
+          body: JSON.stringify({}),
+        })));
+      }
+      if (helpBtn) {
+        helpBtn.disabled = state.busy;
+        helpBtn.addEventListener("click", () => runAction(() => api("/api/help", {
+          method: "POST",
+          body: JSON.stringify({}),
+        })));
+      }
+      if (stageBtn) {
+        stageBtn.disabled = state.busy;
+        stageBtn.addEventListener("click", () => runAction(() => api("/api/stage", {
+          method: "POST",
+          body: JSON.stringify({}),
+        })));
+      }
+    }
+
+    function render(snapshot) {
+      state.snapshot = snapshot;
+      statusPill.className = `status-pill ${snapshot.status}`;
+      statusPill.textContent = statusLabel(snapshot.status);
+      errorBox.style.display = snapshot.error ? "block" : "none";
+      errorBox.textContent = snapshot.error || "";
+      metaRun.textContent = `Run: ${snapshot.runId || "—"}`;
+      metaService.textContent = `Service: ${snapshot.serviceUrl || "—"}`;
+
+      populateSelect(
+        scriptSelect,
+        snapshot.scriptOptions || [],
+        snapshot.config?.script,
+        (item) => ({ value: String(item.number), label: `${item.number}. ${item.title}` }),
+      );
+      personaSelect.value = snapshot.config?.persona_mode || "hostile";
+
+      const controlsDisabled = state.busy;
+      scriptSelect.disabled = controlsDisabled;
+      personaSelect.disabled = controlsDisabled;
+      newSessionBtn.disabled = controlsDisabled;
+
+      renderTimeline(snapshot);
+      renderCards(snapshot);
+    }
+
+    async function runAction(action) {
+      state.busy = true;
+      if (state.snapshot) {
+        render(state.snapshot);
+      }
+      try {
+        const snapshot = await action();
+        render(snapshot);
+      } catch (error) {
+        if (state.snapshot) {
+          state.snapshot.status = "error";
+          state.snapshot.error = error.message;
+          render(state.snapshot);
+        }
+      } finally {
+        state.busy = false;
+        if (state.snapshot) {
+          render(state.snapshot);
+        }
+      }
+    }
+
+    newSessionBtn.addEventListener("click", () => runAction(() => api("/api/session/reset", {
+      method: "POST",
+      body: JSON.stringify({
+        script: Number(scriptSelect.value || 2),
+        persona_mode: personaSelect.value || "hostile",
+      }),
+    })));
+
+    async function refresh() {
+      render(await api("/api/session"));
+    }
+
+    refresh().catch((error) => {
+      errorBox.style.display = "block";
+      errorBox.textContent = error.message;
+    });
+  </script>
+</body>
+</html>

@@ -7,15 +7,24 @@ from pathlib import Path
 
 DEFAULT_CEREBRAS_API_BASE = "https://api.cerebras.ai/v1"
 DEFAULT_CEREBRAS_MODEL = "zai-glm-4.7"
+DEFAULT_CEREBRAS_STAGE_MODEL = DEFAULT_CEREBRAS_MODEL
 DEFAULT_HELP_OPENER_PRIMARY_MODEL = "zai-glm-4.7"
 DEFAULT_HELP_OPENER_SECONDARY_MODEL = "gpt-oss-120b"
 DEFAULT_VERTEX_MODEL = "gemini-3.5-flash"
-DEFAULT_VERTEX_STAGE_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_VERTEX_STAGE_MODEL = "gemini-3.5-flash"
+DEFAULT_VERTEX_SCORECARD_MODEL = DEFAULT_VERTEX_MODEL
+DEFAULT_VERTEX_LIVE_MODEL = "gemini-2.0-flash-live-preview-04-09"
+DEFAULT_VERTEX_LIVE_ASR_MODEL = "gemini-live-2.5-flash-native-audio"
+DEFAULT_VERTEX_LIVE_ASR_LOCATION = "us-central1"
+DEFAULT_VERTEX_LIVE_STAGE_MODEL = "gemini-live-2.5-flash-native-audio"
 DEFAULT_TIMEOUT_SECS = 30.0
 DEFAULT_RATE_LIMIT_BACKOFF_MS = 15_000
 DEFAULT_HELP_OPENER_TIMEOUT_MS = 4_000
 DEFAULT_REASONING_EFFORT = "none"
 DEFAULT_VERTEX_THINKING_LEVEL = "low"
+DEFAULT_VERTEX_SCORECARD_THINKING_LEVEL = "minimal"
+DEFAULT_INTELLIGENCE_TRANSPORT = "rest"
+DEFAULT_VERTEX_LIVE_TIMEOUT_SECS = 20
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 
@@ -25,6 +34,24 @@ def env_var(name: str) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def env_optional_thinking_level(name: str, default: str | None) -> str | None:
+    raw = os.getenv(name)
+    if raw is not None and raw.strip().lower() in {"0", "false", "none", "off", "disabled"}:
+        return None
+    return env_var(name) or default
+
+
+def env_optional_vertex_thinking_level() -> str | None:
+    return env_optional_thinking_level("VERTEX_THINKING_LEVEL", DEFAULT_VERTEX_THINKING_LEVEL)
+
+
+def env_optional_vertex_scorecard_thinking_level() -> str | None:
+    return env_optional_thinking_level(
+        "VERTEX_SCORECARD_THINKING_LEVEL",
+        DEFAULT_VERTEX_SCORECARD_THINKING_LEVEL,
+    )
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -62,10 +89,12 @@ class Settings:
     timeout_secs: float
     rate_limit_backoff_ms: int
     help_opener_timeout_ms: int
+    intelligence_transport: str
 
     cerebras_api_key: str | None
     cerebras_api_base: str
     cerebras_model: str
+    cerebras_stage_model: str
     help_opener_primary_model: str
     help_opener_secondary_model: str
     cerebras_reasoning_effort: str
@@ -75,11 +104,21 @@ class Settings:
     vertex_location: str
     vertex_model: str
     vertex_stage_model: str
+    vertex_scorecard_model: str
+    vertex_live_model: str
+    vertex_live_timeout_secs: float
+    vertex_live_asr_model: str
+    vertex_live_asr_location: str
+    vertex_live_asr_timeout_secs: float
+    vertex_live_stage_model: str
+    vertex_live_stage_location: str
+    vertex_live_stage_timeout_secs: float
     vertex_api_base: str
     vertex_access_token: str | None
     vertex_adc_credentials_path: str | None
     vertex_quota_project_id: str | None
     vertex_thinking_level: str | None
+    vertex_scorecard_thinking_level: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -95,6 +134,15 @@ class Settings:
             or quota_project_from_adc(adc_path)
         )
         vertex_api_base = env_var("VERTEX_API_BASE") or default_vertex_api_base(vertex_location)
+        vertex_live_asr_location = (
+            env_var("VERTEX_LIVE_ASR_LOCATION")
+            or env_var("GEMINI_LIVE_ASR_LOCATION")
+            or (
+                vertex_location
+                if vertex_location.lower() != "global"
+                else DEFAULT_VERTEX_LIVE_ASR_LOCATION
+            )
+        )
 
         return cls(
             provider=(env_var("COACH_PROVIDER") or "auto").lower(),
@@ -107,9 +155,16 @@ class Settings:
             help_opener_timeout_ms=env_int(
                 "COACH_HELP_OPENER_TIMEOUT_MS", DEFAULT_HELP_OPENER_TIMEOUT_MS
             ),
+            intelligence_transport=(
+                env_var("COACH_INTELLIGENCE_TRANSPORT") or DEFAULT_INTELLIGENCE_TRANSPORT
+            ).lower(),
             cerebras_api_key=env_var("CEREBRAS_API_KEY"),
             cerebras_api_base=env_var("CEREBRAS_API_BASE") or DEFAULT_CEREBRAS_API_BASE,
             cerebras_model=env_var("CEREBRAS_MODEL") or DEFAULT_CEREBRAS_MODEL,
+            cerebras_stage_model=env_var("CEREBRAS_STAGE_MODEL")
+            or env_var("COACH_STAGE_MODEL")
+            or env_var("CEREBRAS_MODEL")
+            or DEFAULT_CEREBRAS_STAGE_MODEL,
             help_opener_primary_model=(
                 env_var("CEREBRAS_HELP_OPENER_PRIMARY_MODEL")
                 or env_var("CEREBRAS_HELP_OPENER_FAST_MODEL")
@@ -132,14 +187,43 @@ class Settings:
             vertex_stage_model=env_var("VERTEX_STAGE_MODEL")
             or env_var("GEMINI_VERTEX_STAGE_MODEL")
             or DEFAULT_VERTEX_STAGE_MODEL,
+            vertex_scorecard_model=env_var("VERTEX_SCORECARD_MODEL")
+            or env_var("GEMINI_VERTEX_SCORECARD_MODEL")
+            or env_var("VERTEX_GEMINI_MODEL")
+            or DEFAULT_VERTEX_SCORECARD_MODEL,
+            vertex_live_model=env_var("VERTEX_LIVE_MODEL")
+            or env_var("GEMINI_VERTEX_LIVE_MODEL")
+            or DEFAULT_VERTEX_LIVE_MODEL,
+            vertex_live_timeout_secs=float(
+                env_int("VERTEX_LIVE_TIMEOUT_SECS", DEFAULT_VERTEX_LIVE_TIMEOUT_SECS)
+            ),
+            vertex_live_asr_model=env_var("VERTEX_LIVE_ASR_MODEL")
+            or env_var("GEMINI_LIVE_ASR_MODEL")
+            or DEFAULT_VERTEX_LIVE_ASR_MODEL,
+            vertex_live_asr_location=vertex_live_asr_location,
+            vertex_live_asr_timeout_secs=float(
+                env_int("VERTEX_LIVE_ASR_TIMEOUT_SECS", DEFAULT_VERTEX_LIVE_TIMEOUT_SECS)
+            ),
+            vertex_live_stage_model=env_var("VERTEX_LIVE_STAGE_MODEL")
+            or env_var("COACH_STAGE_AUDIO_LIVE_MODEL")
+            or DEFAULT_VERTEX_LIVE_STAGE_MODEL,
+            vertex_live_stage_location=env_var("VERTEX_LIVE_STAGE_LOCATION")
+            or env_var("COACH_STAGE_AUDIO_LIVE_LOCATION")
+            or vertex_live_asr_location,
+            vertex_live_stage_timeout_secs=float(
+                env_int(
+                    "VERTEX_LIVE_STAGE_TIMEOUT_SECS",
+                    env_int("COACH_STAGE_AUDIO_LIVE_TIMEOUT_SECS", DEFAULT_VERTEX_LIVE_TIMEOUT_SECS),
+                )
+            ),
             vertex_api_base=vertex_api_base,
             vertex_access_token=env_var("VERTEX_ACCESS_TOKEN")
             or env_var("GOOGLE_OAUTH_ACCESS_TOKEN"),
             vertex_adc_credentials_path=adc_path,
             vertex_quota_project_id=env_var("GOOGLE_CLOUD_QUOTA_PROJECT")
             or quota_project_from_adc(adc_path),
-            vertex_thinking_level=env_var("VERTEX_THINKING_LEVEL")
-            or DEFAULT_VERTEX_THINKING_LEVEL,
+            vertex_thinking_level=env_optional_vertex_thinking_level(),
+            vertex_scorecard_thinking_level=env_optional_vertex_scorecard_thinking_level(),
         )
 
     @property
@@ -170,20 +254,26 @@ class Settings:
         return "auto: disabled"
 
     def active_model_label(self) -> str:
+        intelligence_suffix = ""
+        if self.intelligence_transport in {"live", "websocket", "gemini-live"}:
+            intelligence_suffix = f" / intelligence live {self.vertex_live_model}"
         if self.provider in {"vertex", "gemini", "google"}:
-            return self.vertex_model
+            return f"{self.vertex_model}{intelligence_suffix}"
         if self.provider == "cerebras":
-            return self.cerebras_model
+            return f"{self.cerebras_model}{intelligence_suffix}"
         if self.cerebras_configured and self.vertex_configured:
             return (
                 f"fast priority {self.vertex_model}({self.vertex_thinking_level or 'default'}) "
                 f"-> {self.help_opener_primary_model} -> "
                 f"{self.help_opener_secondary_model} / slow {self.vertex_model} / "
-                f"stage {self.vertex_stage_model}"
+                f"stage {self.cerebras_stage_model} -> "
+                f"scorecard {self.vertex_scorecard_model}"
+                f"({self.vertex_scorecard_thinking_level or 'default'})"
+                f"{intelligence_suffix}"
             )
         if self.vertex_configured:
-            return self.vertex_model
-        return self.cerebras_model
+            return f"{self.vertex_model}{intelligence_suffix}"
+        return f"{self.cerebras_model}{intelligence_suffix}"
 
 
 def quota_project_from_adc(path: str | None) -> str | None:

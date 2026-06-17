@@ -3,7 +3,6 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    collections::VecDeque,
     env,
     error::Error,
     fs::{create_dir_all, OpenOptions},
@@ -19,7 +18,7 @@ mod streaming;
 use streaming::{event_data_lines, take_sse_event};
 
 const DEFAULT_SERVICE_URL: &str = "http://127.0.0.1:8088";
-const DEFAULT_INTERVAL_MS: u64 = 2_000;
+const DEFAULT_INTERVAL_MS: u64 = 5_000;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_RATE_LIMIT_BACKOFF_MS: u64 = 15_000;
 const DEFAULT_HELP_CONSTRUCTIVE_TIMEOUT_MS: u64 = 20_000;
@@ -40,6 +39,7 @@ pub enum CoachInput {
 pub struct CoachSnapshot {
     pub run_id: String,
     pub content: String,
+    pub current_text: Option<String>,
     pub force: bool,
 }
 
@@ -233,6 +233,26 @@ enum ServiceStreamAction {
     Done,
 }
 
+enum IntelligenceWorkerInput {
+    Request(CoachStageRequest),
+    Stop,
+}
+
+enum HelpWorkerInput {
+    Request(CoachHelpRequest),
+    Stop,
+}
+
+enum ChatWorkerInput {
+    Request(CoachChatRequest),
+    Stop,
+}
+
+enum LiveWorkerInput {
+    Snapshot(CoachSnapshot),
+    Stop,
+}
+
 pub fn spawn_coach_worker(
     tx: Sender<CoachEvent>,
     settings: CoachSettings,
@@ -286,168 +306,143 @@ fn run_coach_worker(
         }
     }
 
+    let live_tx = spawn_live_worker(config.clone(), tx.clone());
+    let intelligence_tx = spawn_intelligence_worker(config.clone(), tx.clone());
+    let help_tx = spawn_help_worker(config.clone(), tx.clone());
+    let chat_tx = spawn_chat_worker(config, tx);
+
+    while let Ok(input) = input_rx.recv() {
+        match input {
+            CoachInput::Snapshot(snapshot) => {
+                let _ = live_tx.send(LiveWorkerInput::Snapshot(snapshot));
+            }
+            CoachInput::Chat(request) => {
+                let _ = chat_tx.send(ChatWorkerInput::Request(request));
+            }
+            CoachInput::Help(request) => {
+                let _ = help_tx.send(HelpWorkerInput::Request(request));
+            }
+            CoachInput::Stage(request) => {
+                let _ = intelligence_tx.send(IntelligenceWorkerInput::Request(request));
+            }
+            CoachInput::Stop => break,
+        }
+    }
+
+    let _ = live_tx.send(LiveWorkerInput::Stop);
+    let _ = intelligence_tx.send(IntelligenceWorkerInput::Stop);
+    let _ = help_tx.send(HelpWorkerInput::Stop);
+    let _ = chat_tx.send(ChatWorkerInput::Stop);
+
+    Ok(())
+}
+
+fn spawn_live_worker(config: CoachConfig, tx: Sender<CoachEvent>) -> Sender<LiveWorkerInput> {
+    let (worker_tx, worker_rx) = mpsc::channel();
+    thread::spawn(move || {
+        coach_log("live worker start");
+        if let Err(err) = run_live_worker(config, worker_rx, tx.clone()) {
+            coach_log(format!("live worker error: {}", err));
+            let _ = tx.send(CoachEvent::Error(format!(
+                "Coach live worker error: {}",
+                concise_error(&err)
+            )));
+        }
+        coach_log("live worker stop");
+    });
+    worker_tx
+}
+
+fn spawn_intelligence_worker(
+    config: CoachConfig,
+    tx: Sender<CoachEvent>,
+) -> Sender<IntelligenceWorkerInput> {
+    let (worker_tx, worker_rx) = mpsc::channel();
+    thread::spawn(move || {
+        coach_log("intelligence worker start");
+        if let Err(err) = run_intelligence_worker(config, worker_rx, tx.clone()) {
+            coach_log(format!("intelligence worker error: {}", err));
+            let _ = tx.send(CoachEvent::StageError(format!(
+                "Stage detect error: {}",
+                concise_error(&err)
+            )));
+        }
+        coach_log("intelligence worker stop");
+    });
+    worker_tx
+}
+
+fn spawn_help_worker(config: CoachConfig, tx: Sender<CoachEvent>) -> Sender<HelpWorkerInput> {
+    let (worker_tx, worker_rx) = mpsc::channel();
+    thread::spawn(move || {
+        coach_log("help worker start");
+        if let Err(err) = run_help_worker(config, worker_rx, tx.clone()) {
+            coach_log(format!("help worker error: {}", err));
+            let _ = tx.send(CoachEvent::Error(format!(
+                "Coach help worker error: {}",
+                concise_error(&err)
+            )));
+        }
+        coach_log("help worker stop");
+    });
+    worker_tx
+}
+
+fn spawn_chat_worker(config: CoachConfig, tx: Sender<CoachEvent>) -> Sender<ChatWorkerInput> {
+    let (worker_tx, worker_rx) = mpsc::channel();
+    thread::spawn(move || {
+        coach_log("chat worker start");
+        if let Err(err) = run_chat_worker(config, worker_rx, tx.clone()) {
+            coach_log(format!("chat worker error: {}", err));
+            let _ = tx.send(CoachEvent::Error(format!(
+                "Coach chat worker error: {}",
+                concise_error(&err)
+            )));
+        }
+        coach_log("chat worker stop");
+    });
+    worker_tx
+}
+
+fn run_live_worker(
+    config: CoachConfig,
+    input_rx: Receiver<LiveWorkerInput>,
+    tx: Sender<CoachEvent>,
+) -> Result<(), BoxError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let client = build_client(&config)?;
     let mut latest: Option<CoachSnapshot> = None;
-    let mut pending_stage: Option<CoachStageRequest> = None;
-    let mut pending_helps = VecDeque::new();
-    let mut pending_chats = VecDeque::new();
     let mut last_sent = String::new();
     let mut force_due = false;
     let mut next_due = Instant::now();
 
     loop {
-        let timeout = if force_due
-            || pending_stage.is_some()
-            || !pending_helps.is_empty()
-            || !pending_chats.is_empty()
-        {
+        let timeout = if force_due {
             Duration::ZERO
         } else {
             next_due.saturating_duration_since(Instant::now())
         };
 
         match input_rx.recv_timeout(timeout) {
-            Ok(CoachInput::Snapshot(snapshot)) => {
+            Ok(LiveWorkerInput::Snapshot(snapshot)) => {
                 force_due |= snapshot.force;
                 latest = Some(snapshot);
                 continue;
             }
-            Ok(CoachInput::Chat(request)) => {
-                pending_chats.push_back(request);
-                continue;
-            }
-            Ok(CoachInput::Help(request)) => {
-                pending_helps.push_back(request);
-                continue;
-            }
-            Ok(CoachInput::Stage(request)) => {
-                pending_stage = Some(request);
-                continue;
-            }
-            Ok(CoachInput::Stop) => break,
+            Ok(LiveWorkerInput::Stop) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        if drain_inputs(
-            &input_rx,
-            &mut latest,
-            &mut pending_stage,
-            &mut pending_helps,
-            &mut pending_chats,
-            &mut force_due,
-        ) {
-            break;
-        }
-
-        while let Some(request) = pending_helps.pop_front() {
-            let started_at = Instant::now();
-            coach_log(format!(
-                "help request start id={} context_chars={}",
-                request.id,
-                request.context.chars().count(),
-            ));
-
-            match runtime.block_on(send_help_request(&client, &config, &request, &tx)) {
-                Ok(()) => {
-                    coach_log(format!(
-                        "help request done id={} elapsed_ms={}",
-                        request.id,
-                        started_at.elapsed().as_millis()
-                    ));
+        while let Ok(input) = input_rx.try_recv() {
+            match input {
+                LiveWorkerInput::Snapshot(snapshot) => {
+                    force_due |= snapshot.force;
+                    latest = Some(snapshot);
                 }
-                Err(err) => {
-                    let message = format!("Coach help error: {}", concise_error(&err));
-                    coach_log(format!("help request error id={}: {}", request.id, err));
-                    let _ = tx.send(CoachEvent::ChatError(request.id, message));
-                }
-            }
-
-            if drain_inputs(
-                &input_rx,
-                &mut latest,
-                &mut pending_stage,
-                &mut pending_helps,
-                &mut pending_chats,
-                &mut force_due,
-            ) {
-                return Ok(());
-            }
-        }
-
-        while let Some(request) = pending_chats.pop_front() {
-            let started_at = Instant::now();
-            coach_log(format!(
-                "chat request start id={} question_chars={} context_chars={}",
-                request.id,
-                request.question.chars().count(),
-                request.context.chars().count(),
-            ));
-
-            match runtime.block_on(send_chat_request(&client, &config, &request, &tx)) {
-                Ok(()) => {
-                    coach_log(format!(
-                        "chat request done id={} elapsed_ms={}",
-                        request.id,
-                        started_at.elapsed().as_millis()
-                    ));
-                }
-                Err(err) => {
-                    let message = format!("Coach chat error: {}", concise_error(&err));
-                    coach_log(format!("chat request error id={}: {}", request.id, err));
-                    let _ = tx.send(CoachEvent::ChatError(request.id, message));
-                }
-            }
-
-            if drain_inputs(
-                &input_rx,
-                &mut latest,
-                &mut pending_stage,
-                &mut pending_helps,
-                &mut pending_chats,
-                &mut force_due,
-            ) {
-                return Ok(());
-            }
-        }
-
-        if let Some(request) = pending_stage.take() {
-            let started_at = Instant::now();
-            coach_log(format!(
-                "stage request start run_id={} context_chars={} current_stage={}",
-                request.run_id,
-                request.context.chars().count(),
-                request.current_stage.as_deref().unwrap_or("unknown"),
-            ));
-
-            match runtime.block_on(send_stage_request(&client, &config, &request, &tx)) {
-                Ok(()) => {
-                    coach_log(format!(
-                        "stage request done run_id={} elapsed_ms={}",
-                        request.run_id,
-                        started_at.elapsed().as_millis()
-                    ));
-                }
-                Err(err) => {
-                    coach_log(format!(
-                        "stage request error run_id={}: {}",
-                        request.run_id, err
-                    ));
-                    let _ = tx.send(CoachEvent::StageError(format!(
-                        "Stage detect error: {}",
-                        concise_error(&err)
-                    )));
-                }
-            }
-
-            if drain_inputs(
-                &input_rx,
-                &mut latest,
-                &mut pending_stage,
-                &mut pending_helps,
-                &mut pending_chats,
-                &mut force_due,
-            ) {
-                return Ok(());
+                LiveWorkerInput::Stop => return Ok(()),
             }
         }
 
@@ -495,50 +490,146 @@ fn run_coach_worker(
         }
 
         force_due = false;
-        if drain_inputs(
-            &input_rx,
-            &mut latest,
-            &mut pending_stage,
-            &mut pending_helps,
-            &mut pending_chats,
-            &mut force_due,
-        ) {
-            break;
-        }
         next_due = Instant::now() + config.interval;
     }
 
     Ok(())
 }
 
-fn drain_inputs(
-    input_rx: &Receiver<CoachInput>,
-    latest: &mut Option<CoachSnapshot>,
-    pending_stage: &mut Option<CoachStageRequest>,
-    pending_helps: &mut VecDeque<CoachHelpRequest>,
-    pending_chats: &mut VecDeque<CoachChatRequest>,
-    force_due: &mut bool,
-) -> bool {
-    while let Ok(input) = input_rx.try_recv() {
-        match input {
-            CoachInput::Snapshot(snapshot) => {
-                *force_due |= snapshot.force;
-                *latest = Some(snapshot);
+fn run_intelligence_worker(
+    config: CoachConfig,
+    input_rx: Receiver<IntelligenceWorkerInput>,
+    tx: Sender<CoachEvent>,
+) -> Result<(), BoxError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let client = build_client(&config)?;
+
+    while let Ok(input) = input_rx.recv() {
+        let IntelligenceWorkerInput::Request(mut request) = input else {
+            break;
+        };
+        while let Ok(input) = input_rx.try_recv() {
+            match input {
+                IntelligenceWorkerInput::Request(next_request) => {
+                    request = next_request;
+                }
+                IntelligenceWorkerInput::Stop => return Ok(()),
             }
-            CoachInput::Chat(request) => {
-                pending_chats.push_back(request);
+        }
+
+        let started_at = Instant::now();
+        coach_log(format!(
+            "stage request start run_id={} context_chars={} current_stage={}",
+            request.run_id,
+            request.context.chars().count(),
+            request.current_stage.as_deref().unwrap_or("unknown"),
+        ));
+
+        match runtime.block_on(send_stage_request(&client, &config, &request, &tx)) {
+            Ok(()) => {
+                coach_log(format!(
+                    "stage request done run_id={} elapsed_ms={}",
+                    request.run_id,
+                    started_at.elapsed().as_millis()
+                ));
             }
-            CoachInput::Help(request) => {
-                pending_helps.push_back(request);
+            Err(err) => {
+                coach_log(format!(
+                    "stage request error run_id={}: {}",
+                    request.run_id, err
+                ));
+                let _ = tx.send(CoachEvent::StageError(format!(
+                    "Stage detect error: {}",
+                    concise_error(&err)
+                )));
             }
-            CoachInput::Stage(request) => {
-                *pending_stage = Some(request);
-            }
-            CoachInput::Stop => return true,
         }
     }
 
-    false
+    Ok(())
+}
+
+fn run_help_worker(
+    config: CoachConfig,
+    input_rx: Receiver<HelpWorkerInput>,
+    tx: Sender<CoachEvent>,
+) -> Result<(), BoxError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let client = build_client(&config)?;
+
+    while let Ok(input) = input_rx.recv() {
+        let HelpWorkerInput::Request(request) = input else {
+            break;
+        };
+        let started_at = Instant::now();
+        coach_log(format!(
+            "help request start id={} context_chars={}",
+            request.id,
+            request.context.chars().count(),
+        ));
+
+        match runtime.block_on(send_help_request(&client, &config, &request, &tx)) {
+            Ok(()) => {
+                coach_log(format!(
+                    "help request done id={} elapsed_ms={}",
+                    request.id,
+                    started_at.elapsed().as_millis()
+                ));
+            }
+            Err(err) => {
+                let message = format!("Coach help error: {}", concise_error(&err));
+                coach_log(format!("help request error id={}: {}", request.id, err));
+                let _ = tx.send(CoachEvent::ChatError(request.id, message));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_chat_worker(
+    config: CoachConfig,
+    input_rx: Receiver<ChatWorkerInput>,
+    tx: Sender<CoachEvent>,
+) -> Result<(), BoxError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let client = build_client(&config)?;
+
+    while let Ok(input) = input_rx.recv() {
+        let ChatWorkerInput::Request(request) = input else {
+            break;
+        };
+        let started_at = Instant::now();
+        coach_log(format!(
+            "chat request start id={} question_chars={} context_chars={}",
+            request.id,
+            request.question.chars().count(),
+            request.context.chars().count(),
+        ));
+
+        match runtime.block_on(send_chat_request(&client, &config, &request, &tx)) {
+            Ok(()) => {
+                coach_log(format!(
+                    "chat request done id={} elapsed_ms={}",
+                    request.id,
+                    started_at.elapsed().as_millis()
+                ));
+            }
+            Err(err) => {
+                let message = format!("Coach chat error: {}", concise_error(&err));
+                coach_log(format!("chat request error id={}: {}", request.id, err));
+                let _ = tx.send(CoachEvent::ChatError(request.id, message));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 async fn fetch_health(client: &Client, config: &CoachConfig) -> Result<HealthResponse, BoxError> {
@@ -568,6 +659,13 @@ async fn send_stage_request(
         stage_request_body(request),
     )
     .await?;
+    if response.status() == reqwest::StatusCode::NO_CONTENT {
+        coach_log(format!(
+            "stage response run_id={} no_update",
+            request.run_id
+        ));
+        return Ok(());
+    }
     let agenda = response.json::<StageAgendaResponse>().await?;
     coach_log(format!(
         "stage response run_id={} stage={} provider={} model={}",
@@ -1019,6 +1117,7 @@ fn live_request_body(snapshot: &CoachSnapshot) -> Value {
     json!({
         "run_id": snapshot.run_id,
         "content": snapshot.content,
+        "current_text": snapshot.current_text,
         "force": snapshot.force,
     })
 }
@@ -1234,11 +1333,13 @@ mod tests {
         let body = live_request_body(&CoachSnapshot {
             run_id: "run-1".to_string(),
             content: "Спикер 1: привет".to_string(),
+            current_text: Some("Уточни цель.".to_string()),
             force: true,
         });
 
         assert_eq!(body["run_id"], "run-1");
         assert_eq!(body["content"], "Спикер 1: привет");
+        assert_eq!(body["current_text"], "Уточни цель.");
         assert_eq!(body["force"], true);
     }
 

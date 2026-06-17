@@ -3,10 +3,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response, WebSocket, WebSocketException, status
 from fastapi.responses import StreamingResponse
 
 from .config import Settings
+from .live_asr import VertexLiveAsrBridge
+from .live_stage_audio import VertexLiveStageAudioBridge
 from .orchestrator import LlmOrchestrator
 from .providers import ProviderError
 from .schemas import (
@@ -52,6 +54,12 @@ async def healthz() -> HealthResponse:
         model=settings.active_model_label(),
         cerebras_configured=settings.cerebras_configured,
         vertex_configured=settings.vertex_configured,
+        intelligence_transport=settings.intelligence_transport,
+        vertex_live_model=settings.vertex_live_model,
+        vertex_live_asr_model=settings.vertex_live_asr_model,
+        vertex_live_asr_location=settings.vertex_live_asr_location,
+        vertex_live_stage_model=settings.vertex_live_stage_model,
+        vertex_live_stage_location=settings.vertex_live_stage_location,
     )
 
 
@@ -81,12 +89,15 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
     response_model=StageAgendaResponse,
     dependencies=[Depends(require_service_token)],
 )
-async def stage_agenda(request: StageRequest) -> StageAgendaResponse:
+async def stage_agenda(request: StageRequest) -> StageAgendaResponse | Response:
     try:
-        return await orchestrator.stage_agenda(request)
+        response = await orchestrator.stage_agenda(request)
+        if response is None:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+        return response
     except (ProviderError, ValueError) as exc:
-        status = provider_status(exc) if isinstance(exc, ProviderError) else 502
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        status_code = provider_status(exc) if isinstance(exc, ProviderError) else 502
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @app.post(
@@ -117,6 +128,28 @@ async def help_constructive_stream(request: HelpRequest) -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+@app.websocket("/v1/asr/gemini-live")
+async def gemini_live_asr(websocket: WebSocket) -> None:
+    require_service_token_websocket(websocket)
+    await websocket.accept()
+    await VertexLiveAsrBridge(settings=settings, vertex=orchestrator.vertex).run(websocket)
+
+
+@app.websocket("/v1/coach/stage/live-audio")
+async def coach_stage_live_audio(websocket: WebSocket) -> None:
+    require_service_token_websocket(websocket)
+    await websocket.accept()
+    await VertexLiveStageAudioBridge(settings=settings, vertex=orchestrator.vertex).run(websocket)
+
+
+def require_service_token_websocket(websocket: WebSocket) -> None:
+    if not settings.service_token:
+        return
+    expected = f"Bearer {settings.service_token}"
+    if websocket.headers.get("authorization") != expected:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
 
 
 def provider_status(exc: ProviderError) -> int:

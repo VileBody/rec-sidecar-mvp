@@ -3078,6 +3078,7 @@ name = "rec-sidecar-mvp"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "cc",
  "chrono",
  "cpal",
  "dotenvy",

@@ -30,21 +30,39 @@ use tokio::{
 use tokio_socks::tcp::Socks5Stream;
 use tokio_tungstenite::{client_async_tls, connect_async, tungstenite::Message, WebSocketStream};
 
+use crate::coach;
+
 mod audio;
 mod config;
+mod system_audio;
 
-use audio::{build_audio_batch, chunks_for_duration, AudioProcessor};
-use config::{InworldConfig, ReconnectConfig, SocksProxy};
+use audio::{build_audio_batch, chunk_samples, chunks_for_duration, AudioChunk, AudioProcessor};
+use config::{
+    GeminiLiveAsrConfig, InworldConfig, ReconnectConfig, SocksProxy, StageLiveAudioConfig,
+};
+use system_audio::SystemAudioTap;
 
 const INWORLD_STT_WS_URL: &str = "wss://api.inworld.ai/stt/v1/transcribe:streamBidirectional";
+const DEFAULT_LLM_SERVICE_URL: &str = "http://127.0.0.1:8088";
 const DEFAULT_MODEL: &str = "soniox/stt-rt-v4";
+const DEFAULT_GEMINI_LIVE_ASR_MODEL: &str = "gemini-live-2.5-flash-native-audio";
 const DEFAULT_SAMPLE_RATE: u32 = 16_000;
 const DEFAULT_CHUNK_MS: u32 = 100;
+const DEFAULT_GEMINI_LIVE_ASR_CHUNK_MS: u32 = 40;
+const DEFAULT_STAGE_AUDIO_LIVE_CHUNK_MS: u32 = 40;
 const DEFAULT_FORCE_END_TURN_MS: u64 = 4_000;
+const DEFAULT_GEMINI_LIVE_ASR_FORCE_END_TURN_MS: u64 = 1_500;
+const DEFAULT_STAGE_AUDIO_LIVE_FORCE_END_TURN_MS: u64 = 3_000;
 const DEFAULT_PARTIAL_UI_INTERVAL_MS: u64 = 120;
 const DEFAULT_AUDIO_QUEUE_CHUNKS: usize = 200;
+const DEFAULT_GEMINI_LIVE_ASR_QUEUE_CHUNKS: usize = 400;
+const DEFAULT_STAGE_AUDIO_LIVE_QUEUE_CHUNKS: usize = 400;
 const DEFAULT_AUDIO_MAX_BATCH_MS: u64 = 800;
+const DEFAULT_GEMINI_LIVE_ASR_AUDIO_MAX_BATCH_MS: u64 = 40;
+const DEFAULT_STAGE_AUDIO_LIVE_AUDIO_MAX_BATCH_MS: u64 = 80;
 const DEFAULT_AUDIO_FLUSH_LATENCY_MS: u64 = 10_000;
+const DEFAULT_GEMINI_LIVE_ASR_AUDIO_FLUSH_LATENCY_MS: u64 = 2_000;
+const DEFAULT_STAGE_AUDIO_LIVE_AUDIO_FLUSH_LATENCY_MS: u64 = 2_000;
 const DEFAULT_STT_MAX_RECONNECTS: usize = 3;
 const DEFAULT_STT_RECONNECT_BACKOFF_MS: u64 = 750;
 const DEFAULT_STT_RECONNECT_MAX_BACKOFF_MS: u64 = 5_000;
@@ -62,6 +80,8 @@ pub enum AsrEvent {
     Ready(String),
     PartialTranscript(String),
     Transcript(String),
+    StageAgenda(Box<coach::CoachStageAgenda>),
+    StageError(String),
     Error(String),
     Stopped,
 }
@@ -71,6 +91,59 @@ pub enum AsrCommand {
 }
 
 type SharedCommandRx = Arc<Mutex<StdReceiver<AsrCommand>>>;
+
+#[derive(Deserialize)]
+struct StageLiveAudioMessage {
+    #[serde(default)]
+    stage_agenda: Option<StageLiveAudioAgendaResponse>,
+    #[serde(default)]
+    code: Option<i64>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StageLiveAudioAgendaResponse {
+    stage: String,
+    title: String,
+    agenda: String,
+    emotion: String,
+    step: String,
+    provider: String,
+    model: String,
+    #[serde(default)]
+    scorecard: Option<coach::CoachStageScorecard>,
+}
+
+impl From<StageLiveAudioAgendaResponse> for coach::CoachStageAgenda {
+    fn from(response: StageLiveAudioAgendaResponse) -> Self {
+        Self {
+            stage: response.stage,
+            title: response.title,
+            agenda: response.agenda,
+            emotion: response.emotion,
+            step: response.step,
+            provider: response.provider,
+            model: response.model,
+            scorecard: response.scorecard,
+        }
+    }
+}
+
+trait RealtimeAsrConfig {
+    fn service_name(&self) -> &'static str;
+    fn ready_message(&self) -> String;
+    fn transcribe_config(&self) -> Value;
+    fn sample_rate(&self) -> u32;
+    fn chunk_ms(&self) -> u32;
+    fn mic_device(&self) -> Option<&str>;
+    fn show_partials(&self) -> bool;
+    fn partial_ui_interval(&self) -> Duration;
+    fn audio_queue_chunks(&self) -> usize;
+    fn audio_max_batch(&self) -> Duration;
+    fn audio_flush_latency(&self) -> Option<Duration>;
+    fn force_end_turn_after(&self) -> Option<Duration>;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AsrFailureKind {
@@ -127,8 +200,18 @@ pub fn spawn_asr_worker(
     settings: AsrSettings,
 ) -> Option<Sender<AsrCommand>> {
     let (command_tx, command_rx) = std_mpsc::channel();
+    if config::stage_audio_live_enabled() {
+        spawn_stage_live_audio(tx.clone(), stop.clone(), settings.clone());
+    }
 
-    if env_var("INWORLD_API_KEY").is_some() {
+    let provider = env_var("REC_SIDECAR_ASR_PROVIDER")
+        .or_else(|| env_var("ASR_PROVIDER"))
+        .unwrap_or_else(|| "auto".to_string())
+        .to_ascii_lowercase();
+
+    if matches!(provider.as_str(), "gemini-live" | "vertex-live" | "live") {
+        spawn_gemini_live_asr(tx, stop, settings, command_rx);
+    } else if env_var("INWORLD_API_KEY").is_some() {
         spawn_inworld_asr(tx, stop, settings, command_rx);
     } else {
         spawn_mock_asr(tx, stop, command_rx);
@@ -167,6 +250,187 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+impl RealtimeAsrConfig for InworldConfig {
+    fn service_name(&self) -> &'static str {
+        "Inworld STT"
+    }
+
+    fn ready_message(&self) -> String {
+        let audio_source = if system_audio_enabled() {
+            "native Rust mic + Core Audio system output"
+        } else {
+            "native Rust mic"
+        };
+        format!(
+            "Inworld Soniox STT connected\nmodel: {}\nnetwork: {}\naudio: {} -> LINEAR16 {} Hz",
+            self.model,
+            if self.socks_proxy.is_some() {
+                "SOCKS5 proxy"
+            } else {
+                "direct"
+            },
+            audio_source,
+            self.sample_rate
+        )
+    }
+
+    fn transcribe_config(&self) -> Value {
+        InworldConfig::transcribe_config(self)
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn chunk_ms(&self) -> u32 {
+        self.chunk_ms
+    }
+
+    fn mic_device(&self) -> Option<&str> {
+        self.mic_device.as_deref()
+    }
+
+    fn show_partials(&self) -> bool {
+        self.show_partials
+    }
+
+    fn partial_ui_interval(&self) -> Duration {
+        self.partial_ui_interval
+    }
+
+    fn audio_queue_chunks(&self) -> usize {
+        self.audio_queue_chunks
+    }
+
+    fn audio_max_batch(&self) -> Duration {
+        self.audio_max_batch
+    }
+
+    fn audio_flush_latency(&self) -> Option<Duration> {
+        self.audio_flush_latency
+    }
+
+    fn force_end_turn_after(&self) -> Option<Duration> {
+        self.force_end_turn_after
+    }
+}
+
+impl RealtimeAsrConfig for GeminiLiveAsrConfig {
+    fn service_name(&self) -> &'static str {
+        "Gemini Live ASR"
+    }
+
+    fn ready_message(&self) -> String {
+        let audio_source = if system_audio_enabled() {
+            "native Rust mic + Core Audio system output"
+        } else {
+            "native Rust mic"
+        };
+        format!(
+            "Gemini Live ASR connected\nmodel: {}\nsidecar: {}\naudio: {} -> LINEAR16 {} Hz",
+            self.model, self.ws_url, audio_source, self.sample_rate
+        )
+    }
+
+    fn transcribe_config(&self) -> Value {
+        GeminiLiveAsrConfig::transcribe_config(self)
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn chunk_ms(&self) -> u32 {
+        self.chunk_ms
+    }
+
+    fn mic_device(&self) -> Option<&str> {
+        self.mic_device.as_deref()
+    }
+
+    fn show_partials(&self) -> bool {
+        self.show_partials
+    }
+
+    fn partial_ui_interval(&self) -> Duration {
+        self.partial_ui_interval
+    }
+
+    fn audio_queue_chunks(&self) -> usize {
+        self.audio_queue_chunks
+    }
+
+    fn audio_max_batch(&self) -> Duration {
+        self.audio_max_batch
+    }
+
+    fn audio_flush_latency(&self) -> Option<Duration> {
+        self.audio_flush_latency
+    }
+
+    fn force_end_turn_after(&self) -> Option<Duration> {
+        self.force_end_turn_after
+    }
+}
+
+impl RealtimeAsrConfig for StageLiveAudioConfig {
+    fn service_name(&self) -> &'static str {
+        "Gemini Live Stage Audio"
+    }
+
+    fn ready_message(&self) -> String {
+        let audio_source = if system_audio_enabled() {
+            "native Rust mic + Core Audio system output"
+        } else {
+            "native Rust mic"
+        };
+        format!(
+            "Gemini Live stage audio connected\nsidecar: {}\naudio: {} -> LINEAR16 {} Hz",
+            self.ws_url, audio_source, self.sample_rate
+        )
+    }
+
+    fn transcribe_config(&self) -> Value {
+        StageLiveAudioConfig::transcribe_config(self)
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn chunk_ms(&self) -> u32 {
+        self.chunk_ms
+    }
+
+    fn mic_device(&self) -> Option<&str> {
+        self.mic_device.as_deref()
+    }
+
+    fn show_partials(&self) -> bool {
+        false
+    }
+
+    fn partial_ui_interval(&self) -> Duration {
+        Duration::from_millis(DEFAULT_PARTIAL_UI_INTERVAL_MS)
+    }
+
+    fn audio_queue_chunks(&self) -> usize {
+        self.audio_queue_chunks
+    }
+
+    fn audio_max_batch(&self) -> Duration {
+        self.audio_max_batch
+    }
+
+    fn audio_flush_latency(&self) -> Option<Duration> {
+        self.audio_flush_latency
+    }
+
+    fn force_end_turn_after(&self) -> Option<Duration> {
+        self.force_end_turn_after
+    }
+}
+
 fn spawn_inworld_asr(
     tx: Sender<AsrEvent>,
     stop: Arc<AtomicBool>,
@@ -198,6 +462,71 @@ fn spawn_inworld_asr(
         {
             debug_log(format!("session error: {}", err));
             let _ = tx.send(AsrEvent::Error(format!("Inworld STT error:\n{}", err)));
+        }
+    });
+}
+
+fn spawn_gemini_live_asr(
+    tx: Sender<AsrEvent>,
+    stop: Arc<AtomicBool>,
+    settings: AsrSettings,
+    command_rx: StdReceiver<AsrCommand>,
+) {
+    thread::spawn(move || {
+        debug_log("gemini live asr session start");
+        let _ = tx.send(AsrEvent::Connecting(
+            "Connecting to Gemini Live ASR sidecar...".to_string(),
+        ));
+
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                debug_log(format!("gemini live asr runtime error: {}", err));
+                let _ = tx.send(AsrEvent::Error(format!(
+                    "Gemini Live ASR runtime error:\n{}",
+                    err
+                )));
+                return;
+            }
+        };
+
+        if let Err(err) =
+            runtime.block_on(run_gemini_live_asr(tx.clone(), stop, settings, command_rx))
+        {
+            debug_log(format!("gemini live asr session error: {}", err));
+            let _ = tx.send(AsrEvent::Error(format!("Gemini Live ASR error:\n{}", err)));
+        }
+    });
+}
+
+fn spawn_stage_live_audio(tx: Sender<AsrEvent>, stop: Arc<AtomicBool>, settings: AsrSettings) {
+    thread::spawn(move || {
+        debug_log("stage live audio session start");
+
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                debug_log(format!("stage live audio runtime error: {}", err));
+                let _ = tx.send(AsrEvent::StageError(format!(
+                    "Stage live audio runtime error: {}",
+                    err
+                )));
+                return;
+            }
+        };
+
+        if let Err(err) = runtime.block_on(run_stage_live_audio(tx.clone(), stop, settings)) {
+            debug_log(format!("stage live audio session error: {}", err));
+            let _ = tx.send(AsrEvent::StageError(format!(
+                "Stage live audio error: {}",
+                err
+            )));
         }
     });
 }
@@ -234,6 +563,95 @@ async fn run_inworld_asr(
                 let message = recovering_status(reconnect_attempt, &config.reconnect, delay);
                 debug_log(format!(
                     "session recoverable error attempt={}/{} delay_ms={} error={}",
+                    reconnect_attempt,
+                    config.reconnect.max_reconnects,
+                    delay.as_millis(),
+                    err
+                ));
+                let _ = tx.send(AsrEvent::Recovering(message));
+                wait_reconnect_delay(&stop, delay).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+async fn run_stage_live_audio(
+    tx: Sender<AsrEvent>,
+    stop: Arc<AtomicBool>,
+    settings: AsrSettings,
+) -> Result<(), BoxError> {
+    let config = StageLiveAudioConfig::from_env(settings)?;
+    debug_log(config.debug_summary());
+    let mut reconnect_attempt = 0_usize;
+
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        match run_stage_live_audio_session_once(tx.clone(), stop.clone(), &config).await {
+            Ok(()) => return Ok(()),
+            Err(err) if stop.load(Ordering::Relaxed) => {
+                debug_log(format!(
+                    "stage live audio session ended after stop: {}",
+                    err
+                ));
+                return Ok(());
+            }
+            Err(err)
+                if is_recoverable_asr_error(&err)
+                    && reconnect_attempt < config.reconnect.max_reconnects =>
+            {
+                reconnect_attempt += 1;
+                let delay = reconnect_backoff(&config.reconnect, reconnect_attempt);
+                debug_log(format!(
+                    "stage live audio recoverable error attempt={}/{} delay_ms={} error={}",
+                    reconnect_attempt,
+                    config.reconnect.max_reconnects,
+                    delay.as_millis(),
+                    err
+                ));
+                wait_reconnect_delay(&stop, delay).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+async fn run_gemini_live_asr(
+    tx: Sender<AsrEvent>,
+    stop: Arc<AtomicBool>,
+    settings: AsrSettings,
+    command_rx: StdReceiver<AsrCommand>,
+) -> Result<(), BoxError> {
+    let config = GeminiLiveAsrConfig::from_env(settings)?;
+    debug_log(config.debug_summary());
+    let command_rx = Arc::new(Mutex::new(command_rx));
+    let mut reconnect_attempt = 0_usize;
+
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        match run_gemini_live_session_once(tx.clone(), stop.clone(), &config, command_rx.clone())
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(err) if stop.load(Ordering::Relaxed) => {
+                debug_log(format!("gemini live asr session ended after stop: {}", err));
+                return Ok(());
+            }
+            Err(err)
+                if is_recoverable_asr_error(&err)
+                    && reconnect_attempt < config.reconnect.max_reconnects =>
+            {
+                reconnect_attempt += 1;
+                let delay = reconnect_backoff(&config.reconnect, reconnect_attempt);
+                let message = recovering_status(reconnect_attempt, &config.reconnect, delay);
+                debug_log(format!(
+                    "gemini live asr recoverable error attempt={}/{} delay_ms={} error={}",
                     reconnect_attempt,
                     config.reconnect.max_reconnects,
                     delay.as_millis(),
@@ -320,9 +738,263 @@ async fn run_inworld_session_once(
     }
 }
 
+async fn run_gemini_live_session_once(
+    tx: Sender<AsrEvent>,
+    stop: Arc<AtomicBool>,
+    config: &GeminiLiveAsrConfig,
+    command_rx: SharedCommandRx,
+) -> Result<(), BoxError> {
+    let request = config.request().map_err(|err| {
+        terminal_asr_error(format!(
+            "invalid Gemini Live ASR sidecar request config: {}",
+            err
+        ))
+    })?;
+
+    let _ = tx.send(AsrEvent::Connecting(
+        "Opening Gemini Live ASR sidecar WebSocket...".to_string(),
+    ));
+    let (ws, _) = match tokio::time::timeout(
+        config.reconnect.connect_timeout,
+        connect_async(request),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(recoverable_asr_error(format!(
+                "Gemini Live ASR websocket timed out after {} ms",
+                config.reconnect.connect_timeout.as_millis()
+            )));
+        }
+    };
+    debug_log("gemini live asr websocket connected direct");
+    run_websocket(ws, config, tx, stop, command_rx).await
+}
+
+async fn run_stage_live_audio_session_once(
+    tx: Sender<AsrEvent>,
+    stop: Arc<AtomicBool>,
+    config: &StageLiveAudioConfig,
+) -> Result<(), BoxError> {
+    let request = config.request().map_err(|err| {
+        terminal_asr_error(format!(
+            "invalid stage live audio sidecar request config: {}",
+            err
+        ))
+    })?;
+
+    let (ws, _) = match tokio::time::timeout(
+        config.reconnect.connect_timeout,
+        connect_async(request),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(recoverable_asr_error(format!(
+                "Stage live audio websocket timed out after {} ms",
+                config.reconnect.connect_timeout.as_millis()
+            )));
+        }
+    };
+    debug_log("stage live audio websocket connected direct");
+    run_stage_live_audio_websocket(ws, config, tx, stop).await
+}
+
+async fn run_stage_live_audio_websocket<S>(
+    ws: WebSocketStream<S>,
+    config: &StageLiveAudioConfig,
+    tx: Sender<AsrEvent>,
+    stop: Arc<AtomicBool>,
+) -> Result<(), BoxError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let service_name = config.service_name();
+    let (audio_tx, mut audio_rx) = mpsc::channel(config.audio_queue_chunks());
+    let (mut write, mut read) = ws.split();
+    let timing = Arc::new(Mutex::new(AsrTiming::default()));
+    let dropped_audio_chunks = Arc::new(AtomicU64::new(0));
+    let raw_log = env_bool("REC_SIDECAR_LOG_RAW", false);
+
+    debug_log(format!(
+        "send stage_live_audio transcribe_config {}",
+        config.transcribe_config()
+    ));
+    write
+        .send(Message::Text(config.transcribe_config().to_string().into()))
+        .await?;
+
+    let mut stream = start_audio_stream(
+        config,
+        audio_tx,
+        dropped_audio_chunks.clone(),
+        stop.clone(),
+        None,
+    )
+    .map_err(|err| terminal_asr_error(format!("stage audio capture setup failed: {}", err)))?;
+    stream
+        .play()
+        .map_err(|err| terminal_asr_error(format!("stage audio capture start failed: {}", err)))?;
+    debug_log("stage live audio ready");
+
+    let sender_stop = stop.clone();
+    let force_end_turn_after = config.force_end_turn_after();
+    let sender_timing = timing.clone();
+    let sender_dropped_audio_chunks = dropped_audio_chunks.clone();
+    let max_batch_chunks = chunks_for_duration(config.audio_max_batch(), config.chunk_ms())
+        .min(config.audio_queue_chunks());
+    let flush_latency_chunks = config
+        .audio_flush_latency()
+        .map(|duration| chunks_for_duration(duration, config.chunk_ms()));
+    let mut sender = tokio::spawn(async move {
+        let mut last_forced_end_turn = Instant::now();
+        let mut sent_audio_since_end_turn = false;
+        let mut total_chunks = 0_u64;
+        let mut total_messages = 0_u64;
+        let mut chunks_since_log = 0_u64;
+        let mut messages_since_log = 0_u64;
+        let mut bytes_since_log = 0_usize;
+        let mut flushed_since_log = 0_u64;
+        let mut last_audio_log = Instant::now();
+
+        while !sender_stop.load(Ordering::Relaxed) {
+            match tokio::time::timeout(Duration::from_millis(100), audio_rx.recv()).await {
+                Ok(Some(first_chunk)) => {
+                    let Some(batch) = build_audio_batch(
+                        first_chunk,
+                        &mut audio_rx,
+                        max_batch_chunks,
+                        flush_latency_chunks,
+                    ) else {
+                        continue;
+                    };
+
+                    let chunk_len = batch.bytes.len();
+                    send_audio_chunk(&mut write, batch.bytes).await?;
+                    sent_audio_since_end_turn = true;
+                    total_chunks += batch.chunk_count as u64;
+                    total_messages += 1;
+                    chunks_since_log += batch.chunk_count as u64;
+                    messages_since_log += 1;
+                    bytes_since_log += chunk_len;
+                    flushed_since_log += batch.flushed_chunks as u64;
+
+                    if last_audio_log.elapsed() >= Duration::from_secs(1) {
+                        let dropped = sender_dropped_audio_chunks.swap(0, Ordering::Relaxed);
+                        debug_log(format!(
+                            "sent audio service={} total_chunks={} total_messages={} recent_chunks={} recent_messages={} recent_bytes={} last_batch_chunks={} queued_chunks={} flushed_chunks={} dropped_chunks={}",
+                            service_name,
+                            total_chunks,
+                            total_messages,
+                            chunks_since_log,
+                            messages_since_log,
+                            bytes_since_log,
+                            batch.chunk_count,
+                            audio_rx.len(),
+                            flushed_since_log,
+                            dropped
+                        ));
+                        chunks_since_log = 0;
+                        messages_since_log = 0;
+                        bytes_since_log = 0;
+                        flushed_since_log = 0;
+                        last_audio_log = Instant::now();
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {}
+            }
+
+            if let Some(interval) = force_end_turn_after {
+                if sent_audio_since_end_turn && last_forced_end_turn.elapsed() >= interval {
+                    send_end_turn(&mut write, "stage-forced", &sender_timing).await?;
+                    last_forced_end_turn = Instant::now();
+                    sent_audio_since_end_turn = false;
+                }
+            }
+        }
+
+        let _ = send_end_turn(&mut write, "stage-stop", &sender_timing).await;
+        let _ = write
+            .send(Message::Text(
+                json!({"close_stream": {}}).to_string().into(),
+            ))
+            .await;
+        debug_log("stage live audio sent close_stream");
+
+        Ok::<(), BoxError>(())
+    });
+
+    let receiver_stop = stop.clone();
+    let receiver_tx = tx.clone();
+    let mut receiver = tokio::spawn(async move {
+        while !receiver_stop.load(Ordering::Relaxed) {
+            match tokio::time::timeout(Duration::from_millis(100), read.next()).await {
+                Ok(Some(Ok(Message::Text(text)))) => {
+                    if raw_log {
+                        debug_raw_log(format!("recv stage raw {}", text));
+                    }
+                    handle_stage_live_audio_message(&text, &receiver_tx);
+                }
+                Ok(Some(Ok(Message::Binary(bytes)))) => {
+                    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                        if raw_log {
+                            debug_raw_log(format!("recv stage raw {}", text));
+                        }
+                        handle_stage_live_audio_message(&text, &receiver_tx);
+                    }
+                }
+                Ok(Some(Ok(Message::Close(close)))) => {
+                    debug_log(format!("stage live audio websocket close {:?}", close));
+                    if !receiver_stop.load(Ordering::Relaxed) {
+                        return Err::<(), BoxError>(
+                            format!("{} websocket closed by server: {:?}", service_name, close)
+                                .into(),
+                        );
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    debug_log("stage live audio websocket ended");
+                    if !receiver_stop.load(Ordering::Relaxed) {
+                        return Err::<(), BoxError>(
+                            format!("{} websocket ended before stop request", service_name).into(),
+                        );
+                    }
+                    break;
+                }
+                Ok(Some(Ok(_))) | Err(_) => {}
+                Ok(Some(Err(err))) => {
+                    debug_log(format!("stage live audio websocket error {}", err));
+                    return Err::<(), BoxError>(Box::new(err));
+                }
+            }
+        }
+
+        Ok::<(), BoxError>(())
+    });
+
+    tokio::select! {
+        result = &mut sender => {
+            receiver.abort();
+            result??;
+        }
+        result = &mut receiver => {
+            sender.abort();
+            result??;
+        }
+    }
+
+    drop(stream);
+    debug_log("stage live audio session stopped");
+    Ok(())
+}
+
 async fn run_websocket<S>(
     ws: WebSocketStream<S>,
-    config: &InworldConfig,
+    config: &impl RealtimeAsrConfig,
     tx: Sender<AsrEvent>,
     stop: Arc<AtomicBool>,
     command_rx: SharedCommandRx,
@@ -330,7 +1002,8 @@ async fn run_websocket<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let (audio_tx, mut audio_rx) = mpsc::channel(config.audio_queue_chunks);
+    let service_name = config.service_name();
+    let (audio_tx, mut audio_rx) = mpsc::channel(config.audio_queue_chunks());
     let (mut write, mut read) = ws.split();
     let timing = Arc::new(Mutex::new(AsrTiming::default()));
     let dropped_audio_chunks = Arc::new(AtomicU64::new(0));
@@ -345,39 +1018,30 @@ where
         .await?;
 
     let _ = tx.send(AsrEvent::Connecting("Starting microphone...".to_string()));
-    let stream = start_audio_stream(
+    let mut stream = start_audio_stream(
         config,
         audio_tx,
         dropped_audio_chunks.clone(),
         stop.clone(),
-        tx.clone(),
+        Some(tx.clone()),
     )
-    .map_err(|err| terminal_asr_error(format!("microphone setup failed: {}", err)))?;
+    .map_err(|err| terminal_asr_error(format!("audio capture setup failed: {}", err)))?;
     stream
         .play()
-        .map_err(|err| terminal_asr_error(format!("microphone start failed: {}", err)))?;
+        .map_err(|err| terminal_asr_error(format!("audio capture start failed: {}", err)))?;
 
-    let _ = tx.send(AsrEvent::Ready(format!(
-        "Inworld Soniox STT connected\nmodel: {}\nnetwork: {}\naudio: native Rust mic -> LINEAR16 {} Hz",
-        config.model,
-        if config.socks_proxy.is_some() {
-            "SOCKS5 proxy"
-        } else {
-            "direct"
-        },
-        config.sample_rate
-    )));
+    let _ = tx.send(AsrEvent::Ready(config.ready_message()));
     debug_log("asr ready");
 
     let sender_stop = stop.clone();
-    let force_end_turn_after = config.force_end_turn_after;
+    let force_end_turn_after = config.force_end_turn_after();
     let sender_timing = timing.clone();
     let sender_dropped_audio_chunks = dropped_audio_chunks.clone();
-    let max_batch_chunks =
-        chunks_for_duration(config.audio_max_batch, config.chunk_ms).min(config.audio_queue_chunks);
+    let max_batch_chunks = chunks_for_duration(config.audio_max_batch(), config.chunk_ms())
+        .min(config.audio_queue_chunks());
     let flush_latency_chunks = config
-        .audio_flush_latency
-        .map(|duration| chunks_for_duration(duration, config.chunk_ms));
+        .audio_flush_latency()
+        .map(|duration| chunks_for_duration(duration, config.chunk_ms()));
     let mut sender = tokio::spawn(async move {
         let mut last_forced_end_turn = Instant::now();
         let mut sent_audio_since_end_turn = false;
@@ -418,7 +1082,8 @@ where
                     if last_audio_log.elapsed() >= Duration::from_secs(1) {
                         let dropped = sender_dropped_audio_chunks.swap(0, Ordering::Relaxed);
                         debug_log(format!(
-                            "sent audio: total_chunks={} total_messages={} recent_chunks={} recent_messages={} recent_bytes={} last_batch_chunks={} queued_chunks={} flushed_chunks={} dropped_chunks={}",
+                            "sent audio service={} total_chunks={} total_messages={} recent_chunks={} recent_messages={} recent_bytes={} last_batch_chunks={} queued_chunks={} flushed_chunks={} dropped_chunks={}",
+                            service_name,
                             total_chunks,
                             total_messages,
                             chunks_since_log,
@@ -465,8 +1130,8 @@ where
 
     let receiver_stop = stop.clone();
     let receiver_tx = tx.clone();
-    let show_partials = config.show_partials;
-    let partial_ui_interval = config.partial_ui_interval;
+    let show_partials = config.show_partials();
+    let partial_ui_interval = config.partial_ui_interval();
     let receiver_timing = timing.clone();
     let mut receiver = tokio::spawn(async move {
         let mut last_final = String::new();
@@ -488,6 +1153,7 @@ where
                         &mut last_partial,
                         &mut last_partial_emit,
                         &receiver_timing,
+                        service_name,
                     );
                 }
                 Ok(Some(Ok(Message::Binary(bytes)))) => {
@@ -504,6 +1170,7 @@ where
                             &mut last_partial,
                             &mut last_partial_emit,
                             &receiver_timing,
+                            service_name,
                         );
                     }
                 }
@@ -511,7 +1178,8 @@ where
                     debug_log(format!("recv websocket close {:?}", close));
                     if !receiver_stop.load(Ordering::Relaxed) {
                         return Err::<(), BoxError>(
-                            format!("Inworld STT websocket closed by server: {:?}", close).into(),
+                            format!("{} websocket closed by server: {:?}", service_name, close)
+                                .into(),
                         );
                     }
                     break;
@@ -520,7 +1188,7 @@ where
                     debug_log("recv websocket ended");
                     if !receiver_stop.load(Ordering::Relaxed) {
                         return Err::<(), BoxError>(
-                            "Inworld STT websocket ended before stop request".into(),
+                            format!("{} websocket ended before stop request", service_name).into(),
                         );
                     }
                     break;
@@ -709,26 +1377,79 @@ struct AsrTiming {
     end_turn_count: u64,
 }
 
+struct AudioCaptureSession {
+    mic_stream: Stream,
+    system_tap: Option<SystemAudioTap>,
+}
+
+impl AudioCaptureSession {
+    fn play(&mut self) -> Result<(), BoxError> {
+        if let Some(system_tap) = self.system_tap.as_mut() {
+            system_tap.start()?;
+        }
+        self.mic_stream.play()?;
+        Ok(())
+    }
+}
+
 fn start_audio_stream(
-    config: &InworldConfig,
-    audio_tx: mpsc::Sender<Vec<u8>>,
+    config: &impl RealtimeAsrConfig,
+    audio_tx: mpsc::Sender<AudioChunk>,
     dropped_audio_chunks: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
-    tx: Sender<AsrEvent>,
-) -> Result<Stream, BoxError> {
+    tx: Option<Sender<AsrEvent>>,
+) -> Result<AudioCaptureSession, BoxError> {
     let host = cpal::default_host();
-    let device = select_input_device(&host, config.mic_device.as_deref())?;
+    let device = select_input_device(&host, config.mic_device())?;
     let supported = device.default_input_config()?;
     let sample_format = supported.sample_format();
     let stream_config: StreamConfig = supported.clone().into();
     let input_rate = stream_config.sample_rate.0;
     let channels = stream_config.channels as usize;
+    let system_audio_enabled = system_audio_enabled();
+    let queue_capacity = config.audio_queue_chunks();
+    let (mic_audio_tx, system_tap) = if system_audio_enabled {
+        let (mic_audio_tx, mic_audio_rx) = mpsc::channel(queue_capacity);
+        let (system_audio_tx, system_audio_rx) = mpsc::channel(queue_capacity);
+        spawn_audio_mixer(
+            config.sample_rate(),
+            config.chunk_ms(),
+            audio_tx,
+            mic_audio_rx,
+            system_audio_rx,
+            dropped_audio_chunks.clone(),
+            stop.clone(),
+        );
+        let system_tap = SystemAudioTap::create(
+            config.sample_rate(),
+            config.chunk_ms(),
+            system_audio_tx,
+            dropped_audio_chunks.clone(),
+            stop.clone(),
+        )
+        .map_err(|err| format!("system audio setup failed: {}", err))?;
+        if let Some(tx) = &tx {
+            let _ = tx.send(AsrEvent::Connecting(format!(
+                "system audio:\nCore Audio tap\ninput: {} Hz, {} channel(s)",
+                system_tap.sample_rate(),
+                system_tap.channels()
+            )));
+        }
+        debug_log(format!(
+            "system audio enabled input_rate={} channels={}",
+            system_tap.sample_rate(),
+            system_tap.channels()
+        ));
+        (mic_audio_tx, Some(system_tap))
+    } else {
+        (audio_tx, None)
+    };
     let processor = Arc::new(Mutex::new(AudioProcessor::new(
         input_rate,
         channels,
-        config.sample_rate,
-        config.chunk_ms,
-        audio_tx,
+        config.sample_rate(),
+        config.chunk_ms(),
+        mic_audio_tx,
         dropped_audio_chunks,
         stop,
     )));
@@ -736,10 +1457,12 @@ fn start_audio_stream(
     let device_name = device
         .name()
         .unwrap_or_else(|_| "default input".to_string());
-    let _ = tx.send(AsrEvent::Connecting(format!(
-        "microphone:\n{}\ninput: {} Hz, {} channel(s)",
-        device_name, input_rate, channels
-    )));
+    if let Some(tx) = &tx {
+        let _ = tx.send(AsrEvent::Connecting(format!(
+            "microphone:\n{}\ninput: {} Hz, {} channel(s)",
+            device_name, input_rate, channels
+        )));
+    }
     debug_log(format!(
         "microphone device={} input_rate={} channels={} sample_format={:?}",
         device_name, input_rate, channels, sample_format
@@ -748,16 +1471,18 @@ fn start_audio_stream(
     let err_tx = tx.clone();
     let err_fn = move |err| {
         debug_log(format!("microphone stream error: {}", err));
-        let _ = err_tx.send(AsrEvent::Error(format!(
-            "microphone stream error:\n{}",
-            err
-        )));
+        if let Some(err_tx) = &err_tx {
+            let _ = err_tx.send(AsrEvent::Error(format!(
+                "microphone stream error:\n{}",
+                err
+            )));
+        }
     };
 
     match sample_format {
         SampleFormat::F32 => {
             let processor = processor.clone();
-            Ok(device.build_input_stream(
+            let mic_stream = device.build_input_stream(
                 &stream_config,
                 move |data: &[f32], _| {
                     if let Ok(mut processor) = processor.lock() {
@@ -766,11 +1491,15 @@ fn start_audio_stream(
                 },
                 err_fn,
                 None,
-            )?)
+            )?;
+            Ok(AudioCaptureSession {
+                mic_stream,
+                system_tap,
+            })
         }
         SampleFormat::I16 => {
             let processor = processor.clone();
-            Ok(device.build_input_stream(
+            let mic_stream = device.build_input_stream(
                 &stream_config,
                 move |data: &[i16], _| {
                     if let Ok(mut processor) = processor.lock() {
@@ -779,11 +1508,15 @@ fn start_audio_stream(
                 },
                 err_fn,
                 None,
-            )?)
+            )?;
+            Ok(AudioCaptureSession {
+                mic_stream,
+                system_tap,
+            })
         }
         SampleFormat::U16 => {
             let processor = processor.clone();
-            Ok(device.build_input_stream(
+            let mic_stream = device.build_input_stream(
                 &stream_config,
                 move |data: &[u16], _| {
                     if let Ok(mut processor) = processor.lock() {
@@ -792,11 +1525,15 @@ fn start_audio_stream(
                 },
                 err_fn,
                 None,
-            )?)
+            )?;
+            Ok(AudioCaptureSession {
+                mic_stream,
+                system_tap,
+            })
         }
         SampleFormat::F64 => {
             let processor = processor.clone();
-            Ok(device.build_input_stream(
+            let mic_stream = device.build_input_stream(
                 &stream_config,
                 move |data: &[f64], _| {
                     if let Ok(mut processor) = processor.lock() {
@@ -805,9 +1542,105 @@ fn start_audio_stream(
                 },
                 err_fn,
                 None,
-            )?)
+            )?;
+            Ok(AudioCaptureSession {
+                mic_stream,
+                system_tap,
+            })
         }
         other => Err(format!("unsupported microphone sample format: {:?}", other).into()),
+    }
+}
+
+fn system_audio_enabled() -> bool {
+    env_bool("REC_SIDECAR_SYSTEM_AUDIO", false)
+        || env_bool("REC_SIDECAR_SYSTEM_AUDIO_ENABLED", false)
+}
+
+fn spawn_audio_mixer(
+    target_rate: u32,
+    chunk_ms: u32,
+    audio_tx: mpsc::Sender<AudioChunk>,
+    mut mic_rx: mpsc::Receiver<AudioChunk>,
+    mut system_rx: mpsc::Receiver<AudioChunk>,
+    dropped_audio_chunks: Arc<AtomicU64>,
+    stop: Arc<AtomicBool>,
+) {
+    let chunk_samples = chunk_samples(target_rate, chunk_ms);
+    let chunk_duration = Duration::from_millis(chunk_ms.max(1) as u64);
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(chunk_duration);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut mic_closed = false;
+        let mut system_closed = false;
+
+        loop {
+            interval.tick().await;
+
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let mic_chunk = match mic_rx.try_recv() {
+                Ok(chunk) => Some(chunk),
+                Err(mpsc::error::TryRecvError::Empty) => None,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    mic_closed = true;
+                    None
+                }
+            };
+            let system_chunk = match system_rx.try_recv() {
+                Ok(chunk) => Some(chunk),
+                Err(mpsc::error::TryRecvError::Empty) => None,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    system_closed = true;
+                    None
+                }
+            };
+
+            if mic_chunk.is_none() && system_chunk.is_none() {
+                if mic_closed && system_closed {
+                    break;
+                }
+                continue;
+            }
+
+            let mixed = mix_audio_chunks(mic_chunk, system_chunk, chunk_samples);
+            match audio_tx.try_send(mixed) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    dropped_audio_chunks.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
+
+        debug_log("audio mixer stopped");
+    });
+}
+
+fn mix_audio_chunks(
+    mic_chunk: Option<AudioChunk>,
+    system_chunk: Option<AudioChunk>,
+    chunk_samples: usize,
+) -> AudioChunk {
+    let mut mixed = vec![0_i16; chunk_samples];
+
+    if let Some(chunk) = mic_chunk {
+        mix_into(&mut mixed, &chunk);
+    }
+    if let Some(chunk) = system_chunk {
+        mix_into(&mut mixed, &chunk);
+    }
+
+    mixed
+}
+
+fn mix_into(target: &mut [i16], chunk: &[i16]) {
+    for (index, sample) in chunk.iter().enumerate().take(target.len()) {
+        let mixed = target[index] as f32 / i16::MAX as f32 + *sample as f32 / i16::MAX as f32;
+        target[index] = (mixed.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
     }
 }
 
@@ -913,6 +1746,7 @@ fn handle_server_message(
     last_partial: &mut String,
     last_partial_emit: &mut Instant,
     timing: &Arc<Mutex<AsrTiming>>,
+    service_name: &str,
 ) {
     let Ok(envelope) = serde_json::from_str::<ServerEnvelope>(raw) else {
         debug_log("recv invalid json");
@@ -925,8 +1759,8 @@ fn handle_server_message(
             .unwrap_or_else(|| "unknown server error".to_string());
         debug_log(format!("server error: {}", message));
         let _ = tx.send(AsrEvent::Error(format!(
-            "Inworld STT server error:\n{}",
-            message
+            "{} server error:\n{}",
+            service_name, message
         )));
         return;
     }
@@ -992,6 +1826,34 @@ fn handle_server_message(
             text.chars().count()
         ));
     }
+}
+
+fn handle_stage_live_audio_message(raw: &str, tx: &Sender<AsrEvent>) {
+    let Ok(envelope) = serde_json::from_str::<StageLiveAudioMessage>(raw) else {
+        debug_log("recv invalid stage live audio json");
+        return;
+    };
+
+    if envelope.code.is_some() {
+        let message = envelope
+            .message
+            .unwrap_or_else(|| "unknown stage live audio error".to_string());
+        debug_log(format!("stage live audio server error: {}", message));
+        let _ = tx.send(AsrEvent::StageError(format!(
+            "Stage live audio error: {}",
+            message
+        )));
+        return;
+    }
+
+    let Some(agenda) = envelope.stage_agenda else {
+        return;
+    };
+    debug_log(format!(
+        "stage live audio response stage={} model={}",
+        agenda.stage, agenda.model
+    ));
+    let _ = tx.send(AsrEvent::StageAgenda(Box::new(agenda.into())));
 }
 
 fn transcript_label(transcription: &TranscriptionPayload) -> Option<String> {
@@ -1241,6 +2103,7 @@ mod tests {
             &mut last_partial,
             &mut last_partial_emit,
             &timing,
+            "Inworld STT",
         );
         handle_server_message(
             &raw,
@@ -1251,6 +2114,7 @@ mod tests {
             &mut last_partial,
             &mut last_partial_emit,
             &timing,
+            "Inworld STT",
         );
 
         match rx.try_recv().unwrap() {
@@ -1282,11 +2146,43 @@ mod tests {
             &mut last_partial,
             &mut last_partial_emit,
             &timing,
+            "Inworld STT",
         );
 
         match rx.try_recv().unwrap() {
             AsrEvent::PartialTranscript(text) => assert_eq!(text, "Канал left: live"),
             _ => panic!("expected partial transcript"),
+        }
+    }
+
+    #[test]
+    fn sidecar_final_transcript_uses_existing_envelope_shape() {
+        let (tx, rx) = std_mpsc::channel();
+        let (mut last_final, mut last_partial, mut last_partial_emit, timing) = parser_state();
+        let raw = json!({
+            "transcription": {
+                "transcript": "клиент спрашивает про цену",
+                "isFinal": true,
+                "source": "toolCall"
+            }
+        })
+        .to_string();
+
+        handle_server_message(
+            &raw,
+            &tx,
+            true,
+            Duration::from_millis(1),
+            &mut last_final,
+            &mut last_partial,
+            &mut last_partial_emit,
+            &timing,
+            "Gemini Live ASR",
+        );
+
+        match rx.try_recv().unwrap() {
+            AsrEvent::Transcript(text) => assert_eq!(text, "клиент спрашивает про цену"),
+            _ => panic!("expected sidecar final transcript"),
         }
     }
 
@@ -1304,6 +2200,7 @@ mod tests {
             &mut last_partial,
             &mut last_partial_emit,
             &timing,
+            "Inworld STT",
         );
 
         match rx.try_recv().unwrap() {

@@ -1,8 +1,15 @@
 use super::{
     env_bool, env_u64, env_usize, env_var, AsrSettings, BoxError, DEFAULT_AUDIO_FLUSH_LATENCY_MS,
     DEFAULT_AUDIO_MAX_BATCH_MS, DEFAULT_AUDIO_QUEUE_CHUNKS, DEFAULT_CHUNK_MS,
-    DEFAULT_FORCE_END_TURN_MS, DEFAULT_MODEL, DEFAULT_PARTIAL_UI_INTERVAL_MS, DEFAULT_SAMPLE_RATE,
-    DEFAULT_STT_CONNECT_TIMEOUT_MS, DEFAULT_STT_MAX_RECONNECTS, DEFAULT_STT_RECONNECT_BACKOFF_MS,
+    DEFAULT_FORCE_END_TURN_MS, DEFAULT_GEMINI_LIVE_ASR_AUDIO_FLUSH_LATENCY_MS,
+    DEFAULT_GEMINI_LIVE_ASR_AUDIO_MAX_BATCH_MS, DEFAULT_GEMINI_LIVE_ASR_CHUNK_MS,
+    DEFAULT_GEMINI_LIVE_ASR_FORCE_END_TURN_MS, DEFAULT_GEMINI_LIVE_ASR_MODEL,
+    DEFAULT_GEMINI_LIVE_ASR_QUEUE_CHUNKS, DEFAULT_LLM_SERVICE_URL, DEFAULT_MODEL,
+    DEFAULT_PARTIAL_UI_INTERVAL_MS, DEFAULT_SAMPLE_RATE,
+    DEFAULT_STAGE_AUDIO_LIVE_AUDIO_FLUSH_LATENCY_MS, DEFAULT_STAGE_AUDIO_LIVE_AUDIO_MAX_BATCH_MS,
+    DEFAULT_STAGE_AUDIO_LIVE_CHUNK_MS, DEFAULT_STAGE_AUDIO_LIVE_FORCE_END_TURN_MS,
+    DEFAULT_STAGE_AUDIO_LIVE_QUEUE_CHUNKS, DEFAULT_STT_CONNECT_TIMEOUT_MS,
+    DEFAULT_STT_MAX_RECONNECTS, DEFAULT_STT_RECONNECT_BACKOFF_MS,
     DEFAULT_STT_RECONNECT_MAX_BACKOFF_MS, INWORLD_STT_WS_URL,
 };
 use serde_json::{json, Value};
@@ -31,6 +38,36 @@ pub(super) struct InworldConfig {
     pub(super) force_end_turn_after: Option<Duration>,
     pub(super) reconnect: ReconnectConfig,
     pub(super) socks_proxy: Option<SocksProxy>,
+}
+
+pub(super) struct GeminiLiveAsrConfig {
+    pub(super) ws_url: String,
+    pub(super) service_token: Option<String>,
+    pub(super) model: String,
+    pub(super) language: Option<String>,
+    pub(super) sample_rate: u32,
+    pub(super) chunk_ms: u32,
+    pub(super) mic_device: Option<String>,
+    pub(super) show_partials: bool,
+    pub(super) partial_ui_interval: Duration,
+    pub(super) audio_queue_chunks: usize,
+    pub(super) audio_max_batch: Duration,
+    pub(super) audio_flush_latency: Option<Duration>,
+    pub(super) force_end_turn_after: Option<Duration>,
+    pub(super) reconnect: ReconnectConfig,
+}
+
+pub(super) struct StageLiveAudioConfig {
+    pub(super) ws_url: String,
+    pub(super) service_token: Option<String>,
+    pub(super) sample_rate: u32,
+    pub(super) chunk_ms: u32,
+    pub(super) mic_device: Option<String>,
+    pub(super) audio_queue_chunks: usize,
+    pub(super) audio_max_batch: Duration,
+    pub(super) audio_flush_latency: Option<Duration>,
+    pub(super) force_end_turn_after: Option<Duration>,
+    pub(super) reconnect: ReconnectConfig,
 }
 
 #[derive(Clone, Copy)]
@@ -185,6 +222,262 @@ impl InworldConfig {
     }
 }
 
+impl GeminiLiveAsrConfig {
+    pub(super) fn from_env(settings: AsrSettings) -> Result<Self, BoxError> {
+        let language_override = settings
+            .language
+            .map(|language| language.code().to_string());
+        let chunk_ms = env_var("GEMINI_LIVE_ASR_CHUNK_MS")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(DEFAULT_GEMINI_LIVE_ASR_CHUNK_MS);
+        let audio_max_batch_ms = env_u64(
+            "GEMINI_LIVE_ASR_AUDIO_MAX_BATCH_MS",
+            DEFAULT_GEMINI_LIVE_ASR_AUDIO_MAX_BATCH_MS,
+        )
+        .max(chunk_ms as u64);
+        let audio_flush_latency = env_var("GEMINI_LIVE_ASR_AUDIO_FLUSH_LATENCY_MS")
+            .and_then(|value| value.parse::<u64>().ok())
+            .or(Some(DEFAULT_GEMINI_LIVE_ASR_AUDIO_FLUSH_LATENCY_MS))
+            .filter(|value| *value > 0)
+            .map(Duration::from_millis);
+
+        Ok(Self {
+            ws_url: gemini_live_asr_ws_url()?,
+            service_token: env_var("GEMINI_LIVE_ASR_TOKEN")
+                .or_else(|| env_var("COACH_LLM_SERVICE_TOKEN")),
+            model: env_var("GEMINI_LIVE_ASR_MODEL")
+                .or_else(|| env_var("VERTEX_LIVE_ASR_MODEL"))
+                .unwrap_or_else(|| DEFAULT_GEMINI_LIVE_ASR_MODEL.to_string()),
+            language: language_override.or_else(|| env_var("GEMINI_LIVE_ASR_LANGUAGE")),
+            sample_rate: env_var("GEMINI_LIVE_ASR_SAMPLE_RATE")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(DEFAULT_SAMPLE_RATE),
+            chunk_ms,
+            mic_device: env_var("GEMINI_LIVE_ASR_MIC_DEVICE")
+                .or_else(|| env_var("INWORLD_MIC_DEVICE")),
+            show_partials: env_bool("GEMINI_LIVE_ASR_SHOW_PARTIALS", true),
+            partial_ui_interval: Duration::from_millis(env_u64(
+                "GEMINI_LIVE_ASR_PARTIAL_UI_INTERVAL_MS",
+                DEFAULT_PARTIAL_UI_INTERVAL_MS,
+            )),
+            audio_queue_chunks: env_usize(
+                "GEMINI_LIVE_ASR_AUDIO_QUEUE_CHUNKS",
+                DEFAULT_GEMINI_LIVE_ASR_QUEUE_CHUNKS,
+            )
+            .max(1),
+            audio_max_batch: Duration::from_millis(audio_max_batch_ms),
+            audio_flush_latency,
+            force_end_turn_after: env_var("GEMINI_LIVE_ASR_FORCE_END_TURN_MS")
+                .and_then(|value| value.parse::<u64>().ok())
+                .or(Some(DEFAULT_GEMINI_LIVE_ASR_FORCE_END_TURN_MS))
+                .filter(|value| *value > 0)
+                .map(Duration::from_millis),
+            reconnect: ReconnectConfig::from_env(),
+        })
+    }
+
+    pub(super) fn debug_summary(&self) -> String {
+        format!(
+            "config provider=gemini-live-asr model={} ws_url={} sample_rate={} chunk_ms={} language={} show_partials={} partial_ui_interval_ms={} force_end_turn_ms={} audio_queue_chunks={} audio_max_batch_ms={} audio_flush_latency_ms={} max_reconnects={} reconnect_backoff_ms={} reconnect_max_backoff_ms={} connect_timeout_ms={}",
+            self.model,
+            self.ws_url,
+            self.sample_rate,
+            self.chunk_ms,
+            self.language.as_deref().unwrap_or("auto"),
+            self.show_partials,
+            self.partial_ui_interval.as_millis(),
+            self.force_end_turn_after
+                .map(|duration| duration.as_millis().to_string())
+                .unwrap_or_else(|| "off".to_string()),
+            self.audio_queue_chunks,
+            self.audio_max_batch.as_millis(),
+            self.audio_flush_latency
+                .map(|duration| duration.as_millis().to_string())
+                .unwrap_or_else(|| "off".to_string()),
+            self.reconnect.max_reconnects,
+            self.reconnect.reconnect_backoff.as_millis(),
+            self.reconnect.reconnect_max_backoff.as_millis(),
+            self.reconnect.connect_timeout.as_millis(),
+        )
+    }
+
+    pub(super) fn request(
+        &self,
+    ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, BoxError> {
+        let mut request = self.ws_url.as_str().into_client_request()?;
+
+        if let Some(token) = &self.service_token {
+            request.headers_mut().insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", token))?,
+            );
+        }
+
+        Ok(request)
+    }
+
+    pub(super) fn transcribe_config(&self) -> Value {
+        let mut config = json!({
+            "provider": "gemini-live",
+            "modelId": self.model,
+            "audioEncoding": "LINEAR16",
+            "sampleRateHertz": self.sample_rate,
+            "numberOfChannels": 1,
+        });
+
+        if let Some(language) = &self.language {
+            config["language"] = json!(language);
+        }
+
+        json!({ "transcribe_config": config })
+    }
+}
+
+impl StageLiveAudioConfig {
+    pub(super) fn from_env(_settings: AsrSettings) -> Result<Self, BoxError> {
+        let chunk_ms = env_var("COACH_STAGE_AUDIO_LIVE_CHUNK_MS")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(DEFAULT_STAGE_AUDIO_LIVE_CHUNK_MS);
+        let audio_max_batch_ms = env_u64(
+            "COACH_STAGE_AUDIO_LIVE_AUDIO_MAX_BATCH_MS",
+            DEFAULT_STAGE_AUDIO_LIVE_AUDIO_MAX_BATCH_MS,
+        )
+        .max(chunk_ms as u64);
+        let audio_flush_latency = env_var("COACH_STAGE_AUDIO_LIVE_AUDIO_FLUSH_LATENCY_MS")
+            .and_then(|value| value.parse::<u64>().ok())
+            .or(Some(DEFAULT_STAGE_AUDIO_LIVE_AUDIO_FLUSH_LATENCY_MS))
+            .filter(|value| *value > 0)
+            .map(Duration::from_millis);
+
+        Ok(Self {
+            ws_url: stage_audio_live_ws_url()?,
+            service_token: env_var("COACH_STAGE_AUDIO_LIVE_TOKEN")
+                .or_else(|| env_var("COACH_LLM_SERVICE_TOKEN")),
+            sample_rate: env_var("COACH_STAGE_AUDIO_LIVE_SAMPLE_RATE")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(DEFAULT_SAMPLE_RATE),
+            chunk_ms,
+            mic_device: env_var("COACH_STAGE_AUDIO_LIVE_MIC_DEVICE")
+                .or_else(|| env_var("INWORLD_MIC_DEVICE")),
+            audio_queue_chunks: env_usize(
+                "COACH_STAGE_AUDIO_LIVE_AUDIO_QUEUE_CHUNKS",
+                DEFAULT_STAGE_AUDIO_LIVE_QUEUE_CHUNKS,
+            )
+            .max(1),
+            audio_max_batch: Duration::from_millis(audio_max_batch_ms),
+            audio_flush_latency,
+            force_end_turn_after: env_var("COACH_STAGE_AUDIO_LIVE_FORCE_END_TURN_MS")
+                .and_then(|value| value.parse::<u64>().ok())
+                .or(Some(DEFAULT_STAGE_AUDIO_LIVE_FORCE_END_TURN_MS))
+                .filter(|value| *value > 0)
+                .map(Duration::from_millis),
+            reconnect: ReconnectConfig::from_env(),
+        })
+    }
+
+    pub(super) fn debug_summary(&self) -> String {
+        format!(
+            "config provider=stage-live-audio ws_url={} sample_rate={} chunk_ms={} force_end_turn_ms={} audio_queue_chunks={} audio_max_batch_ms={} audio_flush_latency_ms={} max_reconnects={} reconnect_backoff_ms={} reconnect_max_backoff_ms={} connect_timeout_ms={}",
+            self.ws_url,
+            self.sample_rate,
+            self.chunk_ms,
+            self.force_end_turn_after
+                .map(|duration| duration.as_millis().to_string())
+                .unwrap_or_else(|| "off".to_string()),
+            self.audio_queue_chunks,
+            self.audio_max_batch.as_millis(),
+            self.audio_flush_latency
+                .map(|duration| duration.as_millis().to_string())
+                .unwrap_or_else(|| "off".to_string()),
+            self.reconnect.max_reconnects,
+            self.reconnect.reconnect_backoff.as_millis(),
+            self.reconnect.reconnect_max_backoff.as_millis(),
+            self.reconnect.connect_timeout.as_millis(),
+        )
+    }
+
+    pub(super) fn request(
+        &self,
+    ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, BoxError> {
+        let mut request = self.ws_url.as_str().into_client_request()?;
+
+        if let Some(token) = &self.service_token {
+            request.headers_mut().insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", token))?,
+            );
+        }
+
+        Ok(request)
+    }
+
+    pub(super) fn transcribe_config(&self) -> Value {
+        json!({
+            "transcribe_config": {
+                "provider": "stage-live-audio",
+                "audioEncoding": "LINEAR16",
+                "sampleRateHertz": self.sample_rate,
+                "numberOfChannels": 1,
+            }
+        })
+    }
+}
+
+pub(super) fn gemini_live_asr_ws_url() -> Result<String, BoxError> {
+    if let Some(ws_url) = env_var("GEMINI_LIVE_ASR_WS_URL") {
+        return Ok(ws_url);
+    }
+
+    let service_url = env_var("GEMINI_LIVE_ASR_SERVICE_URL")
+        .or_else(|| env_var("COACH_LLM_SERVICE_URL"))
+        .unwrap_or_else(|| DEFAULT_LLM_SERVICE_URL.to_string());
+    service_url_to_gemini_asr_ws_url(&service_url)
+}
+
+fn service_url_to_gemini_asr_ws_url(service_url: &str) -> Result<String, BoxError> {
+    service_url_to_ws_path(service_url, "/v1/asr/gemini-live")
+}
+
+pub(super) fn stage_audio_live_enabled() -> bool {
+    env_bool("COACH_STAGE_AUDIO_LIVE", false)
+        || env_bool("COACH_STAGE_LIVE_AUDIO", false)
+        || env_bool("COACH_STAGE_AUDIO_LIVE_ENABLED", false)
+}
+
+pub(super) fn stage_audio_live_ws_url() -> Result<String, BoxError> {
+    if let Some(ws_url) = env_var("COACH_STAGE_AUDIO_LIVE_WS_URL") {
+        return Ok(ws_url);
+    }
+
+    let service_url = env_var("COACH_STAGE_AUDIO_LIVE_SERVICE_URL")
+        .or_else(|| env_var("COACH_LLM_SERVICE_URL"))
+        .unwrap_or_else(|| DEFAULT_LLM_SERVICE_URL.to_string());
+    service_url_to_stage_audio_ws_url(&service_url)
+}
+
+fn service_url_to_stage_audio_ws_url(service_url: &str) -> Result<String, BoxError> {
+    service_url_to_ws_path(service_url, "/v1/coach/stage/live-audio")
+}
+
+fn service_url_to_ws_path(service_url: &str, path: &str) -> Result<String, BoxError> {
+    let mut url = Url::parse(service_url)?;
+    let scheme = match url.scheme() {
+        "http" => "ws",
+        "https" => "wss",
+        "ws" => "ws",
+        "wss" => "wss",
+        other => {
+            return Err(format!("unsupported Gemini Live ASR service URL scheme: {}", other).into())
+        }
+    };
+    url.set_scheme(scheme)
+        .map_err(|_| "invalid sidecar websocket URL scheme")?;
+    url.set_path(path);
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+
 impl ReconnectConfig {
     pub(super) fn from_env() -> Self {
         Self::from_values(env_var)
@@ -314,6 +607,30 @@ mod tests {
         assert_eq!(proxy.port, 1080);
         assert_eq!(proxy.username.as_deref(), Some("user"));
         assert_eq!(proxy.password.as_deref(), Some("pass"));
+    }
+
+    #[test]
+    fn gemini_live_asr_service_url_maps_to_websocket_endpoint() {
+        assert_eq!(
+            service_url_to_gemini_asr_ws_url("http://127.0.0.1:8088").unwrap(),
+            "ws://127.0.0.1:8088/v1/asr/gemini-live"
+        );
+        assert_eq!(
+            service_url_to_gemini_asr_ws_url("https://llm.example.com/base?x=1").unwrap(),
+            "wss://llm.example.com/v1/asr/gemini-live"
+        );
+    }
+
+    #[test]
+    fn stage_audio_live_service_url_maps_to_websocket_endpoint() {
+        assert_eq!(
+            service_url_to_stage_audio_ws_url("http://127.0.0.1:8088").unwrap(),
+            "ws://127.0.0.1:8088/v1/coach/stage/live-audio"
+        );
+        assert_eq!(
+            service_url_to_stage_audio_ws_url("https://llm.example.com/base?x=1").unwrap(),
+            "wss://llm.example.com/v1/coach/stage/live-audio"
+        );
     }
 
     #[test]

@@ -1,0 +1,75 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: Coach Text Roleplay
+        - generic [ref=e7]: "Ты играешь продавца: твоя текущая реплика приходит из LLM, ты ее озвучиваешь, затем жмешь кнопку и клиент отвечает как реакция."
+      - generic [ref=e8]: Готов
+    - generic [ref=e9]:
+      - generic [ref=e10]:
+        - combobox [ref=e11]:
+          - option "1. Собственник застрял в операционке"
+          - option "2. Скептик после курсов и мастермайндов" [selected]
+          - option "3. Цена, окупаемость, кассовый разрыв"
+          - option "4. Успешный предприниматель, личное влияет на бизнес"
+          - option "5. Сильная среда и страх попасть не к своему уровню"
+          - option "6. Предприниматель из другого города, вход в Татарстан"
+          - option "7. \"Мне нужны инструменты, а не психологи\""
+          - option "8. Нужно обсудить с партнером / женой / командой"
+          - option "9. Горячий лид с мелкими тревогами"
+          - option "10. Холодный / полухолодный лид по рекомендации"
+        - combobox [ref=e12]:
+          - option "Hostile" [selected]
+          - option "Cold"
+          - option "Neutral"
+      - button "Новый диалог" [ref=e13] [cursor=pointer]
+    - generic [ref=e14]:
+      - generic [ref=e15]: "Run: web-e369b2a0fa"
+      - generic [ref=e16]: "Service: http://127.0.0.1:8088"
+  - generic [ref=e17]:
+    - generic [ref=e18]:
+      - generic [ref=e19]: Диалог
+      - generic [ref=e20]:
+        - generic [ref=e22]:
+          - generic [ref=e23]: Продавец
+          - generic [ref=e24]: Здравствуйте, это Мария из команды glubina.core, у нас сейчас идет набор на очную программу в Казани в июле 2026 года. Могу я задать пару уточняющих вопросов, чтобы понять, может ли вам быть интересен этот формат обучения?
+        - generic [ref=e26]:
+          - generic [ref=e27]: Клиент
+          - generic [ref=e28]: "Да, могу, но я сразу скажу: я уже много такого проходил, так что не будьте голосом №15."
+    - generic [ref=e29]:
+      - generic [ref=e30]: Подсказки
+      - generic [ref=e31]:
+        - generic [ref=e32]:
+          - generic [ref=e33]:
+            - generic [ref=e34]: Твоя текущая реплика
+            - generic [ref=e35]: zai-glm-4.7 · followup
+          - generic [ref=e36]: "Поняла вас, я не собираюсь ничего навязывать и тем более быть голосом №15, поэтому давайте договоримся: если я увижу, что наш формат вам не подходит, я первая об этом скажу, честно? Скажите, а что именно в прошлых программах вам понравилось больше всего, а что, наоборот, вызвало раздражение?"
+          - generic [ref=e37]:
+            - button "Клиент отвечает" [ref=e38] [cursor=pointer]
+            - button "Перегенерить" [ref=e39] [cursor=pointer]
+          - generic [ref=e40]: Сначала зачитываешь эту фразу как продавец. Потом жмешь «Клиент отвечает», и система добавляет реакцию клиента и автоматически готовит тебе следующую реплику.
+        - generic [ref=e41]:
+          - generic [ref=e42]:
+            - generic [ref=e43]: Действия
+            - generic [ref=e44]: shared backend
+          - generic [ref=e45]:
+            - button "Помоги" [ref=e46] [cursor=pointer]
+            - button "Определить stage" [ref=e47] [cursor=pointer]
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - generic [ref=e50]: Помоги
+            - generic [ref=e51]: пока нет
+          - generic [ref=e52]: Если текущую реплику хочется усилить или смягчить, жми «Помоги».
+        - generic [ref=e53]:
+          - generic [ref=e54]:
+            - generic [ref=e55]: S2.1 · Интро / рамка
+            - generic [ref=e56]: Почти · 5/5
+          - generic [ref=e57]:
+            - strong [ref=e58]: "Agenda:"
+            - text: снять напряжение, объяснить правила CustDev
+          - generic [ref=e60]:
+            - strong [ref=e61]: "Step:"
+            - text: объяснить зачем звонок, как он пройдет, и получить разрешение на вопросы
+          - generic [ref=e63]:
+            - strong [ref=e64]: "Scorecard:"
+            - text: Клиент согласился на диалог, но выставил жесткую рамку скепсиса, предупредив о нежелании слушать шаблонные скрипты. Нужно спокойно принять его опыт и предложить честный формат без давления.

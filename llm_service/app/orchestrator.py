@@ -11,10 +11,13 @@ from typing import Any, AsyncIterator, Iterable
 import httpx
 
 from .config import Settings
+from .live_intelligence import LiveIntelligenceNoUpdate, VertexLiveIntelligenceSession
 from .prompts import (
     SALES_COACH_CHAT_SYSTEM_PROMPT,
     SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
     SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
+    SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT,
+    SALES_COACH_LIVE_VALIDATOR_SYSTEM_PROMPT,
     SALES_COACH_STRUCTURED_SYSTEM_PROMPT,
     SALES_COACH_SYSTEM_PROMPT,
 )
@@ -22,6 +25,7 @@ from .providers import (
     CerebrasClient,
     ProviderError,
     VertexClient,
+    cerebras_stage_response_format,
     cerebras_structured_response_format,
     parse_bos_eos_text,
     parse_json_suggestion,
@@ -37,6 +41,8 @@ from .schemas import (
 )
 from .scorecard import (
     fallback_scorecard,
+    fallback_next_action,
+    is_speakable_next_action,
     normalize_scorecard,
     scorecard_advice_prompt,
     safe_parse_scorecard,
@@ -46,15 +52,17 @@ from .stage_assets import (
     CURRENT_STAGE_AGENDA_PROMPT,
     STAGE_AGENDA_BY_TAG,
     KNOWN_STAGES,
+    clamp_stage_forward,
     normalize_stage,
     parse_stage_detection,
+    stage_is_backward,
     stage_detection_system_prompt,
 )
 
 
 logger = logging.getLogger("uvicorn.error")
 HELP_TEMPERATURE = 1.0
-STAGE_SCORECARD_TIMEOUT_SECS = 5.0
+STAGE_SCORECARD_TIMEOUT_SECS = 10.0
 STAGE_CEREBRAS_SCORECARD_TIMEOUT_SECS = 3.0
 STAGE_ADVICE_DELAY_SECS = 1.5
 STAGE_ADVICE_TIMEOUT_SECS = 3.0
@@ -92,8 +100,15 @@ class LlmOrchestrator:
         self.cerebras = CerebrasClient(settings, self.client)
         self.vertex = VertexClient(settings, self.client)
         self._opener_cooldowns: dict[str, float] = {}
+        self._live_intelligence_sessions: dict[str, VertexLiveIntelligenceSession] = {}
 
     async def aclose(self) -> None:
+        if self._live_intelligence_sessions:
+            await asyncio.gather(
+                *(session.aclose() for session in self._live_intelligence_sessions.values()),
+                return_exceptions=True,
+            )
+            self._live_intelligence_sessions.clear()
         if self._owns_client:
             await self.client.aclose()
 
@@ -101,8 +116,77 @@ class LlmOrchestrator:
         return "ready" if self._any_provider_configured() else "disabled"
 
     async def live(self, request: LiveRequest) -> LiveResponse:
-        if self._prefer_vertex():
-            suggestion = await self._vertex_live(request)
+        started_at = time.monotonic()
+        current_text = (request.current_text or "").strip()
+
+        if self._split_live_flow():
+            if current_text:
+                try:
+                    validator_started_at = time.monotonic()
+                    verdict = await self._cerebras_live_validator(request)
+                    validator_elapsed_ms = int(
+                        (time.monotonic() - validator_started_at) * 1000
+                    )
+                    logger.info(
+                        "live_validator run_id=%s action=%s elapsed_ms=%s chars=%s current_chars=%s",
+                        request.run_id,
+                        verdict["action"],
+                        validator_elapsed_ms,
+                        len(request.content),
+                        len(current_text),
+                    )
+                    if verdict["action"] == "skip":
+                        logger.info(
+                            "live_response run_id=%s action=skip provider=cerebras model=%s total_elapsed_ms=%s",
+                            request.run_id,
+                            self.settings.cerebras_model,
+                            int((time.monotonic() - started_at) * 1000),
+                        )
+                        return LiveResponse(
+                            action="skip",
+                            text="",
+                            provider="cerebras",
+                            model=self.settings.cerebras_model,
+                        )
+                except (ProviderError, ValueError, json.JSONDecodeError) as exc:
+                    logger.warning(
+                        "live_validator error run_id=%s provider=cerebras model=%s error=%s",
+                        request.run_id,
+                        self.settings.cerebras_model,
+                        exc,
+                    )
+
+            try:
+                suggestion = await self._vertex_live_generate(request)
+            except (ProviderError, ValueError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "live_generator error run_id=%s provider=vertex model=%s error=%s",
+                    request.run_id,
+                    self.settings.vertex_model,
+                    exc,
+                )
+                provider, model, suggestion = await self._live_single_provider(request)
+                logger.info(
+                    "live_response run_id=%s action=%s provider=%s model=%s total_elapsed_ms=%s",
+                    request.run_id,
+                    suggestion["action"],
+                    provider,
+                    model,
+                    int((time.monotonic() - started_at) * 1000),
+                )
+                return LiveResponse(
+                    action=suggestion["action"],
+                    text=suggestion["text"],
+                    provider=provider,
+                    model=model,
+                )
+            logger.info(
+                "live_response run_id=%s action=%s provider=vertex model=%s total_elapsed_ms=%s",
+                request.run_id,
+                suggestion["action"],
+                self.settings.vertex_model,
+                int((time.monotonic() - started_at) * 1000),
+            )
             return LiveResponse(
                 action=suggestion["action"],
                 text=suggestion["text"],
@@ -110,40 +194,20 @@ class LlmOrchestrator:
                 model=self.settings.vertex_model,
             )
 
-        if not self.cerebras.configured():
-            if self.vertex.configured():
-                suggestion = await self._vertex_live(request)
-                return LiveResponse(
-                    action=suggestion["action"],
-                    text=suggestion["text"],
-                    provider="vertex",
-                    model=self.settings.vertex_model,
-                )
-            raise ProviderError("service", "no LLM provider configured")
-
-        try:
-            suggestion = await self._cerebras_live_structured(request)
-        except ProviderError as exc:
-            if exc.is_structured_output_error:
-                suggestion = await self._cerebras_live_unstructured(request)
-            elif exc.is_rate_limit and self._auto_provider() and self.vertex.configured():
-                suggestion = await self._vertex_live(request)
-                return LiveResponse(
-                    action=suggestion["action"],
-                    text=suggestion["text"],
-                    provider="vertex",
-                    model=self.settings.vertex_model,
-                )
-            else:
-                raise
-        except (ValueError, json.JSONDecodeError):
-            suggestion = await self._cerebras_live_unstructured(request)
-
+        provider, model, suggestion = await self._live_single_provider(request)
+        logger.info(
+            "live_response run_id=%s action=%s provider=%s model=%s total_elapsed_ms=%s",
+            request.run_id,
+            suggestion["action"],
+            provider,
+            model,
+            int((time.monotonic() - started_at) * 1000),
+        )
         return LiveResponse(
             action=suggestion["action"],
             text=suggestion["text"],
-            provider="cerebras",
-            model=self.settings.cerebras_model,
+            provider=provider,
+            model=model,
         )
 
     async def chat_stream(self, request: ChatRequest) -> AsyncIterator[bytes]:
@@ -179,7 +243,7 @@ class LlmOrchestrator:
             else:
                 yield sse_event({"event": "error", "message": str(exc)})
 
-    async def stage_agenda(self, request: StageRequest) -> StageAgendaResponse:
+    async def stage_agenda(self, request: StageRequest) -> StageAgendaResponse | None:
         stage_started_at = time.monotonic()
         user_content = (
             f"{request.context}\n\n"
@@ -187,6 +251,60 @@ class LlmOrchestrator:
             f"{request.current_stage or '(пока неизвестен)'}\n"
         )
         errors: list[str] = []
+
+        if self._use_live_intelligence() and self.vertex.configured():
+            model = self.settings.vertex_live_model
+            try:
+                return await self._stage_agenda_live(request=request)
+            except LiveIntelligenceNoUpdate:
+                logger.info(
+                    "stage_live_intelligence no_update run_id=%s model=%s",
+                    request.run_id,
+                    model,
+                )
+                return None
+            except (ProviderError, ValueError, json.JSONDecodeError) as exc:
+                errors.append(f"vertex-live/{model}: {exc}")
+                logger.warning(
+                    "stage_live_intelligence provider_error run_id=%s provider=vertex-live model=%s error=%s",
+                    request.run_id,
+                    model,
+                    exc,
+                )
+
+        if self.cerebras.configured():
+            model = self.settings.cerebras_stage_model
+            try:
+                detect_started_at = time.monotonic()
+                text = await self.cerebras.text(
+                    model=model,
+                    system_prompt=stage_detection_system_prompt(),
+                    user_content=user_content,
+                    temperature=0.0,
+                    prompt_cache_key=f"rec-sidecar-stage-detect-v2-{request.run_id}",
+                    max_tokens=96,
+                    response_format=cerebras_stage_response_format(),
+                )
+                stage, confidence = parse_stage_detection(text)
+                stage = self._clamp_detected_stage(request, stage, model)
+                if self._stage_unchanged(request, stage, provider="cerebras", model=model):
+                    return None
+                return await self._stage_response(
+                    request=request,
+                    stage=stage,
+                    confidence=confidence,
+                    provider="cerebras",
+                    model=model,
+                    detect_elapsed_ms=int((time.monotonic() - detect_started_at) * 1000),
+                )
+            except (ProviderError, ValueError, json.JSONDecodeError) as exc:
+                errors.append(f"cerebras/{model}: {exc}")
+                logger.warning(
+                    "stage_detect provider_error run_id=%s provider=cerebras model=%s error=%s",
+                    request.run_id,
+                    model,
+                    exc,
+                )
 
         if self.vertex.configured():
             model = self.settings.vertex_stage_model
@@ -200,6 +318,9 @@ class LlmOrchestrator:
                     thinking_level=self.settings.vertex_thinking_level,
                 )
                 stage, confidence = parse_stage_detection(text)
+                stage = self._clamp_detected_stage(request, stage, model)
+                if self._stage_unchanged(request, stage, provider="vertex", model=model):
+                    return None
                 return await self._stage_response(
                     request=request,
                     stage=stage,
@@ -212,35 +333,6 @@ class LlmOrchestrator:
                 errors.append(f"vertex/{model}: {exc}")
                 logger.warning(
                     "stage_detect provider_error run_id=%s provider=vertex model=%s error=%s",
-                    request.run_id,
-                    model,
-                    exc,
-                )
-
-        if self.cerebras.configured():
-            model = self.settings.help_opener_secondary_model
-            try:
-                detect_started_at = time.monotonic()
-                text = await self.cerebras.text(
-                    model=model,
-                    system_prompt=stage_detection_system_prompt(),
-                    user_content=user_content,
-                    temperature=0.1,
-                    prompt_cache_key=f"rec-sidecar-stage-detect-v1-{request.run_id}",
-                )
-                stage, confidence = parse_stage_detection(text)
-                return await self._stage_response(
-                    request=request,
-                    stage=stage,
-                    confidence=confidence,
-                    provider="cerebras",
-                    model=model,
-                    detect_elapsed_ms=int((time.monotonic() - detect_started_at) * 1000),
-                )
-            except (ProviderError, ValueError, json.JSONDecodeError) as exc:
-                errors.append(f"cerebras/{model}: {exc}")
-                logger.warning(
-                    "stage_detect provider_error run_id=%s provider=cerebras model=%s error=%s",
                     request.run_id,
                     model,
                     exc,
@@ -501,6 +593,17 @@ class LlmOrchestrator:
         )
         return parse_json_suggestion(text)
 
+    async def _cerebras_live_validator(self, request: LiveRequest) -> dict[str, str]:
+        text = await self.cerebras.text(
+            model=self.settings.cerebras_model,
+            system_prompt=SALES_COACH_LIVE_VALIDATOR_SYSTEM_PROMPT,
+            user_content=self._live_validator_user_content(request),
+            temperature=0.0,
+            prompt_cache_key=f"rec-sidecar-sales-coach-validator-v1-{request.run_id}",
+            response_format=cerebras_structured_response_format(),
+        )
+        return parse_json_suggestion(text)
+
     async def _cerebras_live_unstructured(self, request: LiveRequest) -> dict[str, str]:
         text = await self.cerebras.text(
             model=self.settings.cerebras_model,
@@ -519,6 +622,79 @@ class LlmOrchestrator:
             user_content=request.content,
             temperature=0.2,
         )
+
+    async def _vertex_live_generate(self, request: LiveRequest) -> dict[str, str]:
+        if not self.vertex.configured():
+            raise ProviderError("vertex", "Vertex is not configured")
+        suggestion = await self.vertex.generate_structured(
+            model=self.settings.vertex_model,
+            system_prompt=SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT,
+            user_content=self._live_generator_user_content(request),
+            temperature=0.35,
+            thinking_level=self.settings.vertex_thinking_level,
+        )
+        if suggestion["action"] != "suggest" or not suggestion["text"].strip():
+            raise ProviderError("vertex", "empty live generator suggestion")
+        return suggestion
+
+    async def _live_single_provider(
+        self, request: LiveRequest
+    ) -> tuple[str, str, dict[str, str]]:
+        if self._prefer_vertex():
+            suggestion = await self._vertex_live(request)
+            return ("vertex", self.settings.vertex_model, suggestion)
+
+        if not self.cerebras.configured():
+            if self.vertex.configured():
+                suggestion = await self._vertex_live(request)
+                return ("vertex", self.settings.vertex_model, suggestion)
+            raise ProviderError("service", "no LLM provider configured")
+
+        try:
+            suggestion = await self._cerebras_live_structured(request)
+        except ProviderError as exc:
+            if exc.is_structured_output_error:
+                suggestion = await self._cerebras_live_unstructured(request)
+            elif exc.is_rate_limit and self._auto_provider() and self.vertex.configured():
+                suggestion = await self._vertex_live(request)
+                return ("vertex", self.settings.vertex_model, suggestion)
+            else:
+                raise
+        except (ValueError, json.JSONDecodeError):
+            suggestion = await self._cerebras_live_unstructured(request)
+
+        return ("cerebras", self.settings.cerebras_model, suggestion)
+
+    def _live_validator_user_content(self, request: LiveRequest) -> str:
+        current_text = (request.current_text or "").strip() or "(текущей реплики пока нет)"
+        return (
+            "--- Текущая реплика на экране ---\n"
+            f"{current_text}\n\n"
+            "--- Свежий снимок звонка ---\n"
+            f"{request.content}\n"
+        )
+
+    def _live_generator_user_content(self, request: LiveRequest) -> str:
+        current_text = (request.current_text or "").strip()
+        parts = ["--- Свежий снимок звонка ---", request.content]
+        if current_text:
+            parts.extend(
+                [
+                    "",
+                    "--- Текущая реплика на экране ---",
+                    current_text,
+                    "Если она устарела, дай более уместную свежую замену, а не косметический рерайт.",
+                ]
+            )
+        if request.force:
+            parts.extend(
+                [
+                    "",
+                    "--- Обновление принудительно запрошено ---",
+                    "Сгенерируй свежую реплику под текущий момент разговора.",
+                ]
+            )
+        return "\n".join(parts)
 
     async def _stage_response(
         self,
@@ -567,11 +743,97 @@ class LlmOrchestrator:
             scorecard=scorecard,
         )
 
+    async def _stage_agenda_live(self, *, request: StageRequest) -> StageAgendaResponse:
+        started_at = time.monotonic()
+        session = self._live_intelligence_session(request.run_id)
+        result = await session.analyze(
+            context=request.context,
+            current_stage=request.current_stage,
+        )
+        stage = self._clamp_detected_stage(
+            request, result.stage, self.settings.vertex_live_model
+        )
+        agenda = STAGE_AGENDA_BY_TAG[stage]
+        scorecard = normalize_scorecard(
+            stage=agenda.stage,
+            agenda=agenda,
+            raw=result.scorecard,
+            context=request.context,
+        )
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        logger.info(
+            "stage_live_intelligence run_id=%s stage=%s model=%s confidence=%s readiness=%s score=%s hits=%s misses=%s elapsed_ms=%s",
+            request.run_id,
+            agenda.stage,
+            self.settings.vertex_live_model,
+            result.confidence,
+            scorecard.readiness,
+            scorecard.score,
+            scorecard.hit_count,
+            scorecard.miss_count,
+            elapsed_ms,
+        )
+        return StageAgendaResponse(
+            stage=agenda.stage,
+            title=agenda.title,
+            agenda=agenda.agenda,
+            emotion=agenda.emotion,
+            step=agenda.step,
+            provider="vertex-live",
+            model=self.settings.vertex_live_model,
+            confidence=result.confidence,
+            scorecard=scorecard,
+        )
+
+    def _live_intelligence_session(self, run_id: str) -> VertexLiveIntelligenceSession:
+        session = self._live_intelligence_sessions.get(run_id)
+        if session is None:
+            session = VertexLiveIntelligenceSession(
+                self.vertex,
+                model=self.settings.vertex_live_model,
+                timeout_secs=self.settings.vertex_live_timeout_secs,
+            )
+            self._live_intelligence_sessions[run_id] = session
+        return session
+
     def _fallback_stage(self, current_stage: str | None) -> str:
         stage = normalize_stage(current_stage or "")
         if stage in STAGE_AGENDA_BY_TAG:
             return stage
         return KNOWN_STAGES[0]
+
+    def _stage_unchanged(
+        self,
+        request: StageRequest,
+        proposed_stage: str,
+        *,
+        provider: str,
+        model: str,
+    ) -> bool:
+        current_stage = normalize_stage(request.current_stage or "")
+        if not current_stage or current_stage != proposed_stage:
+            return False
+        logger.info(
+            "stage_detect no_change run_id=%s stage=%s provider=%s model=%s",
+            request.run_id,
+            proposed_stage,
+            provider,
+            model,
+        )
+        return True
+
+    def _clamp_detected_stage(
+        self, request: StageRequest, proposed_stage: str, model: str
+    ) -> str:
+        if stage_is_backward(request.current_stage, proposed_stage):
+            logger.info(
+                "stage_detect backward_stage_ignored run_id=%s current_stage=%s incoming_stage=%s model=%s",
+                request.run_id,
+                request.current_stage,
+                proposed_stage,
+                model,
+            )
+        return clamp_stage_forward(request.current_stage, proposed_stage)
 
     async def _stage_scorecard(self, request: StageRequest, agenda) -> object:
         if not self.vertex.configured():
@@ -579,10 +841,11 @@ class LlmOrchestrator:
                 agenda.stage,
                 agenda,
                 "Scorecard evaluator disabled: Vertex is not configured.",
+                context=request.context,
             )
 
         started_at = time.monotonic()
-        model = self.settings.vertex_model
+        model = self.settings.vertex_scorecard_model
         user_content = (
             f"{request.context}\n\n"
             f"--- Текущий stage из предыдущего шага ---\n"
@@ -595,6 +858,7 @@ class LlmOrchestrator:
                 system_prompt=scorecard_system_prompt(agenda.stage, agenda),
                 user_content=user_content,
                 temperature=0.0,
+                thinking_level=self.settings.vertex_scorecard_thinking_level,
             )
         )
         advice_task: asyncio.Task[str] | None = None
@@ -620,7 +884,12 @@ class LlmOrchestrator:
             )
             text = await asyncio.wait_for(scorecard_task, remaining_timeout)
             raw = safe_parse_scorecard(text)
-            scorecard = normalize_scorecard(stage=agenda.stage, agenda=agenda, raw=raw)
+            scorecard = normalize_scorecard(
+                stage=agenda.stage,
+                agenda=agenda,
+                raw=raw,
+                context=request.context,
+            )
             logger.info(
                 "stage_scorecard run_id=%s stage=%s model=%s readiness=%s score=%s hits=%s misses=%s elapsed_ms=%s",
                 request.run_id,
@@ -671,6 +940,7 @@ class LlmOrchestrator:
                 agenda,
                 f"Scorecard evaluator fallback: {reason}",
                 next_action=advice,
+                context=request.context,
             )
         finally:
             await cancel_tasks(
@@ -695,7 +965,12 @@ class LlmOrchestrator:
                 timeout=STAGE_CEREBRAS_SCORECARD_TIMEOUT_SECS,
             )
             raw = safe_parse_scorecard(text)
-            scorecard = normalize_scorecard(stage=agenda.stage, agenda=agenda, raw=raw)
+            scorecard = normalize_scorecard(
+                stage=agenda.stage,
+                agenda=agenda,
+                raw=raw,
+                context=request.context,
+            )
             logger.info(
                 "stage_scorecard fallback_provider=cerebras run_id=%s stage=%s model=%s readiness=%s score=%s hits=%s misses=%s elapsed_ms=%s",
                 request.run_id,
@@ -919,6 +1194,16 @@ class LlmOrchestrator:
     def _auto_provider(self) -> bool:
         return self.settings.provider not in {"cerebras", "vertex", "gemini", "google"}
 
+    def _split_live_flow(self) -> bool:
+        return (
+            self._auto_provider()
+            and self.cerebras.configured()
+            and self.vertex.configured()
+        )
+
+    def _use_live_intelligence(self) -> bool:
+        return self.settings.intelligence_transport in {"live", "websocket", "gemini-live"}
+
     def _any_provider_configured(self) -> bool:
         if self._prefer_vertex():
             return self.vertex.configured()
@@ -1032,8 +1317,19 @@ def scorecard_error_reason(exc: BaseException) -> str:
 def pending_safe_advice(advice: str | None, fallback_step: str) -> str | None:
     if not advice:
         return None
+    prefix = ""
+    body = advice
+    for candidate_prefix in ("Уточнить:", "Переход:"):
+        if advice.startswith(candidate_prefix):
+            prefix = candidate_prefix
+            body = advice[len(candidate_prefix) :].strip()
+            break
     if advice.lower().startswith("переход:"):
         return f"Уточнить: {fallback_step}"
+    if not is_speakable_next_action(body):
+        return fallback_next_action()
+    if prefix:
+        return advice
     return advice
 
 

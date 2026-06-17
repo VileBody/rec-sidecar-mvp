@@ -13,11 +13,18 @@ class HealthResponse(BaseModel):
     model: str
     cerebras_configured: bool
     vertex_configured: bool
+    intelligence_transport: str = "rest"
+    vertex_live_model: str | None = None
+    vertex_live_asr_model: str | None = None
+    vertex_live_asr_location: str | None = None
+    vertex_live_stage_model: str | None = None
+    vertex_live_stage_location: str | None = None
 
 
 class LiveRequest(StrictModel):
     run_id: str
     content: str
+    current_text: str | None = None
     force: bool = False
 
 

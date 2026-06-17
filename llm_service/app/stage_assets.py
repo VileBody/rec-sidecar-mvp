@@ -13,6 +13,9 @@ AGENDA_PROMPT_PATH = PROMPT_ASSETS_DIR / "3_current_stage_agenda.md"
 
 STAGE_RE = re.compile(r"^(S\d+\.\d+[a-z]?)(?:\s+—\s+(.+))?$", re.IGNORECASE)
 FIELD_RE = re.compile(r"^-\s+(Agenda|Эмоц\. реакция|Шаг):\s*(.+)$")
+CONTRACT_FIELD_RE = re.compile(r"^([A-Za-z_][\w.]*)\s*(?::|-\s)\s*(.+?)\s*$")
+STAGE_BLOCK_START = "<<<STAGE>>>"
+STAGE_BLOCK_END = "<<<END_STAGE>>>"
 
 
 @dataclass(frozen=True)
@@ -79,14 +82,19 @@ def stage_detection_system_prompt() -> str:
     stages = ", ".join(KNOWN_STAGES)
     return (
         f"{DETECT_WHERE_WE_ARE_PROMPT}\n\n"
-        "Верни строго JSON без Markdown и без пояснений.\n"
+        "Верни только короткий текстовый блок без JSON, Markdown и пояснений.\n"
         f"Допустимые stage: {stages}.\n"
-        'Формат: {"stage":"S2.3","confidence":0.7}\n'
+        f"Формат:\n{STAGE_BLOCK_START}\nstage: S2.3\nconfidence: 0.70\n{STAGE_BLOCK_END}\n"
+        "Пиши `stage:` и `confidence:` каждый с новой строки.\n"
         "Если данных мало, выбери ближайший stage по текущему моменту разговора."
     )
 
 
 def parse_stage_detection(text: str) -> tuple[str, float | None]:
+    contract_stage = extract_stage_contract(text)
+    if contract_stage is not None:
+        return contract_stage
+
     value = extract_json_object(text)
     if isinstance(value, dict):
         stage = normalize_stage(str(value.get("stage", "")))
@@ -109,6 +117,38 @@ def parse_stage_detection(text: str) -> tuple[str, float | None]:
         return inferred, None
 
     raise ValueError(f"unknown stage detection response: {text!r}")
+
+
+def extract_stage_contract(text: str) -> tuple[str, float | None] | None:
+    block = extract_contract_block(text, STAGE_BLOCK_START, STAGE_BLOCK_END)
+    candidate = block if block is not None else text.strip()
+    if not candidate:
+        return None
+
+    stage_value: str | None = None
+    confidence_value: float | None = None
+    saw_stage_field = False
+
+    for raw_line in candidate.splitlines():
+        line = raw_line.strip().strip("`")
+        if not line:
+            continue
+        match = CONTRACT_FIELD_RE.match(line)
+        if not match:
+            continue
+        key = match.group(1).lower()
+        value = match.group(2).strip()
+        if key == "stage":
+            saw_stage_field = True
+            normalized = normalize_stage(value)
+            if normalized in STAGE_AGENDA_BY_TAG:
+                stage_value = normalized
+        elif key == "confidence":
+            confidence_value = parse_optional_float(value)
+
+    if saw_stage_field and stage_value:
+        return stage_value, confidence_value
+    return None
 
 
 def infer_stage_from_text(text: str) -> str | None:
@@ -249,12 +289,67 @@ def extract_json_object(text: str) -> Any:
     return None
 
 
+def extract_contract_block(text: str, start_marker: str, end_marker: str) -> str | None:
+    start = text.find(start_marker)
+    if start == -1:
+        return None
+    start += len(start_marker)
+    end = text.find(end_marker, start)
+    block = text[start:end] if end != -1 else text[start:]
+    return block.strip()
+
+
+def parse_optional_float(value: str) -> float | None:
+    normalized = value.strip().replace(",", ".").rstrip(".;)")
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
 def normalize_stage(value: str) -> str:
     match = re.search(r"S(\d+)\.(\d+)([a-z]?)", value.strip(), re.IGNORECASE)
     if not match:
         return ""
     suffix = match.group(3).lower()
     return f"S{match.group(1)}.{match.group(2)}{suffix}"
+
+
+STAGE_PROGRESS_ORDER = (
+    "S2.1",
+    "S2.2",
+    "S2.3",
+    "S2.4",
+    "S2.5",
+    "S3.1",
+    "S3.2",
+    "S3.3",
+    "S3.4a",
+    "S3.4b",
+    "S3.5",
+)
+
+
+def stage_progress_rank(stage: str | None) -> int | None:
+    normalized = normalize_stage(stage or "")
+    try:
+        return STAGE_PROGRESS_ORDER.index(normalized)
+    except ValueError:
+        return None
+
+
+def stage_is_backward(current_stage: str | None, proposed_stage: str | None) -> bool:
+    current_rank = stage_progress_rank(current_stage)
+    proposed_rank = stage_progress_rank(proposed_stage)
+    return current_rank is not None and proposed_rank is not None and proposed_rank < current_rank
+
+
+def clamp_stage_forward(current_stage: str | None, proposed_stage: str) -> str:
+    current = normalize_stage(current_stage or "")
+    proposed = normalize_stage(proposed_stage)
+    if current and stage_is_backward(current, proposed):
+        return current
+    return proposed
 
 
 def strip_outer_quotes(value: str) -> str:

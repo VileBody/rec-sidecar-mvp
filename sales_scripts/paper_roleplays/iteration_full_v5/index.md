@@ -1,0 +1,25 @@
+# Paper roleplay index
+
+## Metrics
+
+- Scenarios: 10
+- Dozhim outcomes: 6/10
+- Average replies: 40.0
+- Outcomes: `max_replies_reached`=4, `next_step_scheduled`=6
+- Readiness labels: `Мало данных`=200
+- Check hit/(hit+miss): n/a (0/0)
+- Incomplete checks: 0
+- Total scored checks: 0
+
+## Scenarios
+
+- [01. Собственник застрял в операционке](scenario_01_scenario-01.md) - 16 turns/32 replies, final S3.4b Мало данных, outcome `next_step_scheduled`, 289.9s
+- [02. Скептик после курсов и мастермайндов](scenario_02_scenario-02.md) - 30 turns/60 replies, final S3.4a Мало данных, outcome `max_replies_reached`, 487.2s
+- [03. Цена, окупаемость, кассовый разрыв](scenario_03_scenario-03.md) - 30 turns/60 replies, final S3.4a Мало данных, outcome `max_replies_reached`, 602.2s
+- [04. Успешный предприниматель, личное влияет на бизнес](scenario_04_scenario-04.md) - 30 turns/60 replies, final S3.4a Мало данных, outcome `max_replies_reached`, 544.6s
+- [05. Сильная среда и страх попасть не к своему уровню](scenario_05_scenario-05.md) - 13 turns/26 replies, final S3.4b Мало данных, outcome `next_step_scheduled`, 241.8s
+- [06. Предприниматель из другого города, вход в Татарстан](scenario_06_scenario-06.md) - 7 turns/14 replies, final S3.5 Мало данных, outcome `next_step_scheduled`, 101.3s
+- [07. "Мне нужны инструменты, а не психологи"](scenario_07_scenario-07.md) - 30 turns/60 replies, final S3.4a Мало данных, outcome `max_replies_reached`, 421.4s
+- [08. Нужно обсудить с партнером / женой / командой](scenario_08_scenario-08.md) - 13 turns/26 replies, final S3.4b Мало данных, outcome `next_step_scheduled`, 186.6s
+- [09. Горячий лид с мелкими тревогами](scenario_09_scenario-09.md) - 21 turns/42 replies, final S3.5 Мало данных, outcome `next_step_scheduled`, 299.6s
+- [10. Холодный / полухолодный лид по рекомендации](scenario_10_scenario-10.md) - 10 turns/20 replies, final S3.5 Мало данных, outcome `next_step_scheduled`, 143.3s

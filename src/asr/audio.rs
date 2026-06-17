@@ -5,6 +5,8 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+pub(super) type AudioChunk = Vec<i16>;
+
 pub(super) struct AudioBatch {
     pub(super) bytes: Vec<u8>,
     pub(super) chunk_count: usize,
@@ -21,9 +23,13 @@ pub(super) fn chunks_for_duration(duration: Duration, chunk_ms: u32) -> usize {
         .unwrap_or(usize::MAX)
 }
 
+pub(super) fn chunk_samples(target_rate: u32, chunk_ms: u32) -> usize {
+    (target_rate as usize * chunk_ms as usize / 1000).max(1)
+}
+
 pub(super) fn build_audio_batch(
-    first_chunk: Vec<u8>,
-    audio_rx: &mut mpsc::Receiver<Vec<u8>>,
+    first_chunk: AudioChunk,
+    audio_rx: &mut mpsc::Receiver<AudioChunk>,
     max_batch_chunks: usize,
     flush_latency_chunks: Option<usize>,
 ) -> Option<AudioBatch> {
@@ -64,17 +70,25 @@ pub(super) fn build_audio_batch(
     }
 
     let first_chunk = first_chunk?;
-    let mut bytes = Vec::with_capacity(first_chunk.len() * max_batch_chunks);
-    bytes.extend_from_slice(&first_chunk);
+    let mut chunks = Vec::with_capacity(max_batch_chunks);
+    chunks.push(first_chunk);
     let mut chunk_count = 1_usize;
 
     while chunk_count < max_batch_chunks {
         match audio_rx.try_recv() {
             Ok(chunk) => {
-                bytes.extend_from_slice(&chunk);
+                chunks.push(chunk);
                 chunk_count += 1;
             }
             Err(_) => break,
+        }
+    }
+
+    let sample_count: usize = chunks.iter().map(Vec::len).sum();
+    let mut bytes = Vec::with_capacity(sample_count * 2);
+    for chunk in chunks {
+        for sample in chunk {
+            bytes.extend_from_slice(&sample.to_le_bytes());
         }
     }
 
@@ -92,7 +106,7 @@ pub(super) struct AudioProcessor {
     next_source_frame: f64,
     chunk_samples: usize,
     pending: Vec<i16>,
-    audio_tx: mpsc::Sender<Vec<u8>>,
+    audio_tx: mpsc::Sender<AudioChunk>,
     dropped_audio_chunks: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
 }
@@ -103,11 +117,11 @@ impl AudioProcessor {
         channels: usize,
         target_rate: u32,
         chunk_ms: u32,
-        audio_tx: mpsc::Sender<Vec<u8>>,
+        audio_tx: mpsc::Sender<AudioChunk>,
         dropped_audio_chunks: Arc<AtomicU64>,
         stop: Arc<AtomicBool>,
     ) -> Self {
-        let chunk_samples = (target_rate as usize * chunk_ms as usize / 1000).max(1);
+        let chunk_samples = chunk_samples(target_rate, chunk_ms);
 
         Self {
             input_rate: input_rate as f64,
@@ -160,14 +174,9 @@ impl AudioProcessor {
     }
 
     fn flush_chunk(&mut self) {
-        let samples = self.pending.drain(..self.chunk_samples);
-        let mut bytes = Vec::with_capacity(self.chunk_samples * 2);
+        let samples = self.pending.drain(..self.chunk_samples).collect();
 
-        for sample in samples {
-            bytes.extend_from_slice(&sample.to_le_bytes());
-        }
-
-        match self.audio_tx.try_send(bytes) {
+        match self.audio_tx.try_send(samples) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 self.dropped_audio_chunks.fetch_add(1, Ordering::Relaxed);
@@ -205,7 +214,7 @@ mod tests {
 
         let batch = build_audio_batch(vec![1], &mut rx, 3, None).unwrap();
 
-        assert_eq!(batch.bytes, vec![1, 2, 3]);
+        assert_eq!(batch.bytes, vec![1, 0, 2, 0, 3, 0]);
         assert_eq!(batch.chunk_count, 3);
         assert_eq!(batch.flushed_chunks, 0);
         assert_eq!(rx.len(), 1);
@@ -220,7 +229,7 @@ mod tests {
 
         let batch = build_audio_batch(vec![1], &mut rx, 2, Some(4)).unwrap();
 
-        assert_eq!(batch.bytes, vec![7, 8]);
+        assert_eq!(batch.bytes, vec![7, 0, 8, 0]);
         assert_eq!(batch.chunk_count, 2);
         assert_eq!(batch.flushed_chunks, 6);
         assert_eq!(rx.len(), 0);
@@ -237,7 +246,7 @@ mod tests {
 
         let first = rx.try_recv().unwrap();
         let second = rx.try_recv().unwrap();
-        assert_eq!(first.len(), 4);
-        assert_eq!(second.len(), 4);
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
     }
 }

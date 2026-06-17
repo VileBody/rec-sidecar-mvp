@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>dev.codex.rec-sidecar-mvp</string>
+  <key>CFBundleName</key>
+  <string>REC Sidecar</string>
+  <key>CFBundleDisplayName</key>
+  <string>REC Sidecar</string>
+  <key>CFBundleExecutable</key>
+  <string>rec-sidecar-mvp</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>REC Sidecar uses the microphone to transcribe and coach live calls.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>REC Sidecar captures system audio so the coach can hear the remote participant during calls.</string>
+</dict>
+</plist>

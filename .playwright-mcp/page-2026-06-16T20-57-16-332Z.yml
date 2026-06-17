@@ -1,0 +1,42 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: Live Client Chat
+        - generic [ref=e7]: Печатаешь реплику, локально звучит продавец, затем отвечает персонаж. Rust слушает это через system audio.
+      - generic [ref=e8]: Готов
+    - generic [ref=e9]:
+      - combobox [ref=e10]:
+        - option "1. Собственник застрял в операционке"
+        - option "2. Скептик после курсов и мастермайндов" [selected]
+        - option "3. Цена, окупаемость, кассовый разрыв"
+        - option "4. Успешный предприниматель, личное влияет на бизнес"
+        - option "5. Сильная среда и страх попасть не к своему уровню"
+        - option "6. Предприниматель из другого города, вход в Татарстан"
+        - option "7. \"Мне нужны инструменты, а не психологи\""
+        - option "8. Нужно обсудить с партнером / женой / командой"
+        - option "9. Горячий лид с мелкими тревогами"
+        - option "10. Холодный / полухолодный лид по рекомендации"
+      - combobox [ref=e11]:
+        - option "Hostile" [selected]
+        - option "Cold"
+        - option "Neutral"
+      - button "Новый чат" [ref=e12] [cursor=pointer]
+    - generic [ref=e13]:
+      - generic [ref=e14]: "Сценарий: 2. Скептик после курсов и мастермайндов"
+      - generic [ref=e15]: "Режим: hostile"
+      - generic [ref=e16]: "Ход: 1"
+  - generic [ref=e17]:
+    - generic [ref=e19]:
+      - generic [ref=e20]: Ты
+      - generic [ref=e21]: Привет. Удобно пару минут?
+      - button "Слушать" [ref=e23] [cursor=pointer]
+    - generic [ref=e25]:
+      - generic [ref=e26]: Клиент
+      - generic [ref=e27]: "Да, могу, но я сразу скажу: я уже много такого проходил."
+      - button "Слушать" [ref=e29] [cursor=pointer]
+  - generic [ref=e30]:
+    - generic [ref=e31]:
+      - 'textbox "Например: Привет. Удобно пару минут? Хочу коротко понять, есть ли тебе смысл ехать в Казань." [ref=e32]'
+      - button "Отправить" [ref=e33] [cursor=pointer]
+    - generic [ref=e34]: Enter отправляет, Shift+Enter переносит строку.

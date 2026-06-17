@@ -4,11 +4,11 @@ import json
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator
+from urllib.parse import urlparse
 
 import httpx
 
 from .config import GOOGLE_OAUTH_TOKEN_URL, Settings
-from .scorecard import vertex_scorecard_response_schema
 
 
 class ProviderError(RuntimeError):
@@ -71,7 +71,24 @@ def response_content(value: dict[str, Any]) -> str | None:
         text = value_to_text(message.get("content"))
         if text:
             return text
+        for key in ("reasoning", "reasoning_content", "reasoningContent"):
+            reasoning = value_to_text(message.get(key))
+            if reasoning and (json_text := extract_json_text(reasoning)):
+                return json_text
     return value_to_text(choice.get("text")) or value_to_text(choice.get("content"))
+
+
+def extract_json_text(text: str) -> str | None:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or start >= end:
+        return None
+    candidate = text[start : end + 1]
+    try:
+        value = json.loads(candidate)
+    except ValueError:
+        return None
+    return json.dumps(value, ensure_ascii=False)
 
 
 def stream_content_parts(value: dict[str, Any]) -> list[str]:
@@ -116,6 +133,61 @@ def vertex_response_text(value: dict[str, Any]) -> str | None:
     return text if text.strip() else None
 
 
+def vertex_function_call_args(value: dict[str, Any], name: str) -> dict[str, Any] | None:
+    candidates = value.get("candidates")
+    if not isinstance(candidates, list):
+        return None
+    for candidate in candidates:
+        content = candidate.get("content") if isinstance(candidate, dict) else None
+        parts = content.get("parts") if isinstance(content, dict) else None
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            function_call = part.get("functionCall") or part.get("function_call")
+            if not isinstance(function_call, dict) or function_call.get("name") != name:
+                continue
+            args = function_call.get("args")
+            if isinstance(args, dict):
+                return args
+    return None
+
+
+def vertex_live_response_text(value: dict[str, Any]) -> str | None:
+    server_content = value.get("serverContent") or value.get("server_content")
+    if not isinstance(server_content, dict):
+        return None
+    model_turn = server_content.get("modelTurn") or server_content.get("model_turn")
+    if not isinstance(model_turn, dict):
+        return None
+    parts = model_turn.get("parts")
+    if not isinstance(parts, list):
+        return None
+    text = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
+    return text if text.strip() else None
+
+
+def vertex_live_turn_complete(value: dict[str, Any]) -> bool:
+    server_content = value.get("serverContent") or value.get("server_content")
+    if not isinstance(server_content, dict):
+        return False
+    return bool(server_content.get("turnComplete") or server_content.get("turn_complete"))
+
+
+def vertex_live_error_message(value: dict[str, Any]) -> str | None:
+    error = value.get("error")
+    if isinstance(error, dict):
+        message = error.get("message") or error.get("status") or error.get("code")
+        return str(message) if message else compact_json(error)
+    if isinstance(error, str):
+        return error
+    go_away = value.get("goAway") or value.get("go_away")
+    if isinstance(go_away, dict):
+        return f"goAway: {compact_json(go_away)}"
+    return None
+
+
 def cerebras_structured_response_format() -> dict[str, Any]:
     return {
         "type": "json_schema",
@@ -129,6 +201,40 @@ def cerebras_structured_response_format() -> dict[str, Any]:
                     "text": {"type": "string"},
                 },
                 "required": ["action", "text"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def cerebras_stage_response_format() -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "sales_stage_detection",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "stage": {
+                        "type": "string",
+                        "enum": [
+                            "S2.1",
+                            "S2.2",
+                            "S2.3",
+                            "S2.4",
+                            "S2.5",
+                            "S3.1",
+                            "S3.2",
+                            "S3.3",
+                            "S3.4a",
+                            "S3.4b",
+                            "S3.5",
+                        ],
+                    },
+                    "confidence": {"type": "number"},
+                },
+                "required": ["stage", "confidence"],
                 "additionalProperties": False,
             },
         },
@@ -154,6 +260,59 @@ def vertex_stage_response_schema() -> dict[str, Any]:
             "confidence": {"type": "NUMBER"},
         },
         "required": ["stage"],
+    }
+
+
+def vertex_stage_function_declaration() -> dict[str, Any]:
+    return {
+        "name": "submit_stage_detection",
+        "description": "Submit the current sales conversation stage as structured data.",
+        "parameters": vertex_stage_response_schema(),
+    }
+
+
+def vertex_scorecard_function_declaration() -> dict[str, Any]:
+    return {
+        "name": "submit_scorecard",
+        "description": (
+            "Submit the current sales-stage scorecard and tactical next action for the seller."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "summary": {
+                    "type": "STRING",
+                    "description": "Short summary of readiness for the current stage.",
+                },
+                "next_action": {
+                    "type": "STRING",
+                    "description": (
+                        "One short seller action. Start with Уточнить: or Переход:."
+                    ),
+                },
+                "checks": {
+                    "type": "ARRAY",
+                    "description": "Scorecard checks for the current stage only.",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "id": {"type": "STRING"},
+                            "result": {
+                                "type": "STRING",
+                                "description": "hit, miss, pending, uncertain, or na.",
+                            },
+                            "reason": {"type": "STRING"},
+                            "quote": {
+                                "type": "STRING",
+                                "description": "Optional short evidence quote.",
+                            },
+                        },
+                        "required": ["id", "result", "reason"],
+                    },
+                },
+            },
+            "required": ["summary", "next_action", "checks"],
+        },
     }
 
 
@@ -203,6 +362,7 @@ class CerebrasClient:
         temperature: float,
         stream: bool,
         prompt_cache_key: str | None,
+        max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -215,8 +375,12 @@ class CerebrasClient:
             "stream": stream,
         }
         effort = self.settings.cerebras_reasoning_effort.strip()
-        if effort and effort.lower() != "none":
+        if effort.lower() == "none" and model.startswith("zai-"):
+            body["reasoning_effort"] = "none"
+        elif effort and effort.lower() != "none":
             body["reasoning_effort"] = effort
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         if self.settings.cerebras_prompt_cache_key and prompt_cache_key:
             body["prompt_cache_key"] = prompt_cache_key
         if response_format:
@@ -231,6 +395,7 @@ class CerebrasClient:
         user_content: str,
         temperature: float,
         prompt_cache_key: str | None,
+        max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
         body = self._body(
@@ -240,6 +405,7 @@ class CerebrasClient:
             temperature=temperature,
             stream=False,
             prompt_cache_key=prompt_cache_key,
+            max_tokens=max_tokens,
             response_format=response_format,
         )
         try:
@@ -326,22 +492,34 @@ class VertexClient:
     async def generate_structured(
         self,
         *,
+        model: str | None = None,
         system_prompt: str,
         user_content: str,
         temperature: float,
+        thinking_level: str | None = None,
     ) -> dict[str, str]:
+        generation_config: dict[str, Any] = {
+            "temperature": temperature,
+            "responseMimeType": "application/json",
+            "responseSchema": vertex_coach_response_schema(),
+        }
+        effective_thinking_level = (
+            self.settings.vertex_thinking_level
+            if thinking_level is None
+            else thinking_level
+        )
+        if effective_thinking_level:
+            generation_config["thinkingConfig"] = {
+                "thinkingLevel": effective_thinking_level
+            }
         body = {
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": user_content}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "responseMimeType": "application/json",
-                "responseSchema": vertex_coach_response_schema(),
-            },
+            "generationConfig": generation_config,
         }
         try:
             response = await self.client.post(
-                self._method_url("generateContent"),
+                self._method_url_for_model("generateContent", model or self.settings.vertex_model),
                 headers=await self._headers(),
                 json=body,
             )
@@ -366,8 +544,6 @@ class VertexClient:
         generation_config: dict[str, Any] = {
             "temperature": temperature,
             "maxOutputTokens": 96,
-            "responseMimeType": "application/json",
-            "responseSchema": vertex_stage_response_schema(),
         }
         if thinking_level:
             generation_config["thinkingConfig"] = {"thinkingLevel": thinking_level}
@@ -386,10 +562,11 @@ class VertexClient:
             raise ProviderError("vertex", f"{exc.__class__.__name__}: {exc}") from exc
         if not response.is_success:
             raise ProviderError("vertex", response.text, response.status_code)
-        text = vertex_response_text(response.json())
-        if not text:
-            raise ProviderError("vertex", "empty stage response")
-        return text
+        value = response.json()
+        text = vertex_response_text(value)
+        if text:
+            return text
+        raise ProviderError("vertex", f"empty stage text response: {compact_json(value)}")
 
     async def generate_scorecard(
         self,
@@ -398,16 +575,25 @@ class VertexClient:
         system_prompt: str,
         user_content: str,
         temperature: float,
+        thinking_level: str | None = None,
     ) -> str:
+        generation_config: dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": 2048,
+        }
+        effective_thinking_level = (
+            self.settings.vertex_scorecard_thinking_level
+            if thinking_level is None
+            else thinking_level
+        )
+        if effective_thinking_level:
+            generation_config["thinkingConfig"] = {
+                "thinkingLevel": effective_thinking_level
+            }
         body = {
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": user_content}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": 768,
-                "responseMimeType": "application/json",
-                "responseSchema": vertex_scorecard_response_schema(),
-            },
+            "generationConfig": generation_config,
         }
         try:
             response = await self.client.post(
@@ -419,10 +605,11 @@ class VertexClient:
             raise ProviderError("vertex", f"{exc.__class__.__name__}: {exc}") from exc
         if not response.is_success:
             raise ProviderError("vertex", response.text, response.status_code)
-        text = vertex_response_text(response.json())
-        if not text:
-            raise ProviderError("vertex", "empty scorecard response")
-        return text
+        value = response.json()
+        text = vertex_response_text(value)
+        if text:
+            return text
+        raise ProviderError("vertex", f"empty scorecard text response: {compact_json(value)}")
 
     async def stream_text(
         self,
@@ -479,6 +666,9 @@ class VertexClient:
             headers["x-goog-user-project"] = self.settings.vertex_quota_project_id
         return headers
 
+    async def auth_headers(self) -> dict[str, str]:
+        return await self._headers()
+
     async def _access_token(self) -> str:
         if self.settings.vertex_access_token:
             return self.settings.vertex_access_token
@@ -525,12 +715,33 @@ class VertexClient:
             f"/publishers/google/models/{model}:{method}"
         )
 
+    def model_resource(self, model: str) -> str:
+        if not self.settings.vertex_project:
+            raise ProviderError("vertex", "missing GOOGLE_CLOUD_PROJECT")
+        return (
+            f"projects/{self.settings.vertex_project}/locations/{self.settings.vertex_location}"
+            f"/publishers/google/models/{model}"
+        )
+
+    def live_bidi_url(self) -> str:
+        return (
+            f"wss://{vertex_api_host(self.settings.vertex_api_base)}"
+            "/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
+        )
+
 
 def required_adc_field(credentials: dict[str, Any], key: str) -> str:
     value = credentials.get(key)
     if not isinstance(value, str) or not value:
         raise ProviderError("vertex", f"ADC credentials missing {key}")
     return value
+
+
+def vertex_api_host(api_base: str) -> str:
+    parsed = urlparse(api_base)
+    if parsed.netloc:
+        return parsed.netloc
+    return api_base.removeprefix("https://").removeprefix("http://").rstrip("/")
 
 
 def pop_vertex_stream_value(buffer: str) -> tuple[dict[str, Any] | None, str, bool]:
