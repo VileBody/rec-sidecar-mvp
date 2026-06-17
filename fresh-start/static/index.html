@@ -500,7 +500,8 @@
     const state = {
       snapshot: null,
       busy: false,
-      pollTimer: null,
+      sessionStream: null,
+      streamConnected: false,
     };
 
     const els = {
@@ -699,6 +700,8 @@
       els.runPill.textContent = `Run: ${snapshot.runId || "—"}`;
       els.chatMeta.textContent = snapshot.turnActive
         ? "client stream + ZAI/Gemini reaction"
+        : !state.streamConnected
+          ? "переподключаю live stream"
         : snapshot.stageStatus === "scoring"
           ? "ZAI -> Gemini"
           : "Roleplay loop";
@@ -725,30 +728,37 @@
       renderPendingSeller(snapshot);
       renderStage(snapshot);
       renderRoute(snapshot);
-      managePolling(snapshot);
     }
 
-    function managePolling(snapshot) {
-      const shouldPoll =
-        !state.busy && (
-          snapshot.turnActive ||
-          snapshot.replyStreaming ||
-          snapshot.stageStatus === "scoring" ||
-          snapshot.stageStatus === "reacting" ||
-          snapshot.status === "seller_thinking" ||
-          snapshot.status === "client_reply"
-        );
-      if (shouldPoll && !state.pollTimer) {
-        state.pollTimer = setInterval(async () => {
-          try {
-            render(await api("/api/session"));
-          } catch (_) {}
-        }, 800);
+    function connectSessionStream() {
+      if (!("EventSource" in window)) {
+        return;
       }
-      if (!shouldPoll && state.pollTimer) {
-        clearInterval(state.pollTimer);
-        state.pollTimer = null;
+      if (state.sessionStream) {
+        state.sessionStream.close();
       }
+      const stream = new EventSource("/api/session/stream");
+      state.sessionStream = stream;
+
+      stream.addEventListener("snapshot", (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          state.streamConnected = true;
+          render(payload.snapshot);
+        } catch (error) {
+          console.error("session stream parse error", error);
+        }
+      });
+
+      stream.onopen = () => {
+        state.streamConnected = true;
+        if (state.snapshot) render(state.snapshot);
+      };
+
+      stream.onerror = () => {
+        state.streamConnected = false;
+        if (state.snapshot) render(state.snapshot);
+      };
     }
 
     async function runAction(action) {
@@ -801,8 +811,18 @@
     });
 
     async function boot() {
+      if ("EventSource" in window) {
+        connectSessionStream();
+        return;
+      }
       render(await api("/api/session"));
     }
+
+    window.addEventListener("beforeunload", () => {
+      if (state.sessionStream) {
+        state.sessionStream.close();
+      }
+    });
 
     boot().catch((error) => {
       els.errorBox.style.display = "block";

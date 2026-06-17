@@ -138,6 +138,7 @@ Open `http://127.0.0.1:8101`. The page keeps two async loops alive:
 
 - the buyer reply streams in as text
 - a parallel ZAI -> Gemini lane refreshes stage, scorecard, and the seller's next line while the client reply is still unfolding
+- browser updates are pushed over SSE from `/api/session/stream`, so the UI no longer polls snapshots in the background
 
 The Rust STT client sends this config by default:
 

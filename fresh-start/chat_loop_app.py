@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import sys
@@ -17,8 +18,8 @@ from typing import Literal
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 
@@ -218,6 +219,8 @@ class RoleplaySession:
         self.scorecard_task: asyncio.Task[None] | None = None
         self.turn_task: asyncio.Task[None] | None = None
         self.bootstrap_task: asyncio.Task[None] | None = None
+        self.state_condition = asyncio.Condition()
+        self.state_version = 0
         self.turn_version = 0
         self.active_turn: ActiveTurn | None = None
         self._apply_reset(initial_config)
@@ -284,6 +287,38 @@ class RoleplaySession:
             "activeClientMessageId": self.active_turn.client_message_id if self.active_turn else None,
         }
 
+    async def snapshot_now(self) -> dict[str, object]:
+        async with self.lock:
+            return self.snapshot()
+
+    async def current_snapshot_with_version(self) -> tuple[int, dict[str, object]]:
+        async with self.lock:
+            return self.state_version, self.snapshot()
+
+    async def wait_for_snapshot(
+        self,
+        after_version: int,
+        *,
+        timeout_secs: float = 15.0,
+    ) -> tuple[int, dict[str, object]] | None:
+        try:
+            async with self.state_condition:
+                await asyncio.wait_for(
+                    self.state_condition.wait_for(lambda: self.state_version > after_version),
+                    timeout=timeout_secs,
+                )
+                version = self.state_version
+        except TimeoutError:
+            return None
+
+        async with self.lock:
+            return version, self.snapshot()
+
+    async def _publish_state(self) -> None:
+        async with self.state_condition:
+            self.state_version += 1
+            self.state_condition.notify_all()
+
     async def reset(self, config: ResetRequest) -> dict[str, object]:
         if self.bootstrap_task is not None:
             self.bootstrap_task.cancel()
@@ -294,28 +329,32 @@ class RoleplaySession:
         await self._cancel_scorecard_task()
         async with self.lock:
             self._apply_reset(config)
+        await self._publish_state()
         try:
             await self._generate_seller_line_current(initial=True, trigger_reason="opener")
             async with self.lock:
                 self.status = "ready"
+            await self._publish_state()
         except Exception as exc:
             async with self.lock:
                 self.status = "error"
                 self.error = str(exc)
-        async with self.lock:
-            return self.snapshot()
+            await self._publish_state()
+        return await self.snapshot_now()
 
     async def _bootstrap_initial_reply(self) -> None:
         try:
             await self._generate_seller_line_current(initial=True, trigger_reason="opener")
             async with self.lock:
                 self.status = "ready"
+            await self._publish_state()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             async with self.lock:
                 self.status = "error"
                 self.error = str(exc)
+            await self._publish_state()
         finally:
             self.bootstrap_task = None
 
@@ -347,7 +386,9 @@ class RoleplaySession:
                 "replyModel": self.settings.vertex_model,
             }
             self.turn_task = asyncio.create_task(self._run_turn(turn.id))
-            return self.snapshot()
+            snapshot = self.snapshot()
+        await self._publish_state()
+        return snapshot
 
     async def regenerate_seller(self) -> dict[str, object]:
         async with self.lock:
@@ -360,12 +401,15 @@ class RoleplaySession:
             )
             async with self.lock:
                 self.status = "ready"
-                return self.snapshot()
+                snapshot = self.snapshot()
+            await self._publish_state()
+            return snapshot
         except Exception as exc:
             async with self.lock:
                 self.status = "error"
                 self.error = str(exc)
-                raise
+            await self._publish_state()
+            raise
 
     async def _cancel_turn_task(self) -> None:
         task = self.turn_task
@@ -416,6 +460,7 @@ class RoleplaySession:
                     self.turn_task = None
                 if self.status != "error":
                     self.status = "ready"
+            await self._publish_state()
 
     async def _stream_client_reply(self, turn_id: str) -> None:
         async with self.lock:
@@ -472,10 +517,12 @@ class RoleplaySession:
                 route["clientLatencyMs"] = turn.final_client_latency_ms
                 route["clientChars"] = len(final_text)
                 self.last_route = route
+            await self._publish_state()
         finally:
             async with self.lock:
                 if self.active_turn and self.active_turn.id == turn_id:
                     self.active_turn.client_done.set()
+            await self._publish_state()
 
     async def _update_client_stream(
         self,
@@ -495,6 +542,7 @@ class RoleplaySession:
                 route["clientFirstDeltaMs"] = first_delta_ms
             route["clientChars"] = len(partial_text)
             self.last_route = route
+        await self._publish_state()
 
     async def _reaction_loop(self, turn_id: str) -> None:
         while True:
@@ -527,6 +575,7 @@ class RoleplaySession:
                     return
             turn.last_reaction_text = client_text
             self.stage_status = "reacting"
+        await self._publish_state()
 
         stage_started = time.monotonic()
         stage_context = self._stage_context_from(messages)
@@ -602,6 +651,7 @@ class RoleplaySession:
                 self._start_scorecard_refresh(request=request, stage=stage_data["stage"])
             else:
                 self.stage_status = "ready"
+        await self._publish_state()
 
         if not needs_reply:
             return
@@ -618,6 +668,7 @@ class RoleplaySession:
         async with self.lock:
             if self.last_route is not None:
                 self.last_route["sellerLatencyMs"] = seller_elapsed_ms
+        await self._publish_state()
 
     async def _generate_seller_line_current(self, *, initial: bool, trigger_reason: str) -> None:
         async with self.lock:
@@ -625,6 +676,7 @@ class RoleplaySession:
             stage_data = dict(self.stage or stage_preview(DEFAULT_STAGE_TAG, provider="preset", model="preset", confidence=None))
             self.status = "seller_thinking"
             self.error = None
+        await self._publish_state()
         await self._generate_seller_line_for_snapshot(
             initial=initial,
             messages=messages,
@@ -652,6 +704,7 @@ class RoleplaySession:
                 "streaming": True,
                 "triggerReason": trigger_reason,
             }
+        await self._publish_state()
 
         text_parts: list[str] = []
         async for delta in self.orchestrator.vertex.stream_text(
@@ -673,6 +726,7 @@ class RoleplaySession:
                     self.pending_seller["text"] = partial_text
                     self.pending_seller["updatedAt"] = time.time()
                     self.pending_seller["streaming"] = True
+            await self._publish_state()
 
         text = sanitize_seller_line("".join(text_parts))
         if not text:
@@ -687,6 +741,7 @@ class RoleplaySession:
                 "streaming": False,
                 "triggerReason": trigger_reason,
             }
+        await self._publish_state()
 
     async def _reply_refresh_gate(
         self,
@@ -798,6 +853,7 @@ class RoleplaySession:
                 if version != self.turn_version:
                     return
                 self.stage_status = f"scorecard error: {exc}"
+            await self._publish_state()
             return
 
         async with self.lock:
@@ -810,6 +866,7 @@ class RoleplaySession:
             )
             if self.stage_status != "error":
                 self.stage_status = "ready"
+        await self._publish_state()
 
     def _client_user_content(self, *, messages: list[Message], seller_text: str) -> str:
         return (
@@ -988,6 +1045,11 @@ def session() -> RoleplaySession:
     return value
 
 
+def sse_snapshot(version: int, snapshot: dict[str, object]) -> str:
+    payload = json.dumps({"version": version, "snapshot": snapshot}, ensure_ascii=False)
+    return f"event: snapshot\ndata: {payload}\n\n"
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     return HTMLResponse(UI_HTML.read_text(encoding="utf-8"))
@@ -1005,7 +1067,33 @@ async def healthz() -> JSONResponse:
 
 @app.get("/api/session")
 async def get_session() -> JSONResponse:
-    return JSONResponse(session().snapshot())
+    return JSONResponse(await session().snapshot_now())
+
+
+@app.get("/api/session/stream")
+async def stream_session(request: Request) -> StreamingResponse:
+    async def events():
+        last_version, snapshot = await session().current_snapshot_with_version()
+        yield sse_snapshot(last_version, snapshot)
+        while True:
+            if await request.is_disconnected():
+                return
+            result = await session().wait_for_snapshot(last_version, timeout_secs=15.0)
+            if result is None:
+                yield ": keepalive\n\n"
+                continue
+            last_version, snapshot = result
+            yield sse_snapshot(last_version, snapshot)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/session/reset")
