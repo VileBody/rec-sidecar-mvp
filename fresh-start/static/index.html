@@ -780,6 +780,14 @@
       };
     }
 
+    function currentResetPayload() {
+      return {
+        script: Number(els.scriptSelect.value || 2),
+        persona_mode: els.personaSelect.value || "hostile",
+        reply_mode: els.replyModeSelect.value || "zai_stage_reactive",
+      };
+    }
+
     async function runAction(action) {
       state.busy = true;
       if (state.snapshot) render(state.snapshot);
@@ -800,14 +808,13 @@
       }
     }
 
-    els.resetBtn.addEventListener("click", () => runAction(() => api("/api/session/reset", {
-      method: "POST",
-      body: JSON.stringify({
-        script: Number(els.scriptSelect.value || 2),
-        persona_mode: els.personaSelect.value || "hostile",
-        reply_mode: els.replyModeSelect.value || "zai_stage_reactive",
-      }),
-    })));
+    els.resetBtn.addEventListener("click", () => {
+      const payload = currentResetPayload();
+      runAction(() => api("/api/session/reset", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }));
+    });
 
     els.advanceBtn.addEventListener("click", () => runAction(() => api("/api/advance", {
       method: "POST",
