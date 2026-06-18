@@ -109,6 +109,39 @@
     .button.ghost { background: rgba(255,255,255,0.05); }
     .button:disabled { opacity: 0.45; cursor: default; }
 
+    .slider-group {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .slider-wrap {
+      min-width: 210px;
+      padding: 8px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      display: grid;
+      gap: 6px;
+    }
+
+    .slider-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .range {
+      width: 100%;
+      accent-color: #7eb7ff;
+      margin: 0;
+    }
+
     .meta {
       display: flex;
       gap: 10px;
@@ -400,7 +433,7 @@
       .chat-card { min-height: auto; }
       .bubble,
       .reply-card { width: 100%; }
-      .select, .button { width: 100%; }
+      .select, .button, .slider-wrap { width: 100%; }
       .controls { width: 100%; }
       .route-grid { grid-template-columns: 1fr; }
     }
@@ -421,6 +454,22 @@
           <option value="neutral">Neutral</option>
         </select>
         <select id="reply-mode-select" class="select"></select>
+        <div class="slider-group">
+          <label class="slider-wrap">
+            <div class="slider-top">
+              <span>Клиент</span>
+              <span id="client-wpm-value">145 wpm</span>
+            </div>
+            <input id="client-wpm-range" class="range" type="range" min="80" max="240" step="5" value="145" />
+          </label>
+          <label class="slider-wrap">
+            <div class="slider-top">
+              <span>Продавец</span>
+              <span id="seller-wpm-value">155 wpm</span>
+            </div>
+            <input id="seller-wpm-range" class="range" type="range" min="80" max="240" step="5" value="155" />
+          </label>
+        </div>
         <button id="reset-btn" class="button ghost">Новый диалог</button>
       </div>
       <div class="meta">
@@ -509,6 +558,10 @@
       scriptSelect: document.getElementById("script-select"),
       personaSelect: document.getElementById("persona-select"),
       replyModeSelect: document.getElementById("reply-mode-select"),
+      clientWpmRange: document.getElementById("client-wpm-range"),
+      clientWpmValue: document.getElementById("client-wpm-value"),
+      sellerWpmRange: document.getElementById("seller-wpm-range"),
+      sellerWpmValue: document.getElementById("seller-wpm-value"),
       resetBtn: document.getElementById("reset-btn"),
       copyBtn: document.getElementById("copy-btn"),
       advanceBtn: document.getElementById("advance-btn"),
@@ -547,6 +600,10 @@
         client_reply: "Клиент в стриме",
         error: "Нужна правка",
       }[status] || status;
+    }
+
+    function formatWpm(value) {
+      return `${Number(value || 0)} wpm`;
     }
 
     async function api(path, options = {}) {
@@ -621,9 +678,11 @@
         return;
       }
       if (!pending && snapshot.turnActive) {
-        const liveHint = snapshot.config?.reply_mode === "zai_stage_reactive"
-          ? "ZAI смотрит на частичный ответ клиента"
-          : "Gemini пересобирает ответ на лету";
+        const liveHint = snapshot.config?.reply_mode === "zai_semantic_trigger"
+          ? "ZAI ждет момент, когда смысл уже понятен"
+          : snapshot.config?.reply_mode === "zai_stage_reactive"
+            ? "ZAI смотрит на частичный ответ клиента"
+            : "Gemini пересобирает ответ на лету";
         els.currentReply.innerHTML = `
           <div class="reply-head">
             <div class="reply-title">Следующая реплика продавца</div>
@@ -673,11 +732,11 @@
 
     function renderRoute(snapshot) {
       const route = snapshot.lastRoute || {};
-      const detectorProvider = route.detectorProvider || (snapshot.config?.reply_mode === "zai_stage_reactive" ? "cerebras/zai" : "vertex");
+      const detectorProvider = route.detectorProvider || (snapshot.config?.reply_mode?.startsWith("zai_") ? "cerebras/zai" : "vertex");
       const detectorModel = route.detectorModel || "—";
       els.routeZai.textContent = route.currentStage
         ? `${route.previousStage || "—"} -> ${route.currentStage} · ${detectorProvider} · ${detectorModel} · ${route.analysisKind || "turn"}`
-        : snapshot.config?.reply_mode === "zai_stage_reactive"
+        : snapshot.config?.reply_mode?.startsWith("zai_")
           ? "Жду первый ход. ZAI включится на клиентском стриме."
           : "Жду первый ход. Vertex stage-check сработает по текущему mode.";
       els.routeGemini.textContent = snapshot.pendingSeller?.model
@@ -701,8 +760,8 @@
         (item) => item.value === snapshot.config?.reply_mode
       );
       els.routeScenario.textContent = scriptLabel
-        ? `${scriptLabel.number}. ${scriptLabel.title} · ${snapshot.config?.persona_mode || "hostile"} · ${replyMode?.label || snapshot.config?.reply_mode || "mode"}`
-        : `${snapshot.config?.persona_mode || "hostile"} · ${replyMode?.label || snapshot.config?.reply_mode || "mode"}`;
+        ? `${scriptLabel.number}. ${scriptLabel.title} · ${snapshot.config?.persona_mode || "hostile"} · ${replyMode?.label || snapshot.config?.reply_mode || "mode"} · C${snapshot.config?.client_wpm || 145}/S${snapshot.config?.seller_wpm || 155} wpm`
+        : `${snapshot.config?.persona_mode || "hostile"} · ${replyMode?.label || snapshot.config?.reply_mode || "mode"} · C${snapshot.config?.client_wpm || 145}/S${snapshot.config?.seller_wpm || 155} wpm`;
     }
 
     function render(snapshot) {
@@ -733,11 +792,17 @@
         snapshot.config?.reply_mode,
         (item) => ({ value: item.value, label: item.label }),
       );
+      els.clientWpmRange.value = String(snapshot.config?.client_wpm || 145);
+      els.clientWpmValue.textContent = formatWpm(snapshot.config?.client_wpm || 145);
+      els.sellerWpmRange.value = String(snapshot.config?.seller_wpm || 155);
+      els.sellerWpmValue.textContent = formatWpm(snapshot.config?.seller_wpm || 155);
 
       const disabled = state.busy;
       els.scriptSelect.disabled = disabled;
       els.personaSelect.disabled = disabled;
       els.replyModeSelect.disabled = disabled;
+      els.clientWpmRange.disabled = disabled;
+      els.sellerWpmRange.disabled = disabled;
       els.resetBtn.disabled = disabled;
       els.copyBtn.disabled = disabled || !snapshot.pendingSeller?.text;
       els.advanceBtn.disabled = disabled || !snapshot.canAdvance;
@@ -785,6 +850,8 @@
         script: Number(els.scriptSelect.value || 2),
         persona_mode: els.personaSelect.value || "hostile",
         reply_mode: els.replyModeSelect.value || "zai_stage_reactive",
+        client_wpm: Number(els.clientWpmRange.value || 145),
+        seller_wpm: Number(els.sellerWpmRange.value || 155),
       };
     }
 
@@ -835,6 +902,14 @@
       setTimeout(() => {
         els.copyBtn.textContent = old;
       }, 900);
+    });
+
+    els.clientWpmRange.addEventListener("input", () => {
+      els.clientWpmValue.textContent = formatWpm(els.clientWpmRange.value);
+    });
+
+    els.sellerWpmRange.addEventListener("input", () => {
+      els.sellerWpmValue.textContent = formatWpm(els.sellerWpmRange.value);
     });
 
     async function boot() {

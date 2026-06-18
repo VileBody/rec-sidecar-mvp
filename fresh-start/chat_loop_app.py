@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -14,7 +15,7 @@ import uuid
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import AsyncIterator, Literal
 
 import httpx
 import uvicorn
@@ -37,6 +38,8 @@ from llm_service.app.orchestrator import LlmOrchestrator
 from llm_service.app.providers import (
     ProviderError,
     cerebras_stage_response_format,
+    cerebras_structured_response_format,
+    parse_json_suggestion,
 )
 from llm_service.app.schemas import LiveRequest, StageRequest
 from llm_service.app.stage_assets import (
@@ -60,6 +63,7 @@ from live_client_voice_agent import (
     sanitize_client_reply,
 )
 
+logger = logging.getLogger("uvicorn.error")
 
 SELLER_SYSTEM_PROMPT = """Ты пишешь одну следующую реплику продавца для high-check B2C sales разговора на русском.
 
@@ -76,20 +80,39 @@ SELLER_SYSTEM_PROMPT = """Ты пишешь одну следующую репл
 - Ровно одно предложение.
 """
 
+SEMANTIC_TRIGGER_SYSTEM_PROMPT = """Ты работаешь как быстрый ZAI-trigger для high-check B2C sales разговора.
+
+У тебя есть только partial-реплика клиента. Твоя задача - решить, уже ли понятен основной смысл этой реплики настолько, что продавцу можно начинать готовить ответ прямо сейчас, не дожидаясь конца всей фразы.
+
+Верни JSON по схеме:
+- action = "suggest", если из partial уже понятен главный смысл, сомнение, возражение, запрос или направление ответа;
+- action = "skip", если клиент еще только разгоняется, смысл пока плавает, или слишком рано делать вывод.
+
+Правила:
+- Будь практичным, но не сверхконсервативным.
+- Если клиент уже явно выражает сомнение, боль, цель, отказ, запрос на конкретику или критерий выбора, обычно это "suggest".
+- text всегда должен быть пустой строкой.
+"""
+
 DEFAULT_STAGE_TAG = "S2.1"
 REACTION_INTERVAL_SECS = 2.2
 CHUNK_REFRESH_INTERVAL_SECS = 5.0
+SEMANTIC_TRIGGER_DEBOUNCE_SECS = 0.25
+SEMANTIC_TRIGGER_TIMEOUT_SECS = 2.5
+FINAL_STAGE_TIMEOUT_SECS = 4.0
 VERTEX_STAGE_THINKING_LEVEL = "minimal"
+VERTEX_SELLER_THINKING_LEVEL = "minimal"
+DEFAULT_CLIENT_WPM = 145
+DEFAULT_SELLER_WPM = 155
 MIN_PARTIAL_REACTION_CHARS = 36
 MIN_PARTIAL_GROWTH_CHARS = 18
-MIN_DIARIZED_REPLY_CHARS = 12
-MIN_DIARIZED_REPLY_GROWTH_CHARS = 12
+MIN_SEMANTIC_TRIGGER_CHARS = 18
+MIN_SEMANTIC_TRIGGER_GROWTH_CHARS = 6
 
 ReplyMode = Literal[
     "zai_stage_reactive",
     "gemini_chunk_refresh",
-    "gemini_diarized_live",
-    "gemini_turn_boundary",
+    "zai_semantic_trigger",
 ]
 
 
@@ -97,6 +120,8 @@ class ResetRequest(BaseModel):
     script: int = 2
     persona_mode: Literal["neutral", "cold", "hostile"] = "hostile"
     reply_mode: ReplyMode = "zai_stage_reactive"
+    client_wpm: int = DEFAULT_CLIENT_WPM
+    seller_wpm: int = DEFAULT_SELLER_WPM
 
 
 @dataclass
@@ -133,6 +158,7 @@ class ActiveTurn:
     last_reaction_text: str = ""
     last_reply_refresh_text: str = ""
     last_reply_refresh_at: float = 0.0
+    last_semantic_check_text: str = ""
     final_client_latency_ms: int | None = None
     first_client_delta_ms: int | None = None
 
@@ -204,12 +230,21 @@ def seller_style_hint(persona_mode: str) -> str:
     }[persona_mode]
 
 
+def clamp_wpm(value: int) -> int:
+    return max(80, min(240, int(value)))
+
+
+def speech_fragments(text: str) -> list[str]:
+    fragments = re.findall(r"\S+\s*", text)
+    return fragments or ([text] if text else [])
+
+
 def reply_mode_options() -> list[dict[str, str]]:
     return [
         {
             "value": "zai_stage_reactive",
             "label": "ZAI staged",
-            "description": "Текущий режим: ZAI следит за stage, Gemini пишет следующую реплику.",
+            "description": "Текущий базовый режим: ZAI следит за stage на таймере, Gemini пишет следующую реплику.",
         },
         {
             "value": "gemini_chunk_refresh",
@@ -217,14 +252,9 @@ def reply_mode_options() -> list[dict[str, str]]:
             "description": "Без ZAI: каждые ~5 секунд клиентской речи заново собираем реплику и прерываем старую.",
         },
         {
-            "value": "gemini_diarized_live",
-            "label": "Gemini diarized live",
-            "description": "Без ZAI: как только накапливается новая клиентская фраза, тут же пересобираем ответ Gemini.",
-        },
-        {
-            "value": "gemini_turn_boundary",
-            "label": "Gemini turn boundary",
-            "description": "Без ZAI: ждем конца хода клиента и только потом стримим ответ Gemini.",
+            "value": "zai_semantic_trigger",
+            "label": "ZAI semantic trigger",
+            "description": "ZAI слушает partial клиента и как только смысл реплики уже понятен, сразу триггерит Gemini-ответ.",
         },
     ]
 
@@ -267,6 +297,7 @@ class RoleplaySession:
         self.turn_task: asyncio.Task[None] | None = None
         self.bootstrap_task: asyncio.Task[None] | None = None
         self.reply_task: asyncio.Task[None] | None = None
+        self.semantic_trigger_task: asyncio.Task[None] | None = None
         self.reply_generation_id: str | None = None
         self.state_condition = asyncio.Condition()
         self.state_version = 0
@@ -280,6 +311,7 @@ class RoleplaySession:
             with suppress(asyncio.CancelledError, Exception):
                 await self.bootstrap_task
             self.bootstrap_task = None
+        await self._cancel_semantic_trigger_task()
         await self._cancel_reply_task()
         await self._cancel_turn_task()
         await self._cancel_scorecard_task()
@@ -292,7 +324,10 @@ class RoleplaySession:
         self.bootstrap_task = asyncio.create_task(self._bootstrap_initial_reply())
 
     def _apply_reset(self, config: ResetRequest) -> None:
-        self.config = config.model_copy(deep=True)
+        normalized = config.model_copy(deep=True)
+        normalized.client_wpm = clamp_wpm(normalized.client_wpm)
+        normalized.seller_wpm = clamp_wpm(normalized.seller_wpm)
+        self.config = normalized
         self.run_id = f"fresh-{uuid.uuid4().hex[:10]}"
         self.messages: list[Message] = []
         self.pending_seller: dict[str, object] | None = None
@@ -377,6 +412,7 @@ class RoleplaySession:
             with suppress(asyncio.CancelledError, Exception):
                 await self.bootstrap_task
             self.bootstrap_task = None
+        await self._cancel_semantic_trigger_task()
         await self._cancel_reply_task()
         await self._cancel_turn_task()
         await self._cancel_scorecard_task()
@@ -490,6 +526,14 @@ class RoleplaySession:
             with suppress(asyncio.CancelledError, Exception):
                 await task
 
+    async def _cancel_semantic_trigger_task(self) -> None:
+        task = self.semantic_trigger_task
+        self.semantic_trigger_task = None
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+
     async def _run_turn(self, turn_id: str) -> None:
         client_task = asyncio.create_task(self._stream_client_reply(turn_id))
         reaction_task = asyncio.create_task(self._reaction_loop(turn_id))
@@ -516,6 +560,7 @@ class RoleplaySession:
                     self.status = "error"
                     self.error = str(exc)
         finally:
+            await self._cancel_semantic_trigger_task()
             async with self.lock:
                 if self.active_turn and self.active_turn.id == turn_id:
                     self.active_turn = None
@@ -548,11 +593,12 @@ class RoleplaySession:
                 ):
                     if not delta:
                         continue
-                    parts.append(delta)
-                    partial_text = self._streaming_text("".join(parts))
-                    if partial_text and first_delta_ms is None:
-                        first_delta_ms = int((time.monotonic() - started_at) * 1000)
-                    await self._update_client_stream(turn_id, partial_text, first_delta_ms)
+                    async for fragment in self._paced_fragments(delta, self.config.client_wpm):
+                        parts.append(fragment)
+                        partial_text = self._streaming_text("".join(parts))
+                        if partial_text and first_delta_ms is None:
+                            first_delta_ms = int((time.monotonic() - started_at) * 1000)
+                        await self._update_client_stream(turn_id, partial_text, first_delta_ms)
                 final_text = sanitize_client_reply("".join(parts))
             else:
                 final_text = await asyncio.to_thread(
@@ -562,6 +608,15 @@ class RoleplaySession:
                     history=self._history_pairs_from(history_messages),
                     seller_transcript=seller_text,
                 )
+                if not final_text:
+                    raise RuntimeError("Клиент не вернул реплику.")
+                async for fragment in self._paced_fragments(final_text, self.config.client_wpm):
+                    parts.append(fragment)
+                    partial_text = self._streaming_text("".join(parts))
+                    if partial_text and first_delta_ms is None:
+                        first_delta_ms = int((time.monotonic() - started_at) * 1000)
+                    await self._update_client_stream(turn_id, partial_text, first_delta_ms)
+                final_text = sanitize_client_reply("".join(parts))
 
             if not final_text:
                 raise RuntimeError("Клиент не вернул реплику.")
@@ -606,6 +661,8 @@ class RoleplaySession:
             route["clientChars"] = len(partial_text)
             self.last_route = route
         await self._publish_state()
+        if self.config.reply_mode == "zai_semantic_trigger":
+            self._schedule_semantic_trigger(turn_id)
 
     async def _reaction_loop(self, turn_id: str) -> None:
         mode = self.config.reply_mode
@@ -622,19 +679,20 @@ class RoleplaySession:
             await self._analyze_partial_staged(turn_id, final=True)
             return
 
-        if mode == "gemini_turn_boundary":
+        if mode == "zai_semantic_trigger":
             async with self.lock:
                 turn = self._require_active_turn_locked(turn_id)
                 client_done = turn.client_done
             await client_done.wait()
-            await self._analyze_gemini_only(turn_id, final=True)
+            task = self.semantic_trigger_task
+            if task is not None and not task.done():
+                with suppress(asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+            await self._cancel_semantic_trigger_task()
+            await self._finalize_semantic_trigger(turn_id)
             return
 
-        interval = (
-            CHUNK_REFRESH_INTERVAL_SECS
-            if mode == "gemini_chunk_refresh"
-            else REACTION_INTERVAL_SECS
-        )
+        interval = CHUNK_REFRESH_INTERVAL_SECS
         while True:
             async with self.lock:
                 turn = self._require_active_turn_locked(turn_id)
@@ -643,8 +701,26 @@ class RoleplaySession:
                 await asyncio.wait_for(client_done.wait(), timeout=interval)
                 break
             except TimeoutError:
-                await self._analyze_gemini_only(turn_id, final=False)
-        await self._analyze_gemini_only(turn_id, final=True)
+                await self._analyze_chunk_refresh(turn_id, final=False)
+        await self._analyze_chunk_refresh(turn_id, final=True)
+
+    def _schedule_semantic_trigger(self, turn_id: str) -> None:
+        task = self.semantic_trigger_task
+        if task is not None and not task.done():
+            return
+        self.semantic_trigger_task = asyncio.create_task(
+            self._debounced_semantic_trigger(turn_id)
+        )
+
+    async def _debounced_semantic_trigger(self, turn_id: str) -> None:
+        try:
+            await asyncio.sleep(SEMANTIC_TRIGGER_DEBOUNCE_SECS)
+            await self._analyze_semantic_trigger(turn_id)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self.semantic_trigger_task is asyncio.current_task():
+                self.semantic_trigger_task = None
 
     async def _analyze_partial_staged(self, turn_id: str, *, final: bool) -> None:
         async with self.lock:
@@ -676,7 +752,7 @@ class RoleplaySession:
         stage_elapsed_ms = int((time.monotonic() - stage_started) * 1000)
 
         stage_changed = stage_data["stage"] != current_stage
-        if final or stage_changed or not existing_pending_text:
+        if stage_changed or not existing_pending_text:
             reply_gate = {
                 "action": "suggest",
                 "provider": "shortcut",
@@ -701,6 +777,8 @@ class RoleplaySession:
         )
         trigger_reason = (
             "final_client_turn"
+            if final and needs_reply
+            else "final_keep_current_reply"
             if final
             else "stage_changed"
             if stage_changed
@@ -761,8 +839,7 @@ class RoleplaySession:
                 self.last_route["sellerLatencyMs"] = seller_elapsed_ms
         await self._publish_state()
 
-    async def _analyze_gemini_only(self, turn_id: str, *, final: bool) -> None:
-        mode = self.config.reply_mode
+    async def _analyze_chunk_refresh(self, turn_id: str, *, final: bool) -> None:
         async with self.lock:
             turn = self._require_active_turn_locked(turn_id)
             messages = self._messages_snapshot_locked()
@@ -772,27 +849,20 @@ class RoleplaySession:
             now = time.monotonic()
 
             if not final:
-                if mode == "gemini_chunk_refresh":
-                    if not client_text:
-                        return
-                    if (
-                        turn.last_reply_refresh_at <= 0
-                        and now - turn.started_at < CHUNK_REFRESH_INTERVAL_SECS
-                    ):
-                        return
-                    if (
-                        turn.last_reply_refresh_at > 0
-                        and now - turn.last_reply_refresh_at < CHUNK_REFRESH_INTERVAL_SECS
-                    ):
-                        return
-                    if client_text == turn.last_reply_refresh_text:
-                        return
-                else:
-                    if len(client_text) < MIN_DIARIZED_REPLY_CHARS:
-                        return
-                    growth = len(client_text) - len(turn.last_reply_refresh_text)
-                    if growth < MIN_DIARIZED_REPLY_GROWTH_CHARS and not re.search(r"[.?!…]$", client_text):
-                        return
+                if not client_text:
+                    return
+                if (
+                    turn.last_reply_refresh_at <= 0
+                    and now - turn.started_at < CHUNK_REFRESH_INTERVAL_SECS
+                ):
+                    return
+                if (
+                    turn.last_reply_refresh_at > 0
+                    and now - turn.last_reply_refresh_at < CHUNK_REFRESH_INTERVAL_SECS
+                ):
+                    return
+                if client_text == turn.last_reply_refresh_text:
+                    return
 
             turn.last_reply_refresh_text = client_text
             turn.last_reply_refresh_at = now
@@ -818,8 +888,6 @@ class RoleplaySession:
             "final_client_turn"
             if final
             else "chunk_refresh"
-            if mode == "gemini_chunk_refresh"
-            else "diarized_partial"
         )
 
         async with self.lock:
@@ -845,7 +913,7 @@ class RoleplaySession:
                     "stageLatencyMs": stage_elapsed_ms,
                     "replyProvider": "vertex",
                     "replyModel": self.settings.vertex_model,
-                    "replyMode": mode,
+                    "replyMode": self.config.reply_mode,
                 }
                 self.stage_status = "scoring"
                 if request is not None:
@@ -859,7 +927,7 @@ class RoleplaySession:
                     "partialChars": len(client_text),
                     "replyProvider": "vertex",
                     "replyModel": self.settings.vertex_model,
-                    "replyMode": mode,
+                    "replyMode": self.config.reply_mode,
                 }
         await self._publish_state()
 
@@ -878,6 +946,250 @@ class RoleplaySession:
                 if self.last_route is not None:
                     self.last_route["sellerLatencyMs"] = seller_elapsed_ms
             await self._publish_state()
+
+    async def _analyze_semantic_trigger(self, turn_id: str) -> None:
+        async with self.lock:
+            turn = self._require_active_turn_locked(turn_id)
+            messages = self._messages_snapshot_locked()
+            client_message = self._find_message_in(messages, turn.client_message_id)
+            client_text = compact_text(client_message.text if client_message else "")
+
+            if len(client_text) < MIN_SEMANTIC_TRIGGER_CHARS:
+                return
+            growth = len(client_text) - len(turn.last_semantic_check_text)
+            if growth < MIN_SEMANTIC_TRIGGER_GROWTH_CHARS and not re.search(r"[.?!…,:;]$", client_text):
+                return
+
+            turn.last_semantic_check_text = client_text
+            self.stage_status = "reacting"
+        await self._publish_state()
+
+        gate_started = time.monotonic()
+        gate_context = self._stage_context_from(messages)
+        logger.info(
+            "semantic_trigger check run_id=%s chars=%s mode=%s",
+            self.run_id,
+            len(client_text),
+            self.config.reply_mode,
+        )
+        try:
+            reply_gate = await asyncio.wait_for(
+                self._semantic_trigger_gate(context=gate_context),
+                timeout=SEMANTIC_TRIGGER_TIMEOUT_SECS,
+            )
+        except asyncio.TimeoutError:
+            reply_gate = {
+                "action": "suggest",
+                "provider": "semantic-timeout",
+                "model": "semantic-timeout",
+            }
+            logger.warning(
+                "semantic_trigger timeout run_id=%s chars=%s timeout_secs=%.1f -> suggest",
+                self.run_id,
+                len(client_text),
+                SEMANTIC_TRIGGER_TIMEOUT_SECS,
+            )
+        gate_elapsed_ms = int((time.monotonic() - gate_started) * 1000)
+
+        async with self.lock:
+            if not (self.active_turn and self.active_turn.id == turn_id):
+                return
+            self.last_route = {
+                **dict(self.last_route or {}),
+                "replyGateLatencyMs": gate_elapsed_ms,
+                "replyGateAction": reply_gate["action"],
+                "replyGateProvider": reply_gate["provider"],
+                "replyGateModel": reply_gate["model"],
+                "replyTriggeredGemini": reply_gate["action"] == "suggest",
+                "replyTriggerReason": (
+                    "semantic_trigger" if reply_gate["action"] == "suggest" else "semantic_hold"
+                ),
+                "analysisKind": "partial",
+                "partialChars": len(client_text),
+                "replyProvider": "vertex",
+                "replyModel": self.settings.vertex_model,
+                "replyMode": self.config.reply_mode,
+            }
+            if reply_gate["action"] != "suggest":
+                self.stage_status = "ready"
+        await self._publish_state()
+        logger.info(
+            "semantic_trigger decision run_id=%s chars=%s action=%s provider=%s model=%s elapsed_ms=%s",
+            self.run_id,
+            len(client_text),
+            reply_gate["action"],
+            reply_gate["provider"],
+            reply_gate["model"],
+            gate_elapsed_ms,
+        )
+
+        if reply_gate["action"] != "suggest":
+            return
+
+        await self._start_reply_generation(
+            initial=False,
+            messages=messages,
+            stage_data=dict(
+                self.stage
+                or stage_preview(
+                    DEFAULT_STAGE_TAG,
+                    provider="preset",
+                    model="preset",
+                    confidence=None,
+                )
+            ),
+            kind="reply",
+            trigger_reason="semantic_trigger",
+            await_completion=False,
+        )
+
+    async def _finalize_semantic_trigger(self, turn_id: str) -> None:
+        async with self.lock:
+            turn = self._require_active_turn_locked(turn_id)
+            messages = self._messages_snapshot_locked()
+            client_message = self._find_message_in(messages, turn.client_message_id)
+            client_text = compact_text(client_message.text if client_message else "")
+            current_stage = normalize_stage(str((self.stage or {}).get("stage") or "")) or DEFAULT_STAGE_TAG
+            existing_pending_text = ""
+            if self.pending_seller and self.pending_seller.get("text"):
+                existing_pending_text = str(self.pending_seller["text"]).strip()
+            has_inflight_reply = bool(self.pending_seller and self.pending_seller.get("streaming"))
+            self.stage_status = "reacting"
+        await self._publish_state()
+
+        stage_started = time.monotonic()
+        stage_context = self._stage_context_from(messages)
+        request = StageRequest(
+            run_id=self.run_id,
+            context=stage_context,
+            current_stage=current_stage or None,
+        )
+        try:
+            stage_data, route_stage, request = await asyncio.wait_for(
+                self._detect_stage_fast(
+                    context=stage_context,
+                    current_stage=current_stage,
+                ),
+                timeout=FINAL_STAGE_TIMEOUT_SECS,
+            )
+            stage_elapsed_ms = int((time.monotonic() - stage_started) * 1000)
+            stage_changed = stage_data["stage"] != current_stage
+            logger.info(
+                "semantic_finalize stage_ready run_id=%s previous=%s current=%s elapsed_ms=%s",
+                self.run_id,
+                current_stage,
+                stage_data["stage"],
+                stage_elapsed_ms,
+            )
+        except asyncio.TimeoutError:
+            stage_elapsed_ms = int((time.monotonic() - stage_started) * 1000)
+            stage_changed = False
+            stage_data = dict(
+                self.stage
+                or stage_preview(
+                    current_stage,
+                    provider="stage-timeout",
+                    model="stage-timeout",
+                    confidence=None,
+                )
+            )
+            route_stage = {
+                "detectorProvider": "stage-timeout",
+                "detectorModel": "stage-timeout",
+                "stageChanged": False,
+            }
+            logger.warning(
+                "semantic_finalize stage_timeout run_id=%s stage=%s timeout_secs=%.1f",
+                self.run_id,
+                current_stage,
+                FINAL_STAGE_TIMEOUT_SECS,
+            )
+
+        if has_inflight_reply and not existing_pending_text:
+            reply_gate = {
+                "action": "skip",
+                "provider": "inflight",
+                "model": "inflight",
+            }
+            gate_elapsed_ms = 0
+        elif stage_changed or not existing_pending_text:
+            reply_gate = {
+                "action": "suggest",
+                "provider": "shortcut",
+                "model": "shortcut",
+            }
+            gate_elapsed_ms = 0
+        else:
+            gate_started = time.monotonic()
+            gate_context = self._live_gate_context_from(messages)
+            reply_gate = await self._reply_refresh_gate(
+                context=gate_context,
+                current_text=existing_pending_text,
+                force=True,
+            )
+            gate_elapsed_ms = int((time.monotonic() - gate_started) * 1000)
+
+        needs_reply = (
+            (stage_changed or not existing_pending_text)
+            and not has_inflight_reply
+            or reply_gate["action"] == "suggest"
+        )
+        trigger_reason = (
+            "final_keep_inflight_reply"
+            if has_inflight_reply and not needs_reply
+            else "final_client_turn"
+            if needs_reply
+            else "final_keep_current_reply"
+        )
+
+        async with self.lock:
+            if not (self.active_turn and self.active_turn.id == turn_id):
+                return
+            previous_stage = str((self.stage or {}).get("stage") or current_stage)
+            preserved_scorecard = None
+            if self.stage and str(self.stage.get("stage")) == stage_data["stage"]:
+                preserved_scorecard = self.stage.get("scorecard")
+            self.stage = stage_data
+            if preserved_scorecard is not None:
+                self.stage["scorecard"] = preserved_scorecard
+            self.last_route = {
+                **route_stage,
+                "replyGateLatencyMs": gate_elapsed_ms,
+                "replyGateAction": reply_gate["action"],
+                "replyGateProvider": reply_gate["provider"],
+                "replyGateModel": reply_gate["model"],
+                "replyTriggeredGemini": needs_reply,
+                "replyTriggerReason": trigger_reason,
+                "analysisKind": "final",
+                "partialChars": len(client_text),
+                "previousStage": previous_stage,
+                "currentStage": stage_data["stage"],
+                "stageChanged": stage_changed,
+                "stageLatencyMs": stage_elapsed_ms,
+                "replyProvider": "vertex",
+                "replyModel": self.settings.vertex_model,
+                "replyMode": self.config.reply_mode,
+            }
+            self.stage_status = "scoring"
+            self._start_scorecard_refresh(request=request, stage=stage_data["stage"])
+        await self._publish_state()
+
+        if not needs_reply:
+            return
+
+        seller_started = time.monotonic()
+        await self._start_reply_generation(
+            initial=False,
+            messages=messages,
+            stage_data=stage_data,
+            kind="reply",
+            trigger_reason=trigger_reason,
+            await_completion=False,
+        )
+        async with self.lock:
+            if self.last_route is not None:
+                self.last_route["sellerLatencyMs"] = int((time.monotonic() - seller_started) * 1000)
+        await self._publish_state()
 
     async def _detect_stage_vertex_only(
         self,
@@ -1027,19 +1339,20 @@ class RoleplaySession:
                     initial=initial,
                 ),
                 temperature=0.6 if initial else 0.5,
-                thinking_level=self.settings.vertex_thinking_level,
+                thinking_level=VERTEX_SELLER_THINKING_LEVEL,
             ):
                 if not delta:
                     continue
-                text_parts.append(delta)
-                partial_text = self._streaming_text("".join(text_parts))
-                async with self.lock:
-                    if self.reply_generation_id != generation_id or self.pending_seller is None:
-                        return
-                    self.pending_seller["text"] = partial_text
-                    self.pending_seller["updatedAt"] = time.time()
-                    self.pending_seller["streaming"] = True
-                await self._publish_state()
+                async for fragment in self._paced_fragments(delta, self.config.seller_wpm):
+                    text_parts.append(fragment)
+                    partial_text = self._streaming_text("".join(text_parts))
+                    async with self.lock:
+                        if self.reply_generation_id != generation_id or self.pending_seller is None:
+                            return
+                        self.pending_seller["text"] = partial_text
+                        self.pending_seller["updatedAt"] = time.time()
+                        self.pending_seller["streaming"] = True
+                    await self._publish_state()
 
             text = sanitize_seller_line("".join(text_parts))
             if not text:
@@ -1085,6 +1398,29 @@ class RoleplaySession:
         )
         return {
             "action": verdict["action"],
+            "provider": "cerebras",
+            "model": self.settings.cerebras_model,
+        }
+
+    async def _semantic_trigger_gate(self, *, context: str) -> dict[str, str]:
+        if not self.orchestrator.cerebras.configured():
+            return {
+                "action": "suggest",
+                "provider": "fallback",
+                "model": "fallback",
+            }
+        text = await self.orchestrator.cerebras.text(
+            model=self.settings.cerebras_model,
+            system_prompt=SEMANTIC_TRIGGER_SYSTEM_PROMPT,
+            user_content=context,
+            temperature=0.0,
+            prompt_cache_key=f"fresh-start-semantic-trigger-v1-{self.run_id}",
+            max_tokens=32,
+            response_format=cerebras_structured_response_format(),
+        )
+        suggestion = parse_json_suggestion(text)
+        return {
+            "action": suggestion["action"],
             "provider": "cerebras",
             "model": self.settings.cerebras_model,
         }
@@ -1339,6 +1675,17 @@ class RoleplaySession:
 
     def _streaming_text(self, raw: str) -> str:
         return re.sub(r"\s+", " ", raw.replace("\n", " ")).strip()
+
+    async def _paced_fragments(self, text: str, wpm: int) -> AsyncIterator[str]:
+        fragments = speech_fragments(text)
+        if not fragments:
+            return
+        words_per_second = max(clamp_wpm(wpm) / 60.0, 0.1)
+        for index, fragment in enumerate(fragments):
+            if index > 0:
+                word_count = max(len(re.findall(r"\S+", fragment)), 1)
+                await asyncio.sleep(word_count / words_per_second)
+            yield fragment
 
 app_state: dict[str, object] = {}
 
