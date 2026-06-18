@@ -682,7 +682,7 @@
           ? "ZAI ждет момент, когда смысл уже понятен"
           : snapshot.config?.reply_mode === "zai_stage_reactive"
             ? "ZAI смотрит на частичный ответ клиента"
-            : "Gemini пересобирает ответ на лету";
+            : "Gemini ловит partial клиента и пересобирает ответ на лету";
         els.currentReply.innerHTML = `
           <div class="reply-head">
             <div class="reply-title">Следующая реплика продавца</div>

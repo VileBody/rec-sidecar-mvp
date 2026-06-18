@@ -96,7 +96,6 @@ SEMANTIC_TRIGGER_SYSTEM_PROMPT = """Ты работаешь как быстры�
 
 DEFAULT_STAGE_TAG = "S2.1"
 REACTION_INTERVAL_SECS = 2.2
-CHUNK_REFRESH_INTERVAL_SECS = 5.0
 SEMANTIC_TRIGGER_DEBOUNCE_SECS = 0.25
 SEMANTIC_TRIGGER_TIMEOUT_SECS = 2.5
 FINAL_STAGE_TIMEOUT_SECS = 4.0
@@ -106,12 +105,14 @@ DEFAULT_CLIENT_WPM = 145
 DEFAULT_SELLER_WPM = 155
 MIN_PARTIAL_REACTION_CHARS = 36
 MIN_PARTIAL_GROWTH_CHARS = 18
+MIN_DIARIZED_REPLY_CHARS = 12
+MIN_DIARIZED_REPLY_GROWTH_CHARS = 12
 MIN_SEMANTIC_TRIGGER_CHARS = 18
 MIN_SEMANTIC_TRIGGER_GROWTH_CHARS = 6
 
 ReplyMode = Literal[
     "zai_stage_reactive",
-    "gemini_chunk_refresh",
+    "gemini_diarized_live",
     "zai_semantic_trigger",
 ]
 
@@ -247,9 +248,9 @@ def reply_mode_options() -> list[dict[str, str]]:
             "description": "Текущий базовый режим: ZAI следит за stage на таймере, Gemini пишет следующую реплику.",
         },
         {
-            "value": "gemini_chunk_refresh",
-            "label": "Gemini chunk refresh",
-            "description": "Без ZAI: каждые ~5 секунд клиентской речи заново собираем реплику и прерываем старую.",
+            "value": "gemini_diarized_live",
+            "label": "Gemini diarized live",
+            "description": "Без ZAI: каждые ~2.2 секунды по живому partial клиента пересобираем реплику Gemini.",
         },
         {
             "value": "zai_semantic_trigger",
@@ -692,17 +693,16 @@ class RoleplaySession:
             await self._finalize_semantic_trigger(turn_id)
             return
 
-        interval = CHUNK_REFRESH_INTERVAL_SECS
         while True:
             async with self.lock:
                 turn = self._require_active_turn_locked(turn_id)
                 client_done = turn.client_done
             try:
-                await asyncio.wait_for(client_done.wait(), timeout=interval)
+                await asyncio.wait_for(client_done.wait(), timeout=REACTION_INTERVAL_SECS)
                 break
             except TimeoutError:
-                await self._analyze_chunk_refresh(turn_id, final=False)
-        await self._analyze_chunk_refresh(turn_id, final=True)
+                await self._analyze_gemini_diarized_live(turn_id, final=False)
+        await self._analyze_gemini_diarized_live(turn_id, final=True)
 
     def _schedule_semantic_trigger(self, turn_id: str) -> None:
         task = self.semantic_trigger_task
@@ -839,7 +839,7 @@ class RoleplaySession:
                 self.last_route["sellerLatencyMs"] = seller_elapsed_ms
         await self._publish_state()
 
-    async def _analyze_chunk_refresh(self, turn_id: str, *, final: bool) -> None:
+    async def _analyze_gemini_diarized_live(self, turn_id: str, *, final: bool) -> None:
         async with self.lock:
             turn = self._require_active_turn_locked(turn_id)
             messages = self._messages_snapshot_locked()
@@ -849,19 +849,10 @@ class RoleplaySession:
             now = time.monotonic()
 
             if not final:
-                if not client_text:
+                if len(client_text) < MIN_DIARIZED_REPLY_CHARS:
                     return
-                if (
-                    turn.last_reply_refresh_at <= 0
-                    and now - turn.started_at < CHUNK_REFRESH_INTERVAL_SECS
-                ):
-                    return
-                if (
-                    turn.last_reply_refresh_at > 0
-                    and now - turn.last_reply_refresh_at < CHUNK_REFRESH_INTERVAL_SECS
-                ):
-                    return
-                if client_text == turn.last_reply_refresh_text:
+                growth = len(client_text) - len(turn.last_reply_refresh_text)
+                if growth < MIN_DIARIZED_REPLY_GROWTH_CHARS and not re.search(r"[.?!…]$", client_text):
                     return
 
             turn.last_reply_refresh_text = client_text
@@ -887,7 +878,7 @@ class RoleplaySession:
         trigger_reason = (
             "final_client_turn"
             if final
-            else "chunk_refresh"
+            else "diarized_partial"
         )
 
         async with self.lock:
