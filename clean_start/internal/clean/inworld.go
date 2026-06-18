@@ -23,6 +23,8 @@ const (
 	audioBitDepth   = 16
 )
 
+var ErrNoSpeech = errors.New("inworld stt returned no speech")
+
 type InworldClient struct {
 	cfg    Config
 	client *http.Client
@@ -127,7 +129,10 @@ func (c *InworldClient) TranscribePCM(ctx context.Context, pcm []byte) (string, 
 		}
 		return "", fmt.Errorf("inworld stt connect failed %s: %w", status, err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.WriteJSON(map[string]any{"close_stream": map[string]any{}})
+		_ = conn.Close()
+	}()
 
 	config := map[string]any{
 		"transcribe_config": map[string]any{
@@ -163,27 +168,29 @@ func (c *InworldClient) TranscribePCM(ctx context.Context, pcm []byte) (string, 
 			return "", err
 		}
 	}
+	if err := conn.WriteJSON(map[string]any{"end_turn": map[string]any{}}); err != nil {
+		return "", fmt.Errorf("inworld stt end_turn: %w", err)
+	}
 
-	deadline := time.Now().Add(8 * time.Second)
+	_ = conn.SetReadDeadline(time.Now().Add(8 * time.Second))
 	var lastPartial string
-	for time.Now().Before(deadline) {
-		_ = conn.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
+	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
-			if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
-				if lastPartial != "" {
-					return lastPartial, nil
-				}
-				continue
-			}
 			if lastPartial != "" {
 				return lastPartial, nil
 			}
-			return "", err
+			if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
+				return "", ErrNoSpeech
+			}
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				return "", ErrNoSpeech
+			}
+			return "", fmt.Errorf("inworld stt read: %w", err)
 		}
 		text, final, err := parseInworldTranscript(raw)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("inworld stt response: %w", err)
 		}
 		if text == "" {
 			continue
@@ -196,7 +203,7 @@ func (c *InworldClient) TranscribePCM(ctx context.Context, pcm []byte) (string, 
 	if lastPartial != "" {
 		return lastPartial, nil
 	}
-	return "", errors.New("inworld stt returned empty transcript")
+	return "", ErrNoSpeech
 }
 
 func parseInworldTranscript(raw []byte) (string, bool, error) {

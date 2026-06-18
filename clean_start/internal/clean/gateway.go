@@ -255,6 +255,11 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 	}
 	text, err := g.inworld.TranscribePCM(r.Context(), raw)
 	if err != nil {
+		if errors.Is(err, ErrNoSpeech) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		g.logger.Warn("system audio stt failed", "bytes", len(raw), "error", err)
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}

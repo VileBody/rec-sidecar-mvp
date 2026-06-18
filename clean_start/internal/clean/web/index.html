@@ -471,6 +471,7 @@
       context: null,
       source: null,
       processor: null,
+      sink: null,
       chunks: [],
     };
 
@@ -638,13 +639,16 @@
         const context = new AudioContext();
         const source = context.createMediaStreamSource(new MediaStream(audioTracks));
         const processor = context.createScriptProcessor(4096, 1, 1);
+        const sink = context.createGain();
+        sink.gain.value = 0;
         processor.onaudioprocess = (event) => {
           const input = event.inputBuffer.getChannelData(0);
           captureState.chunks.push(new Float32Array(input));
         };
         source.connect(processor);
-        processor.connect(context.destination);
-        captureState = { active: true, timer: null, stream, context, source, processor, chunks: [] };
+        processor.connect(sink);
+        sink.connect(context.destination);
+        captureState = { active: true, timer: null, stream, context, source, processor, sink, chunks: [] };
         captureState.timer = setInterval(flushAudioChunk, 2400);
         setCaptureStatus("on", "захват включен");
         $("captureToggle").textContent = "Стоп";
@@ -657,10 +661,11 @@
     function stopCapture() {
       if (captureState.timer) clearInterval(captureState.timer);
       if (captureState.processor) captureState.processor.disconnect();
+      if (captureState.sink) captureState.sink.disconnect();
       if (captureState.source) captureState.source.disconnect();
       if (captureState.context) captureState.context.close();
       if (captureState.stream) for (const track of captureState.stream.getTracks()) track.stop();
-      captureState = { active: false, timer: null, stream: null, context: null, source: null, processor: null, chunks: [] };
+      captureState = { active: false, timer: null, stream: null, context: null, source: null, processor: null, sink: null, chunks: [] };
       setCaptureStatus("warn", "захват остановлен");
       $("captureToggle").textContent = "Включить";
     }
@@ -671,6 +676,10 @@
       const chunks = captureState.chunks.splice(0);
       const merged = mergeFloat32(chunks);
       if (merged.length < sampleRate * 0.7) return;
+      if (float32Rms(merged) < 0.003) {
+        setCaptureStatus("on", "захват включен · жду речь");
+        return;
+      }
       const pcm = downsampleToPCM16(merged, sampleRate, 16000);
       const pcmBase64 = bytesToBase64(new Uint8Array(pcm.buffer));
       try {
@@ -679,10 +688,16 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ role: "client", source: "browser-system-audio", pcm_base64: pcmBase64 }),
         });
+        if (res.status === 204) {
+          setCaptureStatus("on", "захват включен · жду речь");
+          return;
+        }
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           setCaptureStatus("err", err.error || `stt http ${res.status}`);
+          return;
         }
+        setCaptureStatus("on", "захват включен · распознано");
       } catch (error) {
         setCaptureStatus("err", error.message);
       }
@@ -697,6 +712,12 @@
         offset += chunk.length;
       }
       return out;
+    }
+
+    function float32Rms(samples) {
+      let sum = 0;
+      for (const sample of samples) sum += sample * sample;
+      return Math.sqrt(sum / Math.max(samples.length, 1));
     }
 
     function downsampleToPCM16(samples, inRate, outRate) {
