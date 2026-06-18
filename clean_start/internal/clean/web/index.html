@@ -407,6 +407,15 @@
       <footer class="card audio-card">
         <div class="audio-row">
           <div>
+            <div class="title" style="font-size:15px">Звонок</div>
+            <div id="bothStatus" class="sub">system audio = клиент, микрофон = мы</div>
+          </div>
+          <div class="capture-row">
+            <button id="bothToggle" class="blue">Включить всё</button>
+          </div>
+        </div>
+        <div class="audio-row">
+          <div>
             <div class="title" style="font-size:15px">Системный звук</div>
             <div id="captureStatus" class="sub">готовлю захват по умолчанию</div>
           </div>
@@ -644,16 +653,16 @@
     async function startCapture({ automatic = false } = {}) {
       if (captureStates.system.active) {
         stopCapture("system");
-        return;
+        return false;
       }
       if (!window.isSecureContext && !["127.0.0.1", "localhost"].includes(location.hostname)) {
         setCaptureStatus("err", "для захвата нужен HTTPS или localhost");
         if (!automatic) showToast("Chrome блокирует системный звук на обычном HTTP");
-        return;
+        return false;
       }
       if (!navigator.mediaDevices?.getDisplayMedia) {
         setCaptureStatus("err", "браузер не поддерживает захват");
-        return;
+        return false;
       }
       try {
         setCaptureStatus("warn", automatic ? "запрашиваю доступ" : "выберите вкладку/экран со звуком");
@@ -667,24 +676,28 @@
         });
         setCaptureStatus("on", "захват включен");
         $("captureToggle").textContent = "Стоп";
+        updateBothStatus();
+        return true;
       } catch (error) {
         setCaptureStatus("warn", automatic ? "нужен клик для захвата" : error.message);
         $("captureToggle").textContent = "Включить";
+        updateBothStatus();
+        return false;
       }
     }
 
     async function startMicTest() {
       if (captureStates.microphone.active) {
         stopCapture("microphone");
-        return;
+        return false;
       }
       if (!window.isSecureContext && !["127.0.0.1", "localhost"].includes(location.hostname)) {
         setMicStatus("err", "для микрофона нужен HTTPS или localhost");
-        return;
+        return false;
       }
       if (!navigator.mediaDevices?.getUserMedia) {
         setMicStatus("err", "браузер не поддерживает микрофон");
-        return;
+        return false;
       }
       try {
         setMicStatus("warn", "запрашиваю микрофон");
@@ -701,9 +714,31 @@
         });
         setMicStatus("on", "микрофон включен · скажи фразу");
         $("micToggle").textContent = "Стоп микрофон";
+        updateBothStatus();
+        return true;
       } catch (error) {
         setMicStatus("err", error.message);
         $("micToggle").textContent = "Проверить микрофон";
+        updateBothStatus();
+        return false;
+      }
+    }
+
+    async function startBothAudio() {
+      if (captureStates.system.active && captureStates.microphone.active) {
+        stopCapture("system");
+        stopCapture("microphone");
+        updateBothStatus("оба источника остановлены");
+        return;
+      }
+      $("bothToggle").disabled = true;
+      updateBothStatus("включаю звонок");
+      try {
+        if (!captureStates.system.active) await startCapture({ automatic: false });
+        if (!captureStates.microphone.active) await startMicTest();
+      } finally {
+        $("bothToggle").disabled = false;
+        updateBothStatus();
       }
     }
 
@@ -730,6 +765,8 @@
         lastEndTurnAt: 0,
         sentChunks: 0,
       };
+      captureStates[mode] = nextState;
+      logAudioEvent(nextState, "start");
       sink.gain.value = 0;
       processor.onaudioprocess = (event) => {
         if (captureStates[mode] !== nextState || ws.readyState !== WebSocket.OPEN) return;
@@ -738,6 +775,7 @@
       };
       ws.onopen = () => {
         if (captureStates[mode] === nextState) {
+          logAudioEvent(nextState, "ws_open");
           setAudioStatus(mode, "on", mode === "microphone" ? "микрофон стримится" : "захват стримится");
         }
       };
@@ -752,11 +790,13 @@
       };
       ws.onerror = () => {
         if (captureStates[mode] === nextState) {
+          logAudioEvent(nextState, "ws_error");
           setAudioStatus(mode, "err", "STT stream error");
         }
       };
       ws.onclose = () => {
         if (captureStates[mode] === nextState) {
+          logAudioEvent(nextState, "ws_close");
           stopCapture(mode, mode === "microphone" ? "микрофон STT закрыт" : "захват STT закрыт");
         }
       };
@@ -766,27 +806,30 @@
       for (const track of stream.getAudioTracks()) {
         track.onended = () => {
           if (captureStates[mode] === nextState) {
+            logAudioEvent(nextState, "track_ended", track.readyState);
             stopCapture(mode, mode === "microphone" ? "микрофон завершен браузером" : "захват завершен браузером");
           }
         };
         track.onmute = () => {
           if (captureStates[mode] === nextState) {
+            logAudioEvent(nextState, "track_mute", track.readyState);
             setAudioStatus(mode, "warn", mode === "microphone" ? "микрофон без сигнала" : "захват без сигнала");
           }
         };
         track.onunmute = () => {
           if (captureStates[mode] === nextState) {
+            logAudioEvent(nextState, "track_unmute", track.readyState);
             setAudioStatus(mode, "on", mode === "microphone" ? "микрофон включен" : "захват включен");
           }
         };
       }
-      captureStates[mode] = nextState;
     }
 
     function stopCapture(mode, stoppedText = "") {
       const captureState = captureStates[mode];
       if (!captureState?.active) return;
       captureStates[mode] = emptyCaptureState(mode);
+      logAudioEvent(captureState, "stop", stoppedText);
       if (captureState.processor) captureState.processor.disconnect();
       if (captureState.sink) captureState.sink.disconnect();
       if (captureState.source) captureState.source.disconnect();
@@ -805,6 +848,7 @@
         setCaptureStatus("warn", stoppedText || "захват остановлен");
         $("captureToggle").textContent = "Включить";
       }
+      updateBothStatus();
     }
 
     function streamAudioFrame(captureState, samples) {
@@ -914,6 +958,40 @@
       } else {
         setCaptureStatus(kind, text);
       }
+      updateBothStatus();
+    }
+
+    function updateBothStatus(text = "") {
+      const systemOn = captureStates.system.active;
+      const micOn = captureStates.microphone.active;
+      if (text) {
+        $("bothStatus").textContent = text;
+      } else if (systemOn && micOn) {
+        $("bothStatus").textContent = "звонок пишется: system=клиент, mic=мы";
+      } else if (systemOn) {
+        $("bothStatus").textContent = "включен только системный звук";
+      } else if (micOn) {
+        $("bothStatus").textContent = "включен только микрофон";
+      } else {
+        $("bothStatus").textContent = "system audio = клиент, микрофон = мы";
+      }
+      $("bothToggle").textContent = systemOn && micOn ? "Стоп всё" : "Включить всё";
+    }
+
+    function logAudioEvent(captureState, event, detail = "") {
+      if (!sessionId || !captureState) return;
+      fetch(`/v1/sessions/${sessionId}/audio/log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        keepalive: true,
+        body: JSON.stringify({
+          mode: captureState.mode,
+          role: captureState.role,
+          source: captureState.sourceLabel,
+          event,
+          detail,
+        }),
+      }).catch(() => {});
     }
 
     function setStreamStatus(text) {
@@ -957,6 +1035,7 @@
       autoCaptureTried = false;
       createSession().catch((error) => $("session").textContent = error.message);
     };
+    $("bothToggle").onclick = startBothAudio;
     $("captureToggle").onclick = () => startCapture({ automatic: false });
     $("micToggle").onclick = startMicTest;
     $("copyReply").onclick = copyReply;

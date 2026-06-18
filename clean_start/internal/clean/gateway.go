@@ -64,6 +64,14 @@ type STTTranscribeResponse struct {
 	Role string `json:"role"`
 }
 
+type BrowserAudioLogRequest struct {
+	Mode   string `json:"mode,omitempty"`
+	Role   string `json:"role,omitempty"`
+	Source string `json:"source,omitempty"`
+	Event  string `json:"event"`
+	Detail string `json:"detail,omitempty"`
+}
+
 type BrowserSTTStreamMessage struct {
 	AudioChunk  *AudioChunkMessage `json:"audio_chunk,omitempty"`
 	EndTurn     map[string]any     `json:"end_turn,omitempty"`
@@ -110,6 +118,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /v1/sessions", g.createSession)
 	mux.HandleFunc("GET /v1/sessions/{session_id}", g.getSession)
 	mux.HandleFunc("POST /v1/sessions/{session_id}/events", g.postEvent)
+	mux.HandleFunc("POST /v1/sessions/{session_id}/audio/log", g.logBrowserAudio)
 	mux.HandleFunc("POST /v1/sessions/{session_id}/stt/transcribe", g.transcribePCM)
 	mux.HandleFunc("GET /v1/sessions/{session_id}/stt/live", g.streamSTT)
 	mux.HandleFunc("GET /v1/sessions/{session_id}/stream", g.streamSession)
@@ -252,6 +261,29 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, state)
 }
 
+func (g *Gateway) logBrowserAudio(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	var req BrowserAudioLogRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	event := strings.TrimSpace(req.Event)
+	if event == "" {
+		event = "unknown"
+	}
+	g.logger.Info(
+		"browser audio client event",
+		"session_id", sessionID,
+		"event", event,
+		"mode", strings.TrimSpace(req.Mode),
+		"role", strings.TrimSpace(req.Role),
+		"source", strings.TrimSpace(req.Source),
+		"detail", strings.TrimSpace(req.Detail),
+	)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
 	if g.inworld == nil || !g.inworld.Configured() {
@@ -288,6 +320,11 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if reason := browserTranscriptRejectReason(text); reason != "" {
+		g.logger.Info("browser audio stt rejected", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS, "reason", reason, "text", text)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if reason := g.sellerEchoRejectReason(sessionID, role, source, text); reason != "" {
 		g.logger.Info("browser audio stt rejected", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS, "reason", reason, "text", text)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -357,6 +394,10 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if reason := browserTranscriptRejectReason(text); reason != "" {
+				g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", role, "source", source, "reason", reason, "text", text)
+				continue
+			}
+			if reason := g.sellerEchoRejectReason(sessionID, role, source, text); reason != "" {
 				g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", role, "source", source, "reason", reason, "text", text)
 				continue
 			}
@@ -477,6 +518,103 @@ func isCJKLike(r rune) bool {
 	return (r >= 0x3040 && r <= 0x30ff) || // Hiragana/Katakana
 		(r >= 0x3400 && r <= 0x9fff) || // CJK ideographs
 		(r >= 0xac00 && r <= 0xd7af) // Hangul
+}
+
+func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) string {
+	if role != "client" || source != "browser-system-audio" {
+		return ""
+	}
+	probe := normalizeEchoText(text)
+	if len([]rune(probe)) < 8 {
+		return ""
+	}
+	state, ok := g.store.Get(sessionID)
+	if !ok {
+		return ""
+	}
+	now := time.Now()
+	for i := len(state.Messages) - 1; i >= 0; i-- {
+		msg := state.Messages[i]
+		if msg.Role != "seller" {
+			continue
+		}
+		if now.Sub(msg.CreatedAt) > 45*time.Second {
+			break
+		}
+		if textSimilarity(probe, normalizeEchoText(msg.Text)) >= 0.82 {
+			return "seller_echo_message"
+		}
+	}
+	for i := len(state.Transcript) - 1; i >= 0; i-- {
+		item := state.Transcript[i]
+		if item.Role != "seller" {
+			continue
+		}
+		if now.Sub(item.CreatedAt) > 45*time.Second {
+			break
+		}
+		if textSimilarity(probe, normalizeEchoText(item.Text)) >= 0.82 {
+			return "seller_echo_transcript"
+		}
+	}
+	return ""
+}
+
+func normalizeEchoText(text string) string {
+	var b strings.Builder
+	lastSpace := true
+	for _, r := range strings.ToLower(text) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteRune(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func textSimilarity(a, b string) float64 {
+	if a == "" || b == "" {
+		return 0
+	}
+	if strings.Contains(a, b) || strings.Contains(b, a) {
+		shorter := len([]rune(a))
+		longer := len([]rune(b))
+		if shorter > longer {
+			shorter, longer = longer, shorter
+		}
+		if longer == 0 {
+			return 0
+		}
+		return float64(shorter) / float64(longer)
+	}
+	aTokens := tokenSet(a)
+	bTokens := tokenSet(b)
+	if len(aTokens) == 0 || len(bTokens) == 0 {
+		return 0
+	}
+	intersections := 0
+	for token := range aTokens {
+		if _, ok := bTokens[token]; ok {
+			intersections++
+		}
+	}
+	return float64(2*intersections) / float64(len(aTokens)+len(bTokens))
+}
+
+func tokenSet(text string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, token := range strings.Fields(text) {
+		if len([]rune(token)) < 2 {
+			continue
+		}
+		out[token] = struct{}{}
+	}
+	return out
 }
 
 func (g *Gateway) streamSession(w http.ResponseWriter, r *http.Request) {
