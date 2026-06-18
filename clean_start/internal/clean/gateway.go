@@ -253,20 +253,26 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 	if role == "" {
 		role = "client"
 	}
+	source := strings.TrimSpace(req.Source)
+	started := time.Now()
+	g.logger.Info("system audio stt received", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw))
 	text, err := g.inworld.TranscribePCM(r.Context(), raw)
+	elapsedMS := time.Since(started).Milliseconds()
 	if err != nil {
 		if errors.Is(err, ErrNoSpeech) {
+			g.logger.Info("system audio stt no speech", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		g.logger.Warn("system audio stt failed", "bytes", len(raw), "error", err)
+		g.logger.Warn("system audio stt failed", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS, "error", err)
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	g.logger.Info("system audio stt final", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS, "text_len", len([]rune(text)), "text", text)
 	event := NewEvent(sessionID, EventSTTFinal, "gateway-stt", SpeechData{
 		Role:   role,
 		Text:   text,
-		Source: strings.TrimSpace(req.Source),
+		Source: source,
 	})
 	if err := g.emit(event); err != nil {
 		writeError(w, http.StatusBadGateway, err)
