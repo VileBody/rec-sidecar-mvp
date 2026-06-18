@@ -3,302 +3,655 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Clean Start Coach</title>
+  <title>REC Coach</title>
   <style>
     :root {
-      color-scheme: dark;
-      --bg: #0d1117;
-      --panel: rgba(24, 31, 42, 0.84);
-      --panel-2: rgba(31, 40, 54, 0.92);
-      --text: #ecf2ff;
-      --muted: #9aa7ba;
-      --line: rgba(220, 232, 255, 0.16);
-      --blue: #6ea8fe;
-      --green: #43d17a;
-      --yellow: #f3c74e;
-      --red: #ff6b6b;
+      color-scheme: light;
+      --bg: #f6f7fb;
+      --paper: #ffffff;
+      --paper-soft: #f9fafc;
+      --ink: #242833;
+      --muted: #747c8d;
+      --line: #e2e6ef;
+      --line-strong: #cfd6e4;
+      --blue: #2f6fed;
+      --blue-soft: #edf3ff;
+      --green: #22995c;
+      --green-soft: #eaf8f0;
+      --yellow: #b58400;
+      --yellow-soft: #fff6da;
+      --red: #d84b4b;
+      --red-soft: #fff0f0;
+      --shadow: 0 12px 30px rgba(28, 35, 50, .08);
     }
+
     * { box-sizing: border-box; }
-    body {
+
+    html, body {
       margin: 0;
       min-height: 100vh;
       background: var(--bg);
-      color: var(--text);
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    button, textarea, input {
+
+    button, textarea {
       font: inherit;
     }
+
     button {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 10px 14px;
-      color: var(--text);
-      background: rgba(255,255,255,0.08);
+      min-height: 38px;
+      border: 1px solid var(--line-strong);
+      border-radius: 12px;
+      padding: 8px 13px;
+      background: var(--paper);
+      color: var(--ink);
+      font-weight: 700;
       cursor: pointer;
+      transition: transform .12s ease, border-color .12s ease, background .12s ease;
     }
-    button.primary { background: rgba(67, 209, 122, 0.28); border-color: rgba(67, 209, 122, 0.48); }
-    button.blue { background: rgba(110, 168, 254, 0.24); border-color: rgba(110, 168, 254, 0.48); }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    textarea, input {
+
+    button:hover { transform: translateY(-1px); border-color: #b9c4d6; }
+    button:disabled { cursor: not-allowed; opacity: .48; transform: none; }
+    button.primary { background: #1f7a4d; border-color: #1f7a4d; color: #fff; }
+    button.blue { background: var(--blue); border-color: var(--blue); color: #fff; }
+    button.ghost { background: var(--paper-soft); }
+    button.full { width: 100%; justify-content: center; }
+
+    textarea {
       width: 100%;
-      color: var(--text);
-      background: rgba(255,255,255,0.06);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 12px;
-      outline: none;
+      min-height: 104px;
       resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 13px 14px;
+      background: var(--paper-soft);
+      color: var(--ink);
+      outline: none;
+      line-height: 1.35;
     }
+
+    textarea:focus { border-color: #aab8d0; background: #fff; }
+
     .app {
       display: grid;
-      grid-template-columns: minmax(420px, 1.25fr) minmax(340px, .75fr);
+      grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.02fr) minmax(300px, .78fr);
       gap: 16px;
-      min-height: 100vh;
+      height: 100vh;
       padding: 16px;
-    }
-    .panel {
-      min-height: 0;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: var(--panel);
-      backdrop-filter: blur(18px);
       overflow: hidden;
     }
-    .left, .right {
-      display: grid;
-      grid-template-rows: auto minmax(170px, .8fr) minmax(190px, .9fr) minmax(160px, .7fr);
-      gap: 12px;
+
+    .column {
+      min-width: 0;
       min-height: 0;
+      display: grid;
+      gap: 14px;
     }
-    .right { grid-template-rows: auto minmax(220px, 1fr) minmax(220px, 1fr); }
-    .bar {
+
+    .dialog-col { grid-template-rows: auto minmax(0, 1fr) auto; }
+    .reply-col { grid-template-rows: auto minmax(300px, 1fr) minmax(160px, .45fr); }
+    .assist-col { grid-template-rows: auto minmax(250px, .9fr) minmax(230px, .85fr); }
+
+    .card {
+      min-width: 0;
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: rgba(255,255,255,.92);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .header-card {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
-      padding: 14px 16px;
+      gap: 12px;
+      padding: 17px 18px;
     }
-    .brand { font-weight: 700; letter-spacing: .02em; }
-    .muted { color: var(--muted); }
-    .content { padding: 16px; overflow: auto; min-height: 0; }
-    .section-title {
-      margin: 0 0 10px;
+
+    .title {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.15;
+      font-weight: 850;
+      letter-spacing: -.01em;
+    }
+
+    .sub {
+      margin-top: 4px;
       color: var(--muted);
+      font-size: 13px;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 280px;
+    }
+
+    .section {
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: #8a92a4;
       font-size: 12px;
-      font-weight: 800;
+      font-weight: 850;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    .dialog {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 100%;
+      padding-bottom: 4px;
+    }
+
+    .empty {
+      color: var(--muted);
+      line-height: 1.45;
+      padding: 4px 0;
+    }
+
+    .bubble {
+      width: fit-content;
+      max-width: min(78%, 520px);
+      border: 1px solid transparent;
+      border-radius: 19px;
+      padding: 12px 14px;
+      line-height: 1.34;
+      font-size: 16px;
+      word-break: break-word;
+    }
+
+    .bubble .role {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 850;
       letter-spacing: .12em;
       text-transform: uppercase;
     }
-    .suggestion {
-      font-size: clamp(21px, 2.4vw, 34px);
-      line-height: 1.16;
-      color: var(--text);
+
+    .bubble.client {
+      align-self: flex-start;
+      background: var(--green-soft);
+      border-color: #c8ecd8;
     }
-    .message {
-      padding: 10px 12px;
-      border-left: 3px solid var(--line);
-      margin: 0 0 8px;
-      background: rgba(255,255,255,0.04);
-      border-radius: 8px;
+
+    .bubble.seller {
+      align-self: flex-end;
+      background: var(--blue-soft);
+      border-color: #c9dafb;
     }
-    .message.seller { border-left-color: var(--blue); }
-    .message.client { border-left-color: var(--green); }
-    .message.partial { border-left-color: var(--yellow); opacity: .88; }
-    .stage-line {
+
+    .bubble.partial {
+      align-self: flex-start;
+      background: var(--yellow-soft);
+      border-color: #f1d98a;
+    }
+
+    .capture-row, .action-row {
       display: flex;
-      gap: 10px;
       align-items: center;
+      gap: 9px;
       flex-wrap: wrap;
-      margin-bottom: 12px;
     }
-    .pill {
+
+    .status-pill {
       display: inline-flex;
       align-items: center;
       min-height: 30px;
       border: 1px solid var(--line);
       border-radius: 999px;
       padding: 4px 10px;
+      background: var(--paper-soft);
       color: var(--muted);
+      font-size: 13px;
+      font-weight: 750;
     }
-    .pill.green { color: var(--green); border-color: rgba(67,209,122,.45); }
-    .pill.yellow { color: var(--yellow); border-color: rgba(243,199,78,.45); }
-    .pill.red { color: var(--red); border-color: rgba(255,107,107,.45); }
-    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-    .assist-fast { font-size: 20px; line-height: 1.22; margin-bottom: 12px; }
-    .assist-slow { color: #d7e2f4; line-height: 1.35; }
-    .status { font-size: 13px; color: var(--muted); }
-    @media (max-width: 860px) {
-      .app { grid-template-columns: 1fr; }
-      .left, .right { grid-template-rows: auto; }
-      .panel { min-height: 180px; }
+
+    .status-pill.on { color: var(--green); background: var(--green-soft); border-color: #c8ecd8; }
+    .status-pill.warn { color: var(--yellow); background: var(--yellow-soft); border-color: #f1d98a; }
+    .status-pill.err { color: var(--red); background: var(--red-soft); border-color: #ffd0d0; }
+
+    .reply-main {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
+    .reply-text {
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+      width: 100%;
+      padding: clamp(18px, 3vw, 34px);
+      font-size: clamp(24px, 2.3vw, 36px);
+      line-height: 1.16;
+      font-weight: 760;
+      letter-spacing: -.015em;
+      word-break: break-word;
+      cursor: pointer;
+      overflow: auto;
+    }
+
+    .reply-text.muted {
+      color: #9aa3b5;
+      font-weight: 650;
+    }
+
+    .reply-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 16px 18px;
+      border-top: 1px solid var(--line);
+      background: var(--paper-soft);
+    }
+
+    .stage-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .metric-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .metric {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 4px 10px;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--muted);
+      background: var(--paper-soft);
+    }
+
+    .metric.green { color: var(--green); background: var(--green-soft); border-color: #c8ecd8; }
+    .metric.yellow { color: var(--yellow); background: var(--yellow-soft); border-color: #f1d98a; }
+    .metric.red { color: var(--red); background: var(--red-soft); border-color: #ffd0d0; }
+
+    .stage-title {
+      font-size: 20px;
+      font-weight: 850;
+      margin-bottom: 6px;
+    }
+
+    .stage-body {
+      color: #4c5464;
+      line-height: 1.42;
+    }
+
+    .chat {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .chat-log {
+      flex: 0 0 auto;
+      min-height: 76px;
+      max-height: 122px;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding-right: 2px;
+    }
+
+    .assist-msg {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px 13px;
+      background: var(--paper-soft);
+      line-height: 1.36;
+    }
+
+    .assist-msg.fast {
+      border-color: #c8ecd8;
+      background: var(--green-soft);
+      font-weight: 750;
+    }
+
+    .manual-controls {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }
+
+    #assistQuestion { min-height: 82px; }
+    #manualText { min-height: 96px; }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%) translateY(16px);
+      opacity: 0;
+      pointer-events: none;
+      background: #202633;
+      color: #fff;
+      border-radius: 999px;
+      padding: 10px 14px;
+      font-size: 14px;
+      box-shadow: 0 12px 28px rgba(0,0,0,.16);
+      transition: opacity .18s ease, transform .18s ease;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%);
+    }
+
+    @media (max-width: 1120px) {
+      .app {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: 100vh;
+        overflow: auto;
+      }
+      .column { min-height: 420px; }
+      .reply-text { min-height: 280px; }
     }
   </style>
 </head>
 <body>
   <main class="app">
-    <section class="left">
-      <div class="panel bar">
+    <section class="column dialog-col">
+      <header class="card header-card">
         <div>
-          <div class="brand">Clean Start Coach</div>
-          <div id="session" class="status">creating session...</div>
+          <h1 class="title">Диалог</h1>
+          <div id="session" class="sub">создаю сессию...</div>
         </div>
-        <div class="actions">
-          <button id="newSession">Новый диалог</button>
-          <button id="capture" class="blue">Захват звука</button>
-        </div>
-      </div>
+        <button id="newSession" class="ghost">Новый</button>
+      </header>
 
-      <section class="panel content">
-        <h2 class="section-title">Транскрипт</h2>
-        <div id="transcript"></div>
+      <section class="card section">
+        <div id="dialog" class="dialog"></div>
       </section>
 
-      <section class="panel content">
-        <h2 class="section-title">Автопредложение</h2>
-        <div id="suggestion" class="suggestion muted">Жду речь клиента...</div>
+      <footer class="card header-card">
+        <div>
+          <div class="title" style="font-size:15px">Системный звук</div>
+          <div id="captureStatus" class="sub">готовлю захват по умолчанию</div>
+        </div>
+        <div class="capture-row">
+          <span id="capturePill" class="status-pill warn">ожидание</span>
+          <button id="captureToggle" class="blue">Включить</button>
+        </div>
+      </footer>
+    </section>
+
+    <section class="column reply-col">
+      <header class="card header-card">
+        <div>
+          <h2 class="title">Предлагаемая реплика</h2>
+          <div id="replyMeta" class="sub">обновляется по речи клиента</div>
+        </div>
+        <button id="copyReply" class="blue">Скопировать</button>
+      </header>
+
+      <section class="card reply-main">
+        <p class="eyebrow" style="padding:18px 18px 0;margin:0">читать / копировать</p>
+        <div id="replyText" class="reply-text muted">Жду речь клиента...</div>
+        <div class="reply-actions">
+          <button id="markSaid" class="ghost">Я это сказал</button>
+          <button id="refreshReply" class="ghost">Перегенерить</button>
+        </div>
       </section>
 
-      <section class="panel content">
-        <h2 class="section-title">Стадия и метрики</h2>
-        <div id="stage"></div>
+      <section class="card section">
+        <p class="eyebrow">стадия и метрики</p>
+        <div id="stage" class="stage-grid"></div>
       </section>
     </section>
 
-    <section class="right">
-      <div class="panel bar">
+    <section class="column assist-col">
+      <header class="card header-card">
         <div>
-          <div class="brand">Чат / Помоги</div>
-          <div id="streamStatus" class="status">offline</div>
+          <h2 class="title">Чат / Помоги</h2>
+          <div id="streamStatus" class="sub">offline</div>
         </div>
         <button id="help" class="primary">Помоги</button>
-      </div>
+      </header>
 
-      <section class="panel content">
-        <h2 class="section-title">Ручной ввод</h2>
-        <textarea id="text" rows="5" placeholder="Вставь реплику продавца или клиента"></textarea>
-        <div class="actions">
-          <button id="sendSeller">Я сказал</button>
-          <button id="sendClient">Клиент сказал</button>
-          <button id="sendPartial">Клиент partial</button>
+      <section class="card section">
+        <p class="eyebrow">ответ помощника</p>
+        <div class="chat">
+          <div id="assistLog" class="chat-log">
+            <div class="empty">Нажми «Помоги» или задай уточнение ниже.</div>
+          </div>
+          <textarea id="assistQuestion" rows="4" placeholder="Уточнить у помощника: что сказать, как дожать, куда вести?"></textarea>
+          <div class="action-row">
+            <button id="askAssist" class="blue">Спросить</button>
+            <button id="clearAssist" class="ghost">Очистить</button>
+          </div>
         </div>
       </section>
 
-      <section class="panel content">
-        <h2 class="section-title">Помоги</h2>
-        <div id="assistFast" class="assist-fast muted">Нажми «Помоги», когда нужна отдельная подсказка.</div>
-        <div id="assistSlow" class="assist-slow"></div>
+      <section class="card section">
+        <p class="eyebrow">ручной fallback</p>
+        <textarea id="manualText" rows="5" placeholder="Если звук не подключен, вставь сюда реплику"></textarea>
+        <div class="action-row manual-controls">
+          <button id="sendSeller" class="ghost">Мы сказали</button>
+          <button id="sendClient" class="ghost">Клиент сказал</button>
+          <button id="sendPartial" class="ghost">Клиент partial</button>
+        </div>
       </section>
     </section>
   </main>
+
+  <div id="toast" class="toast"></div>
 
   <script>
     const $ = (id) => document.getElementById(id);
     let sessionId = "";
     let events = null;
     let state = null;
-    let captureState = { active: false, timer: null, stream: null, context: null, source: null, processor: null, chunks: [] };
+    let autoCaptureTried = false;
+    let captureState = {
+      active: false,
+      timer: null,
+      stream: null,
+      context: null,
+      source: null,
+      processor: null,
+      chunks: [],
+    };
 
     async function createSession() {
       if (events) events.close();
-      const res = await fetch("/v1/sessions", { method: "POST", body: "{}" });
+      state = null;
+      render();
+      const res = await fetch("/v1/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auto_opener: true }),
+      });
       const data = await res.json();
       sessionId = data.session_id;
       $("session").textContent = sessionId;
       state = data.state;
-      render();
       connectStream();
+      render();
+      if (!autoCaptureTried) {
+        autoCaptureTried = true;
+        setTimeout(() => startCapture({ automatic: true }), 250);
+      }
     }
 
     function connectStream() {
       events = new EventSource(`/v1/sessions/${sessionId}/stream`);
-      $("streamStatus").textContent = "streaming";
+      setStreamStatus("streaming");
       events.addEventListener("snapshot", (event) => {
         state = JSON.parse(event.data);
         render();
       });
-      events.onerror = () => {
-        $("streamStatus").textContent = "reconnecting...";
-      };
+      events.onerror = () => setStreamStatus("reconnecting...");
     }
 
     async function postEvent(payload) {
       if (!sessionId) return;
-      await fetch(`/v1/sessions/${sessionId}/events`, {
+      const res = await fetch(`/v1/sessions/${sessionId}/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || `HTTP ${res.status}`);
+      }
     }
 
     function render() {
-      if (!state) return;
-      const transcript = [];
+      renderDialog();
+      renderReply();
+      renderStage();
+      renderAssist();
+    }
+
+    function renderDialog() {
+      if (!state) {
+        $("dialog").innerHTML = `<div class="empty">Создаю диалог...</div>`;
+        return;
+      }
+      const rows = [];
       for (const msg of state.messages || []) {
-        transcript.push(`<div class="message ${msg.role}"><b>${escapeHtml(roleLabel(msg.role))}</b><br>${escapeHtml(msg.text)}</div>`);
+        rows.push(bubble(msg.role, msg.text));
       }
       if (state.client_partial) {
-        transcript.push(`<div class="message partial"><b>Клиент partial</b><br>${escapeHtml(state.client_partial)}</div>`);
+        rows.push(`<div class="bubble partial"><span class="role">клиент говорит</span>${escapeHtml(state.client_partial)}</div>`);
       }
-      $("transcript").innerHTML = transcript.join("") || `<div class="muted">Пока пусто.</div>`;
+      $("dialog").innerHTML = rows.join("") || `<div class="empty">Пока пусто. Захват звука включается по умолчанию; если браузер попросит действие, нажми «Включить».</div>`;
+      const container = $("dialog").parentElement;
+      container.scrollTop = container.scrollHeight;
+    }
 
-      $("suggestion").textContent = state.seller_draft || "Жду речь клиента...";
-      $("suggestion").classList.toggle("muted", !state.seller_draft);
+    function bubble(role, text) {
+      const side = role === "seller" ? "seller" : "client";
+      const label = role === "seller" ? "мы" : "клиент";
+      return `<div class="bubble ${side}"><span class="role">${label}</span>${escapeHtml(text)}</div>`;
+    }
 
+    function renderReply() {
+      const text = state?.seller_draft || "";
+      $("replyText").textContent = text || "Жду речь клиента...";
+      $("replyText").classList.toggle("muted", !text);
+      const streaming = state?.seller_streaming ? "генерируется" : "готово";
+      $("replyMeta").textContent = text ? streaming : "обновляется по речи клиента";
+      $("copyReply").disabled = !text;
+      $("markSaid").disabled = !text;
+    }
+
+    function renderStage() {
+      if (!state) {
+        $("stage").innerHTML = `<div class="empty">Жду данных.</div>`;
+        return;
+      }
       const stage = state.stage_committed || state.stage_candidate;
       const score = state.scorecard;
+      const rawSignals = score?.raw?.signals || stage?.scorecard?.signals || [];
+      const signals = Array.isArray(rawSignals) ? rawSignals.slice(0, 6) : [];
+      const metricBits = [
+        `<span class="metric ${scoreColor(score)}">${escapeHtml(score?.readiness_label || "нет оценки")}</span>`,
+        `<span class="metric">${escapeHtml(stage?.stage || "stage неизвестен")}</span>`,
+      ];
+      for (const signal of signals) {
+        metricBits.push(`<span class="metric ${signalColor(signal.state)}">${escapeHtml(signal.label || signal.id || "")}</span>`);
+      }
       $("stage").innerHTML = `
-        <div class="stage-line">
-          <span class="pill ${scoreColor(score)}">${escapeHtml(score?.readiness_label || "нет оценки")}</span>
-          <span class="pill">${escapeHtml(stage?.stage || "stage неизвестен")}</span>
-          <span class="muted">${escapeHtml(stage?.title || "")}</span>
-        </div>
-        <div>${escapeHtml(stage?.agenda || "Жду данных для стадии.")}</div>
-        <p class="muted">${escapeHtml(score?.summary || "")}</p>
-        <div>${escapeHtml(score?.next_action || stage?.step || "")}</div>
+        <div class="metric-row">${metricBits.join("")}</div>
+        <div class="stage-title">${escapeHtml(stage?.title || "Стадия еще не определена")}</div>
+        <div class="stage-body">${escapeHtml(stage?.agenda || "Жду речи клиента, чтобы понять текущую стадию.")}</div>
+        <div class="stage-body">${escapeHtml(score?.next_action || stage?.step || "")}</div>
       `;
-
-      const assist = state.assist || {};
-      $("assistFast").textContent = assist.fast_text || "Нажми «Помоги», когда нужна отдельная подсказка.";
-      $("assistFast").classList.toggle("muted", !assist.fast_text);
-      $("assistSlow").textContent = assist.slow_text || "";
     }
 
-    function roleLabel(role) {
-      if (role === "seller") return "Продавец";
-      if (role === "client") return "Клиент";
-      return role || "Речь";
+    function renderAssist() {
+      const assist = state?.assist || {};
+      const bits = [];
+      if (assist.fast_text) {
+        bits.push(`<div class="assist-msg fast">${escapeHtml(assist.fast_text)}</div>`);
+      }
+      if (assist.slow_text) {
+        bits.push(`<div class="assist-msg">${escapeHtml(assist.slow_text)}</div>`);
+      }
+      if (assist.streaming && !bits.length) {
+        bits.push(`<div class="assist-msg">Думаю...</div>`);
+      }
+      $("assistLog").innerHTML = bits.join("") || `<div class="empty">Нажми «Помоги» или задай уточнение ниже.</div>`;
     }
 
-    function scoreColor(score) {
-      const readiness = (score?.readiness || "").toLowerCase();
-      if (readiness.includes("green")) return "green";
-      if (readiness.includes("red")) return "red";
-      return "yellow";
+    async function copyReply() {
+      const text = state?.seller_draft || "";
+      if (!text) return;
+      await navigator.clipboard.writeText(text);
+      showToast("Реплика скопирована");
     }
 
-    async function startCapture() {
+    async function markSaid() {
+      const text = state?.seller_draft || "";
+      if (!text) return;
+      await postEvent({ type: "seller.input", text });
+      showToast("Добавил в диалог как нашу реплику");
+    }
+
+    async function requestAssist(trigger, text = "") {
+      await postEvent({ type: "assist.request", trigger, text });
+    }
+
+    async function startCapture({ automatic = false } = {}) {
       if (captureState.active) {
         stopCapture();
         return;
       }
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      for (const track of stream.getVideoTracks()) track.stop();
-      const audioTracks = stream.getAudioTracks();
-      if (!audioTracks.length) throw new Error("Браузер не дал audio track.");
-      const context = new AudioContext();
-      const source = context.createMediaStreamSource(new MediaStream(audioTracks));
-      const processor = context.createScriptProcessor(4096, 1, 1);
-      processor.onaudioprocess = (event) => {
-        const input = event.inputBuffer.getChannelData(0);
-        captureState.chunks.push(new Float32Array(input));
-      };
-      source.connect(processor);
-      processor.connect(context.destination);
-      captureState = { active: true, timer: null, stream, context, source, processor, chunks: [] };
-      captureState.timer = setInterval(flushAudioChunk, 2600);
-      $("capture").textContent = "Стоп звук";
-      $("streamStatus").textContent = "capturing system audio";
+      if (!window.isSecureContext && !["127.0.0.1", "localhost"].includes(location.hostname)) {
+        setCaptureStatus("err", "для захвата нужен HTTPS или localhost");
+        if (!automatic) showToast("Chrome блокирует системный звук на обычном HTTP");
+        return;
+      }
+      if (!navigator.mediaDevices?.getDisplayMedia) {
+        setCaptureStatus("err", "браузер не поддерживает захват");
+        return;
+      }
+      try {
+        setCaptureStatus("warn", automatic ? "запрашиваю доступ" : "выберите вкладку/экран со звуком");
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        for (const track of stream.getVideoTracks()) track.stop();
+        const audioTracks = stream.getAudioTracks();
+        if (!audioTracks.length) throw new Error("audio track не выбран");
+        const context = new AudioContext();
+        const source = context.createMediaStreamSource(new MediaStream(audioTracks));
+        const processor = context.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = (event) => {
+          const input = event.inputBuffer.getChannelData(0);
+          captureState.chunks.push(new Float32Array(input));
+        };
+        source.connect(processor);
+        processor.connect(context.destination);
+        captureState = { active: true, timer: null, stream, context, source, processor, chunks: [] };
+        captureState.timer = setInterval(flushAudioChunk, 2400);
+        setCaptureStatus("on", "захват включен");
+        $("captureToggle").textContent = "Стоп";
+      } catch (error) {
+        setCaptureStatus("warn", automatic ? "нужен клик для захвата" : error.message);
+        $("captureToggle").textContent = "Включить";
+      }
     }
 
     function stopCapture() {
@@ -308,8 +661,8 @@
       if (captureState.context) captureState.context.close();
       if (captureState.stream) for (const track of captureState.stream.getTracks()) track.stop();
       captureState = { active: false, timer: null, stream: null, context: null, source: null, processor: null, chunks: [] };
-      $("capture").textContent = "Захват звука";
-      $("streamStatus").textContent = "streaming";
+      setCaptureStatus("warn", "захват остановлен");
+      $("captureToggle").textContent = "Включить";
     }
 
     async function flushAudioChunk() {
@@ -317,21 +670,21 @@
       const sampleRate = captureState.context.sampleRate;
       const chunks = captureState.chunks.splice(0);
       const merged = mergeFloat32(chunks);
-      if (merged.length < sampleRate * 0.8) return;
+      if (merged.length < sampleRate * 0.7) return;
       const pcm = downsampleToPCM16(merged, sampleRate, 16000);
       const pcmBase64 = bytesToBase64(new Uint8Array(pcm.buffer));
       try {
         const res = await fetch(`/v1/sessions/${sessionId}/stt/transcribe`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role: "client", source: "browser-system-audio", pcm_base64: pcmBase64 })
+          body: JSON.stringify({ role: "client", source: "browser-system-audio", pcm_base64: pcmBase64 }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          $("streamStatus").textContent = err.error || `stt http ${res.status}`;
+          setCaptureStatus("err", err.error || `stt http ${res.status}`);
         }
       } catch (error) {
-        $("streamStatus").textContent = error.message;
+        setCaptureStatus("err", error.message);
       }
     }
 
@@ -367,31 +720,91 @@
       return btoa(binary);
     }
 
+    function setCaptureStatus(kind, text) {
+      $("captureStatus").textContent = text;
+      $("capturePill").textContent = kind === "on" ? "вкл" : kind === "err" ? "ошибка" : "ожидание";
+      $("capturePill").className = `status-pill ${kind}`;
+    }
+
+    function setStreamStatus(text) {
+      $("streamStatus").textContent = text;
+    }
+
+    function scoreColor(score) {
+      const readiness = String(score?.readiness || "").toLowerCase();
+      if (readiness.includes("green")) return "green";
+      if (readiness.includes("red")) return "red";
+      return "yellow";
+    }
+
+    function signalColor(value) {
+      const state = String(value || "").toLowerCase();
+      if (["green", "hit", "ok"].includes(state)) return "green";
+      if (["red", "miss", "bad"].includes(state)) return "red";
+      if (["yellow", "pending", "gray"].includes(state)) return "yellow";
+      return "";
+    }
+
+    function showToast(text) {
+      const toast = $("toast");
+      toast.textContent = text;
+      toast.classList.add("show");
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => toast.classList.remove("show"), 1600);
+    }
+
     function escapeHtml(value) {
       return String(value || "").replace(/[&<>"']/g, (ch) => ({
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;",
       }[ch]));
     }
 
-    $("newSession").onclick = createSession;
-    $("help").onclick = () => postEvent({ type: "assist.request", trigger: "button" });
+    $("newSession").onclick = () => {
+      autoCaptureTried = false;
+      createSession().catch((error) => $("session").textContent = error.message);
+    };
+    $("captureToggle").onclick = () => startCapture({ automatic: false });
+    $("copyReply").onclick = copyReply;
+    $("replyText").onclick = copyReply;
+    $("markSaid").onclick = markSaid;
+    $("refreshReply").onclick = () => postEvent({
+      type: "seller.request",
+      trigger: "manual_refresh",
+      text: "Перегенерируй следующую реплику продавца короче и ближе к текущему контексту.",
+    });
+    $("help").onclick = () => requestAssist("button");
+    $("askAssist").onclick = () => {
+      const text = $("assistQuestion").value.trim();
+      requestAssist("chat", text);
+      $("assistQuestion").value = "";
+    };
+    $("clearAssist").onclick = () => {
+      $("assistQuestion").value = "";
+      $("assistLog").innerHTML = `<div class="empty">Нажми «Помоги» или задай уточнение ниже.</div>`;
+    };
     $("sendSeller").onclick = () => {
-      postEvent({ type: "seller.input", text: $("text").value });
-      $("text").value = "";
+      const text = $("manualText").value.trim();
+      if (!text) return;
+      postEvent({ type: "seller.input", text });
+      $("manualText").value = "";
     };
     $("sendClient").onclick = () => {
-      postEvent({ type: "client.final", text: $("text").value });
-      $("text").value = "";
+      const text = $("manualText").value.trim();
+      if (!text) return;
+      postEvent({ type: "client.final", text });
+      $("manualText").value = "";
     };
-    $("sendPartial").onclick = () => postEvent({ type: "client.partial", text: $("text").value });
-    $("capture").onclick = () => startCapture().catch((error) => {
-      $("streamStatus").textContent = error.message;
-      stopCapture();
-    });
+    $("sendPartial").onclick = () => {
+      const text = $("manualText").value.trim();
+      if (!text) return;
+      postEvent({ type: "client.partial", text });
+    };
 
-    createSession().catch((error) => {
-      $("session").textContent = error.message;
-    });
+    createSession().catch((error) => $("session").textContent = error.message);
   </script>
 </body>
 </html>
