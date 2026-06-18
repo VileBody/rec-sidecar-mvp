@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clean Start Coach</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: rgba(24, 31, 42, 0.84);
+      --panel-2: rgba(31, 40, 54, 0.92);
+      --text: #ecf2ff;
+      --muted: #9aa7ba;
+      --line: rgba(220, 232, 255, 0.16);
+      --blue: #6ea8fe;
+      --green: #43d17a;
+      --yellow: #f3c74e;
+      --red: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, textarea, input {
+      font: inherit;
+    }
+    button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text);
+      background: rgba(255,255,255,0.08);
+      cursor: pointer;
+    }
+    button.primary { background: rgba(67, 209, 122, 0.28); border-color: rgba(67, 209, 122, 0.48); }
+    button.blue { background: rgba(110, 168, 254, 0.24); border-color: rgba(110, 168, 254, 0.48); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    textarea, input {
+      width: 100%;
+      color: var(--text);
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      outline: none;
+      resize: vertical;
+    }
+    .app {
+      display: grid;
+      grid-template-columns: minmax(420px, 1.25fr) minmax(340px, .75fr);
+      gap: 16px;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .panel {
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      backdrop-filter: blur(18px);
+      overflow: hidden;
+    }
+    .left, .right {
+      display: grid;
+      grid-template-rows: auto minmax(170px, .8fr) minmax(190px, .9fr) minmax(160px, .7fr);
+      gap: 12px;
+      min-height: 0;
+    }
+    .right { grid-template-rows: auto minmax(220px, 1fr) minmax(220px, 1fr); }
+    .bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 16px;
+    }
+    .brand { font-weight: 700; letter-spacing: .02em; }
+    .muted { color: var(--muted); }
+    .content { padding: 16px; overflow: auto; min-height: 0; }
+    .section-title {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .suggestion {
+      font-size: clamp(21px, 2.4vw, 34px);
+      line-height: 1.16;
+      color: var(--text);
+    }
+    .message {
+      padding: 10px 12px;
+      border-left: 3px solid var(--line);
+      margin: 0 0 8px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 8px;
+    }
+    .message.seller { border-left-color: var(--blue); }
+    .message.client { border-left-color: var(--green); }
+    .message.partial { border-left-color: var(--yellow); opacity: .88; }
+    .stage-line {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      color: var(--muted);
+    }
+    .pill.green { color: var(--green); border-color: rgba(67,209,122,.45); }
+    .pill.yellow { color: var(--yellow); border-color: rgba(243,199,78,.45); }
+    .pill.red { color: var(--red); border-color: rgba(255,107,107,.45); }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .assist-fast { font-size: 20px; line-height: 1.22; margin-bottom: 12px; }
+    .assist-slow { color: #d7e2f4; line-height: 1.35; }
+    .status { font-size: 13px; color: var(--muted); }
+    @media (max-width: 860px) {
+      .app { grid-template-columns: 1fr; }
+      .left, .right { grid-template-rows: auto; }
+      .panel { min-height: 180px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="left">
+      <div class="panel bar">
+        <div>
+          <div class="brand">Clean Start Coach</div>
+          <div id="session" class="status">creating session...</div>
+        </div>
+        <div class="actions">
+          <button id="newSession">Новый диалог</button>
+          <button id="capture" class="blue">Захват звука</button>
+        </div>
+      </div>
+
+      <section class="panel content">
+        <h2 class="section-title">Транскрипт</h2>
+        <div id="transcript"></div>
+      </section>
+
+      <section class="panel content">
+        <h2 class="section-title">Автопредложение</h2>
+        <div id="suggestion" class="suggestion muted">Жду речь клиента...</div>
+      </section>
+
+      <section class="panel content">
+        <h2 class="section-title">Стадия и метрики</h2>
+        <div id="stage"></div>
+      </section>
+    </section>
+
+    <section class="right">
+      <div class="panel bar">
+        <div>
+          <div class="brand">Чат / Помоги</div>
+          <div id="streamStatus" class="status">offline</div>
+        </div>
+        <button id="help" class="primary">Помоги</button>
+      </div>
+
+      <section class="panel content">
+        <h2 class="section-title">Ручной ввод</h2>
+        <textarea id="text" rows="5" placeholder="Вставь реплику продавца или клиента"></textarea>
+        <div class="actions">
+          <button id="sendSeller">Я сказал</button>
+          <button id="sendClient">Клиент сказал</button>
+          <button id="sendPartial">Клиент partial</button>
+        </div>
+      </section>
+
+      <section class="panel content">
+        <h2 class="section-title">Помоги</h2>
+        <div id="assistFast" class="assist-fast muted">Нажми «Помоги», когда нужна отдельная подсказка.</div>
+        <div id="assistSlow" class="assist-slow"></div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let sessionId = "";
+    let events = null;
+    let state = null;
+    let captureState = { active: false, timer: null, stream: null, context: null, source: null, processor: null, chunks: [] };
+
+    async function createSession() {
+      if (events) events.close();
+      const res = await fetch("/v1/sessions", { method: "POST", body: "{}" });
+      const data = await res.json();
+      sessionId = data.session_id;
+      $("session").textContent = sessionId;
+      state = data.state;
+      render();
+      connectStream();
+    }
+
+    function connectStream() {
+      events = new EventSource(`/v1/sessions/${sessionId}/stream`);
+      $("streamStatus").textContent = "streaming";
+      events.addEventListener("snapshot", (event) => {
+        state = JSON.parse(event.data);
+        render();
+      });
+      events.onerror = () => {
+        $("streamStatus").textContent = "reconnecting...";
+      };
+    }
+
+    async function postEvent(payload) {
+      if (!sessionId) return;
+      await fetch(`/v1/sessions/${sessionId}/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    }
+
+    function render() {
+      if (!state) return;
+      const transcript = [];
+      for (const msg of state.messages || []) {
+        transcript.push(`<div class="message ${msg.role}"><b>${escapeHtml(roleLabel(msg.role))}</b><br>${escapeHtml(msg.text)}</div>`);
+      }
+      if (state.client_partial) {
+        transcript.push(`<div class="message partial"><b>Клиент partial</b><br>${escapeHtml(state.client_partial)}</div>`);
+      }
+      $("transcript").innerHTML = transcript.join("") || `<div class="muted">Пока пусто.</div>`;
+
+      $("suggestion").textContent = state.seller_draft || "Жду речь клиента...";
+      $("suggestion").classList.toggle("muted", !state.seller_draft);
+
+      const stage = state.stage_committed || state.stage_candidate;
+      const score = state.scorecard;
+      $("stage").innerHTML = `
+        <div class="stage-line">
+          <span class="pill ${scoreColor(score)}">${escapeHtml(score?.readiness_label || "нет оценки")}</span>
+          <span class="pill">${escapeHtml(stage?.stage || "stage неизвестен")}</span>
+          <span class="muted">${escapeHtml(stage?.title || "")}</span>
+        </div>
+        <div>${escapeHtml(stage?.agenda || "Жду данных для стадии.")}</div>
+        <p class="muted">${escapeHtml(score?.summary || "")}</p>
+        <div>${escapeHtml(score?.next_action || stage?.step || "")}</div>
+      `;
+
+      const assist = state.assist || {};
+      $("assistFast").textContent = assist.fast_text || "Нажми «Помоги», когда нужна отдельная подсказка.";
+      $("assistFast").classList.toggle("muted", !assist.fast_text);
+      $("assistSlow").textContent = assist.slow_text || "";
+    }
+
+    function roleLabel(role) {
+      if (role === "seller") return "Продавец";
+      if (role === "client") return "Клиент";
+      return role || "Речь";
+    }
+
+    function scoreColor(score) {
+      const readiness = (score?.readiness || "").toLowerCase();
+      if (readiness.includes("green")) return "green";
+      if (readiness.includes("red")) return "red";
+      return "yellow";
+    }
+
+    async function startCapture() {
+      if (captureState.active) {
+        stopCapture();
+        return;
+      }
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      for (const track of stream.getVideoTracks()) track.stop();
+      const audioTracks = stream.getAudioTracks();
+      if (!audioTracks.length) throw new Error("Браузер не дал audio track.");
+      const context = new AudioContext();
+      const source = context.createMediaStreamSource(new MediaStream(audioTracks));
+      const processor = context.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        captureState.chunks.push(new Float32Array(input));
+      };
+      source.connect(processor);
+      processor.connect(context.destination);
+      captureState = { active: true, timer: null, stream, context, source, processor, chunks: [] };
+      captureState.timer = setInterval(flushAudioChunk, 2600);
+      $("capture").textContent = "Стоп звук";
+      $("streamStatus").textContent = "capturing system audio";
+    }
+
+    function stopCapture() {
+      if (captureState.timer) clearInterval(captureState.timer);
+      if (captureState.processor) captureState.processor.disconnect();
+      if (captureState.source) captureState.source.disconnect();
+      if (captureState.context) captureState.context.close();
+      if (captureState.stream) for (const track of captureState.stream.getTracks()) track.stop();
+      captureState = { active: false, timer: null, stream: null, context: null, source: null, processor: null, chunks: [] };
+      $("capture").textContent = "Захват звука";
+      $("streamStatus").textContent = "streaming";
+    }
+
+    async function flushAudioChunk() {
+      if (!captureState.chunks.length || !sessionId) return;
+      const sampleRate = captureState.context.sampleRate;
+      const chunks = captureState.chunks.splice(0);
+      const merged = mergeFloat32(chunks);
+      if (merged.length < sampleRate * 0.8) return;
+      const pcm = downsampleToPCM16(merged, sampleRate, 16000);
+      const pcmBase64 = bytesToBase64(new Uint8Array(pcm.buffer));
+      try {
+        const res = await fetch(`/v1/sessions/${sessionId}/stt/transcribe`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: "client", source: "browser-system-audio", pcm_base64: pcmBase64 })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          $("streamStatus").textContent = err.error || `stt http ${res.status}`;
+        }
+      } catch (error) {
+        $("streamStatus").textContent = error.message;
+      }
+    }
+
+    function mergeFloat32(chunks) {
+      const len = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const out = new Float32Array(len);
+      let offset = 0;
+      for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.length;
+      }
+      return out;
+    }
+
+    function downsampleToPCM16(samples, inRate, outRate) {
+      const ratio = inRate / outRate;
+      const outLen = Math.floor(samples.length / ratio);
+      const out = new Int16Array(outLen);
+      for (let i = 0; i < outLen; i++) {
+        const sample = samples[Math.floor(i * ratio)];
+        const clamped = Math.max(-1, Math.min(1, sample));
+        out[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+      }
+      return out;
+    }
+
+    function bytesToBase64(bytes) {
+      let binary = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+      }
+      return btoa(binary);
+    }
+
+    function escapeHtml(value) {
+      return String(value || "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+      }[ch]));
+    }
+
+    $("newSession").onclick = createSession;
+    $("help").onclick = () => postEvent({ type: "assist.request", trigger: "button" });
+    $("sendSeller").onclick = () => {
+      postEvent({ type: "seller.input", text: $("text").value });
+      $("text").value = "";
+    };
+    $("sendClient").onclick = () => {
+      postEvent({ type: "client.final", text: $("text").value });
+      $("text").value = "";
+    };
+    $("sendPartial").onclick = () => postEvent({ type: "client.partial", text: $("text").value });
+    $("capture").onclick = () => startCapture().catch((error) => {
+      $("streamStatus").textContent = error.message;
+      stopCapture();
+    });
+
+    createSession().catch((error) => {
+      $("session").textContent = error.message;
+    });
+  </script>
+</body>
+</html>

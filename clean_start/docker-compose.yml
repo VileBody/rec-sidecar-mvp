@@ -21,3 +21,22 @@ services:
       COACH_LLM_SERVICE_TOKEN: ${COACH_LLM_SERVICE_TOKEN:-}
     depends_on:
       - nats
+
+  test-agent:
+    build:
+      context: ..
+      dockerfile: clean_start/Dockerfile
+    command: ["--role", "test-agent"]
+    ports:
+      - "8111:8111"
+    environment:
+      CLEAN_START_HTTP_ADDR: ":8111"
+      CLEAN_START_ROLE: test-agent
+      NATS_URL: nats://nats:4222
+      COACH_LLM_SERVICE_URL: ${COACH_LLM_SERVICE_URL:-http://host.docker.internal:8088}
+      COACH_LLM_SERVICE_TOKEN: ${COACH_LLM_SERVICE_TOKEN:-}
+      INWORLD_API_KEY: ${INWORLD_API_KEY:-}
+      INWORLD_TTS_SELLER_VOICE: ${INWORLD_TTS_SELLER_VOICE:-Elena}
+      INWORLD_TTS_CLIENT_VOICE: ${INWORLD_TTS_CLIENT_VOICE:-Arkady}
+    depends_on:
+      - nats

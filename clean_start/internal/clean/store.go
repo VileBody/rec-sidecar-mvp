@@ -12,20 +12,39 @@ type Message struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type TranscriptItem struct {
+	Role      string    `json:"role"`
+	Text      string    `json:"text"`
+	Source    string    `json:"source,omitempty"`
+	Final     bool      `json:"final"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type AssistState struct {
+	FastText     string `json:"fast_text"`
+	SlowText     string `json:"slow_text"`
+	Streaming    bool   `json:"streaming"`
+	GenerationID string `json:"generation_id,omitempty"`
+	FastModel    string `json:"fast_model,omitempty"`
+	SlowModel    string `json:"slow_model,omitempty"`
+}
+
 type SessionState struct {
-	SessionID          string         `json:"session_id"`
-	CreatedAt          time.Time      `json:"created_at"`
-	UpdatedAt          time.Time      `json:"updated_at"`
-	Messages           []Message      `json:"messages"`
-	ClientPartial      string         `json:"client_partial"`
-	SellerDraft        string         `json:"seller_draft"`
-	SellerStreaming    bool           `json:"seller_streaming"`
-	SellerGenerationID string         `json:"seller_generation_id"`
-	StageCandidate     *StageData     `json:"stage_candidate,omitempty"`
-	StageCommitted     *StageData     `json:"stage_committed,omitempty"`
-	Scorecard          *ScorecardData `json:"scorecard,omitempty"`
-	LastError          string         `json:"last_error,omitempty"`
-	Events             []Event        `json:"events"`
+	SessionID          string           `json:"session_id"`
+	CreatedAt          time.Time        `json:"created_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
+	Messages           []Message        `json:"messages"`
+	Transcript         []TranscriptItem `json:"transcript"`
+	ClientPartial      string           `json:"client_partial"`
+	SellerDraft        string           `json:"seller_draft"`
+	SellerStreaming    bool             `json:"seller_streaming"`
+	SellerGenerationID string           `json:"seller_generation_id"`
+	Assist             AssistState      `json:"assist"`
+	StageCandidate     *StageData       `json:"stage_candidate,omitempty"`
+	StageCommitted     *StageData       `json:"stage_committed,omitempty"`
+	Scorecard          *ScorecardData   `json:"scorecard,omitempty"`
+	LastError          string           `json:"last_error,omitempty"`
+	Events             []Event          `json:"events"`
 }
 
 type Store struct {
@@ -85,6 +104,29 @@ func (s *Store) Apply(event Event) SessionState {
 				state.Messages = append(state.Messages, Message{Role: "client", Text: data.Text, CreatedAt: event.CreatedAt})
 			}
 		}
+	case EventSTTPartial:
+		if data, err := DecodeData[SpeechData](event); err == nil {
+			if data.Role == "client" {
+				state.ClientPartial = data.Text
+			}
+			state.Transcript = appendTranscript(state.Transcript, TranscriptItem{
+				Role: data.Role, Text: data.Text, Source: data.Source, Final: false, CreatedAt: event.CreatedAt,
+			})
+		}
+	case EventSTTFinal:
+		if data, err := DecodeData[SpeechData](event); err == nil {
+			if data.Role == "client" {
+				state.ClientPartial = ""
+				if data.Text != "" {
+					state.Messages = append(state.Messages, Message{Role: "client", Text: data.Text, CreatedAt: event.CreatedAt})
+				}
+			} else if data.Role == "seller" && data.Text != "" {
+				state.Messages = append(state.Messages, Message{Role: "seller", Text: data.Text, CreatedAt: event.CreatedAt})
+			}
+			state.Transcript = appendTranscript(state.Transcript, TranscriptItem{
+				Role: data.Role, Text: data.Text, Source: data.Source, Final: true, CreatedAt: event.CreatedAt,
+			})
+		}
 	case EventSellerStarted:
 		if data, err := DecodeData[SellerStartedData](event); err == nil {
 			state.SellerDraft = ""
@@ -103,6 +145,31 @@ func (s *Store) Apply(event Event) SessionState {
 		}
 	case EventSellerCanceled:
 		state.SellerStreaming = false
+	case EventAssistStarted:
+		if data, err := DecodeData[AssistStartedData](event); err == nil {
+			state.Assist = AssistState{Streaming: true, GenerationID: data.GenerationID}
+		}
+	case EventAssistFastDone:
+		if data, err := DecodeData[AssistFastDoneData](event); err == nil && data.GenerationID == state.Assist.GenerationID {
+			state.Assist.FastText = data.Text
+			state.Assist.FastModel = data.Model
+			state.Assist.Streaming = true
+		}
+	case EventAssistDelta:
+		if data, err := DecodeData[AssistDeltaData](event); err == nil && data.GenerationID == state.Assist.GenerationID {
+			state.Assist.SlowText += data.Delta
+			state.Assist.Streaming = true
+		}
+	case EventAssistDone:
+		if data, err := DecodeData[AssistDoneData](event); err == nil && data.GenerationID == state.Assist.GenerationID {
+			state.Assist.FastText = data.FastText
+			state.Assist.SlowText = data.SlowText
+			state.Assist.FastModel = data.FastModel
+			state.Assist.SlowModel = data.SlowModel
+			state.Assist.Streaming = false
+		}
+	case EventAssistCanceled:
+		state.Assist.Streaming = false
 	case EventStageCandidate:
 		if data, err := DecodeData[StageData](event); err == nil {
 			state.StageCandidate = &data
@@ -128,6 +195,21 @@ func (s *Store) Apply(event Event) SessionState {
 		}
 	}
 	return cloneState(*state)
+}
+
+func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptItem {
+	if item.Role == "" {
+		item.Role = "unknown"
+	}
+	if len(items) > 0 && !items[len(items)-1].Final && !item.Final && items[len(items)-1].Role == item.Role {
+		items[len(items)-1] = item
+		return items
+	}
+	items = append(items, item)
+	if len(items) > 200 {
+		items = items[len(items)-200:]
+	}
+	return items
 }
 
 func (s *Store) Subscribe(sessionID string) (<-chan Event, func()) {

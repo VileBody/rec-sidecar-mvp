@@ -2,7 +2,10 @@ module github.com/VileBody/rec-sidecar-mvp/clean_start
 
 go 1.26
 
-require github.com/nats-io/nats.go v1.52.0
+require (
+	github.com/gorilla/websocket v1.5.3
+	github.com/nats-io/nats.go v1.52.0
+)
 
 require (
 	github.com/klauspost/compress v1.18.5 // indirect

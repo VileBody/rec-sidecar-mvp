@@ -19,6 +19,14 @@ const (
 	EventSellerDelta     = "seller.delta"
 	EventSellerDone      = "seller.done"
 	EventSellerCanceled  = "seller.canceled"
+	EventAssistRequest   = "assist.request"
+	EventAssistStarted   = "assist.started"
+	EventAssistFastDone  = "assist.fast.done"
+	EventAssistDelta     = "assist.delta"
+	EventAssistDone      = "assist.done"
+	EventAssistCanceled  = "assist.canceled"
+	EventSTTPartial      = "stt.partial"
+	EventSTTFinal        = "stt.final"
 	EventStageRequest    = "stage.request"
 	EventStageCandidate  = "stage.candidate"
 	EventStageCommitted  = "stage.committed"
@@ -40,7 +48,18 @@ type TextData struct {
 	Text string `json:"text"`
 }
 
+type SpeechData struct {
+	Role   string `json:"role"`
+	Text   string `json:"text"`
+	Source string `json:"source,omitempty"`
+}
+
 type SellerRequestData struct {
+	Trigger string `json:"trigger"`
+	Text    string `json:"text,omitempty"`
+}
+
+type AssistRequestData struct {
 	Trigger string `json:"trigger"`
 	Text    string `json:"text,omitempty"`
 }
@@ -50,7 +69,24 @@ type SellerStartedData struct {
 	Trigger      string `json:"trigger"`
 }
 
+type AssistStartedData struct {
+	GenerationID string `json:"generation_id"`
+	Trigger      string `json:"trigger"`
+}
+
 type SellerDeltaData struct {
+	GenerationID string `json:"generation_id"`
+	Delta        string `json:"delta"`
+}
+
+type AssistFastDoneData struct {
+	GenerationID string `json:"generation_id"`
+	Text         string `json:"text"`
+	Model        string `json:"model,omitempty"`
+	Fallback     bool   `json:"fallback,omitempty"`
+}
+
+type AssistDeltaData struct {
 	GenerationID string `json:"generation_id"`
 	Delta        string `json:"delta"`
 }
@@ -60,6 +96,14 @@ type SellerDoneData struct {
 	Text         string `json:"text"`
 	Provider     string `json:"provider"`
 	Model        string `json:"model"`
+}
+
+type AssistDoneData struct {
+	GenerationID string `json:"generation_id"`
+	FastText     string `json:"fast_text"`
+	SlowText     string `json:"slow_text"`
+	FastModel    string `json:"fast_model,omitempty"`
+	SlowModel    string `json:"slow_model,omitempty"`
 }
 
 type StageData struct {
