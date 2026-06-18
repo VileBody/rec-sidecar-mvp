@@ -26,6 +26,7 @@ type Config struct {
 	InworldTTSModel    string
 	InworldSTTWSURL    string
 	InworldSTTModel    string
+	InworldSTTLanguage string
 	InworldSellerVoice string
 	InworldClientVoice string
 	InworldLanguage    string
@@ -50,6 +51,7 @@ func ConfigFromEnv() Config {
 		InworldTTSModel:    env("INWORLD_TTS_MODEL", "inworld-tts-1"),
 		InworldSTTWSURL:    env("INWORLD_STT_WS_URL", "wss://api.inworld.ai/stt/v1/transcribe:streamBidirectional"),
 		InworldSTTModel:    env("INWORLD_STT_MODEL", "soniox/stt-rt-v4"),
+		InworldSTTLanguage: env("INWORLD_STT_LANGUAGE", "ru"),
 		InworldSellerVoice: env("INWORLD_TTS_SELLER_VOICE", "Elena"),
 		InworldClientVoice: env("INWORLD_TTS_CLIENT_VOICE", "Arkady"),
 		InworldLanguage:    env("INWORLD_TTS_LANGUAGE", "ru-RU"),

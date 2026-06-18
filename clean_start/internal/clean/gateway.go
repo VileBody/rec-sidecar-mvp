@@ -10,13 +10,21 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
+	"github.com/gorilla/websocket"
 	"github.com/nats-io/nats.go"
 )
 
 //go:embed web/index.html
 var gatewayWeb embed.FS
+
+var sttWSUpgrader = websocket.Upgrader{
+	ReadBufferSize:  64 * 1024,
+	WriteBufferSize: 64 * 1024,
+}
 
 type Gateway struct {
 	cfg     Config
@@ -56,6 +64,16 @@ type STTTranscribeResponse struct {
 	Role string `json:"role"`
 }
 
+type BrowserSTTStreamMessage struct {
+	AudioChunk  *AudioChunkMessage `json:"audio_chunk,omitempty"`
+	EndTurn     map[string]any     `json:"end_turn,omitempty"`
+	CloseStream map[string]any     `json:"close_stream,omitempty"`
+}
+
+type AudioChunkMessage struct {
+	Content string `json:"content"`
+}
+
 func NewGateway(cfg Config, nc *nats.Conn, inworld *InworldClient, logger *slog.Logger) *Gateway {
 	return &Gateway{
 		cfg:     cfg,
@@ -93,6 +111,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /v1/sessions/{session_id}", g.getSession)
 	mux.HandleFunc("POST /v1/sessions/{session_id}/events", g.postEvent)
 	mux.HandleFunc("POST /v1/sessions/{session_id}/stt/transcribe", g.transcribePCM)
+	mux.HandleFunc("GET /v1/sessions/{session_id}/stt/live", g.streamSTT)
 	mux.HandleFunc("GET /v1/sessions/{session_id}/stream", g.streamSession)
 
 	g.server = &http.Server{
@@ -268,6 +287,11 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	if reason := browserTranscriptRejectReason(text); reason != "" {
+		g.logger.Info("browser audio stt rejected", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS, "reason", reason, "text", text)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	g.logger.Info("browser audio stt final", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS, "text_len", len([]rune(text)), "text", text)
 	event := NewEvent(sessionID, EventSTTFinal, "gateway-stt", SpeechData{
 		Role:   role,
@@ -279,6 +303,180 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, STTTranscribeResponse{Text: text, Role: role})
+}
+
+func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	if g.inworld == nil || !g.inworld.Configured() {
+		writeError(w, http.StatusServiceUnavailable, errors.New("missing INWORLD_API_KEY"))
+		return
+	}
+	role := strings.TrimSpace(r.URL.Query().Get("role"))
+	if role == "" {
+		role = "client"
+	}
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	if source == "" {
+		source = "browser-audio"
+	}
+
+	browserConn, err := sttWSUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		g.logger.Warn("browser stt ws upgrade failed", "session_id", sessionID, "role", role, "source", source, "error", err)
+		return
+	}
+	defer browserConn.Close()
+
+	stream, err := g.inworld.ConnectSTT(r.Context())
+	if err != nil {
+		g.logger.Warn("browser stt inworld connect failed", "session_id", sessionID, "role", role, "source", source, "error", err)
+		_ = browserConn.WriteJSON(map[string]any{"type": "error", "error": err.Error()})
+		return
+	}
+	defer stream.Close()
+
+	var browserWriteMu sync.Mutex
+	writeBrowserJSON := func(value any) error {
+		browserWriteMu.Lock()
+		defer browserWriteMu.Unlock()
+		return browserConn.WriteJSON(value)
+	}
+
+	_ = writeBrowserJSON(map[string]any{"type": "ready"})
+	g.logger.Info("browser audio stt stream connected", "session_id", sessionID, "role", role, "source", source)
+
+	done := make(chan error, 2)
+	go func() {
+		for {
+			text, final, err := stream.ReadTranscript()
+			if err != nil {
+				done <- err
+				return
+			}
+			if text == "" {
+				continue
+			}
+			if reason := browserTranscriptRejectReason(text); reason != "" {
+				g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", role, "source", source, "reason", reason, "text", text)
+				continue
+			}
+
+			eventType := EventSTTPartial
+			if final {
+				eventType = EventSTTFinal
+			}
+			event := NewEvent(sessionID, eventType, "gateway-stt-live", SpeechData{
+				Role:   role,
+				Text:   text,
+				Source: source,
+			})
+			if err := g.emit(event); err != nil {
+				done <- err
+				return
+			}
+			g.logger.Info("browser audio stt stream transcript", "session_id", sessionID, "role", role, "source", source, "final", final, "text_len", len([]rune(text)), "text", text)
+			if err := writeBrowserJSON(map[string]any{"type": eventType, "text": text, "final": final}); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+
+	go func() {
+		var audioBytes int
+		var audioChunks int
+		var endTurns int
+		for {
+			var msg BrowserSTTStreamMessage
+			if err := browserConn.ReadJSON(&msg); err != nil {
+				g.logger.Info("browser audio stt stream reader closed", "session_id", sessionID, "role", role, "source", source, "audio_chunks", audioChunks, "audio_bytes", audioBytes, "end_turns", endTurns, "error", err)
+				done <- err
+				return
+			}
+			if msg.CloseStream != nil {
+				g.logger.Info("browser audio stt stream close requested", "session_id", sessionID, "role", role, "source", source, "audio_chunks", audioChunks, "audio_bytes", audioBytes, "end_turns", endTurns)
+				done <- nil
+				return
+			}
+			if msg.EndTurn != nil {
+				if err := stream.SendEndTurn(); err != nil {
+					done <- fmt.Errorf("inworld stt stream end_turn: %w", err)
+					return
+				}
+				endTurns++
+				g.logger.Info("browser audio stt stream end_turn", "session_id", sessionID, "role", role, "source", source, "end_turns", endTurns)
+				continue
+			}
+			if msg.AudioChunk == nil {
+				continue
+			}
+			raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(msg.AudioChunk.Content))
+			if err != nil {
+				done <- fmt.Errorf("bad ws audio chunk: %w", err)
+				return
+			}
+			if len(raw) == 0 {
+				continue
+			}
+			if err := stream.SendAudio(raw); err != nil {
+				done <- err
+				return
+			}
+			audioChunks++
+			audioBytes += len(raw)
+		}
+	}()
+
+	err = <-done
+	if err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+		g.logger.Warn("browser audio stt stream closed", "session_id", sessionID, "role", role, "source", source, "error", err)
+		_ = writeBrowserJSON(map[string]any{"type": "error", "error": err.Error()})
+		return
+	}
+	g.logger.Info("browser audio stt stream closed", "session_id", sessionID, "role", role, "source", source)
+}
+
+func browserTranscriptRejectReason(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "empty"
+	}
+
+	letters := 0
+	cyrillic := 0
+	nonRussianScript := 0
+	for _, r := range trimmed {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		letters++
+		switch {
+		case unicode.In(r, unicode.Cyrillic):
+			cyrillic++
+		case isCJKLike(r):
+			nonRussianScript++
+		}
+	}
+
+	if letters <= 1 {
+		return "too_short"
+	}
+	if cyrillic == 0 {
+		if nonRussianScript > 0 {
+			return "non_russian_script"
+		}
+		return "no_cyrillic"
+	}
+	if nonRussianScript > cyrillic {
+		return "mostly_non_russian_script"
+	}
+	return ""
+}
+
+func isCJKLike(r rune) bool {
+	return (r >= 0x3040 && r <= 0x30ff) || // Hiragana/Katakana
+		(r >= 0x3400 && r <= 0x9fff) || // CJK ideographs
+		(r >= 0xac00 && r <= 0xd7af) // Hangul
 }
 
 func (g *Gateway) streamSession(w http.ResponseWriter, r *http.Request) {

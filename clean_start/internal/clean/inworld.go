@@ -30,6 +30,10 @@ type InworldClient struct {
 	client *http.Client
 }
 
+type InworldSTTStream struct {
+	conn *websocket.Conn
+}
+
 type AudioResult struct {
 	PCM  []byte
 	WAV  []byte
@@ -118,64 +122,23 @@ func (c *InworldClient) TranscribePCM(ctx context.Context, pcm []byte) (string, 
 	if len(pcm) == 0 {
 		return "", errors.New("empty pcm")
 	}
-	header := http.Header{}
-	header.Set("Authorization", inworldAuthorization(c.cfg.InworldAPIKey))
-	dialer := websocket.Dialer{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
-	conn, resp, err := dialer.DialContext(ctx, c.cfg.InworldSTTWSURL, header)
+	stream, err := c.ConnectSTT(ctx)
 	if err != nil {
-		status := ""
-		if resp != nil {
-			status = resp.Status
-		}
-		return "", fmt.Errorf("inworld stt connect failed %s: %w", status, err)
-	}
-	defer func() {
-		_ = conn.WriteJSON(map[string]any{"close_stream": map[string]any{}})
-		_ = conn.Close()
-	}()
-
-	config := map[string]any{
-		"transcribe_config": map[string]any{
-			"modelId":                  c.cfg.InworldSTTModel,
-			"audioEncoding":            "LINEAR16",
-			"sampleRateHertz":          audioSampleRate,
-			"numberOfChannels":         audioChannels,
-			"enableSpeakerDiarization": true,
-			"enableLanguageDetection":  true,
-		},
-	}
-	if err := conn.WriteJSON(config); err != nil {
 		return "", err
 	}
+	defer stream.Close()
 
-	const chunkBytes = audioSampleRate * 2 / 10
-	for offset := 0; offset < len(pcm); offset += chunkBytes {
-		end := offset + chunkBytes
-		if end > len(pcm) {
-			end = len(pcm)
-		}
-		chunk := pcm[offset:end]
-		if len(chunk) < 640 {
-			padded := make([]byte, 640)
-			copy(padded, chunk)
-			chunk = padded
-		}
-		if err := conn.WriteJSON(map[string]any{
-			"audio_chunk": map[string]any{
-				"content": base64.StdEncoding.EncodeToString(chunk),
-			},
-		}); err != nil {
-			return "", err
-		}
+	if err := stream.SendAudio(pcm); err != nil {
+		return "", err
 	}
-	if err := conn.WriteJSON(map[string]any{"end_turn": map[string]any{}}); err != nil {
+	if err := stream.SendEndTurn(); err != nil {
 		return "", fmt.Errorf("inworld stt end_turn: %w", err)
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(8 * time.Second))
+	_ = stream.conn.SetReadDeadline(time.Now().Add(8 * time.Second))
 	var lastPartial string
 	for {
-		_, raw, err := conn.ReadMessage()
+		text, final, err := stream.ReadTranscript()
 		if err != nil {
 			if lastPartial != "" {
 				return lastPartial, nil
@@ -188,10 +151,6 @@ func (c *InworldClient) TranscribePCM(ctx context.Context, pcm []byte) (string, 
 			}
 			return "", fmt.Errorf("inworld stt read: %w", err)
 		}
-		text, final, err := parseInworldTranscript(raw)
-		if err != nil {
-			return "", fmt.Errorf("inworld stt response: %w", err)
-		}
 		if text == "" {
 			continue
 		}
@@ -200,10 +159,88 @@ func (c *InworldClient) TranscribePCM(ctx context.Context, pcm []byte) (string, 
 		}
 		lastPartial = text
 	}
-	if lastPartial != "" {
-		return lastPartial, nil
+}
+
+func (c *InworldClient) ConnectSTT(ctx context.Context) (*InworldSTTStream, error) {
+	if !c.Configured() {
+		return nil, errors.New("missing INWORLD_API_KEY")
 	}
-	return "", ErrNoSpeech
+	header := http.Header{}
+	header.Set("Authorization", inworldAuthorization(c.cfg.InworldAPIKey))
+	dialer := websocket.Dialer{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
+	conn, resp, err := dialer.DialContext(ctx, c.cfg.InworldSTTWSURL, header)
+	if err != nil {
+		status := ""
+		if resp != nil {
+			status = resp.Status
+		}
+		return nil, fmt.Errorf("inworld stt connect failed %s: %w", status, err)
+	}
+
+	config := map[string]any{
+		"transcribe_config": map[string]any{
+			"modelId":          c.cfg.InworldSTTModel,
+			"audioEncoding":    "LINEAR16",
+			"sampleRateHertz":  audioSampleRate,
+			"numberOfChannels": audioChannels,
+		},
+	}
+	transcribeConfig := config["transcribe_config"].(map[string]any)
+	if language := strings.TrimSpace(c.cfg.InworldSTTLanguage); language != "" {
+		transcribeConfig["language"] = language
+	} else {
+		transcribeConfig["enableLanguageDetection"] = true
+	}
+	if err := conn.WriteJSON(config); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return &InworldSTTStream{conn: conn}, nil
+}
+
+func (s *InworldSTTStream) SendAudio(pcm []byte) error {
+	const chunkBytes = audioSampleRate * 2 / 10
+	for offset := 0; offset < len(pcm); offset += chunkBytes {
+		end := offset + chunkBytes
+		if end > len(pcm) {
+			end = len(pcm)
+		}
+		chunk := pcm[offset:end]
+		if len(chunk) < 640 {
+			padded := make([]byte, 640)
+			copy(padded, chunk)
+			chunk = padded
+		}
+		if err := s.conn.WriteJSON(map[string]any{
+			"audio_chunk": map[string]any{
+				"content": base64.StdEncoding.EncodeToString(chunk),
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *InworldSTTStream) SendEndTurn() error {
+	return s.conn.WriteJSON(map[string]any{"end_turn": map[string]any{}})
+}
+
+func (s *InworldSTTStream) ReadTranscript() (string, bool, error) {
+	_, raw, err := s.conn.ReadMessage()
+	if err != nil {
+		return "", false, err
+	}
+	text, final, err := parseInworldTranscript(raw)
+	if err != nil {
+		return "", false, fmt.Errorf("inworld stt response: %w", err)
+	}
+	return text, final, nil
+}
+
+func (s *InworldSTTStream) Close() {
+	_ = s.conn.WriteJSON(map[string]any{"close_stream": map[string]any{}})
+	_ = s.conn.Close()
 }
 
 func parseInworldTranscript(raw []byte) (string, bool, error) {

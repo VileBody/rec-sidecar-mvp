@@ -712,98 +712,161 @@
       const source = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(4096, 1, 1);
       const sink = context.createGain();
-      const nextState = { active: true, timer: null, stream, context, source, processor, sink, mode, sourceLabel, chunks: [] };
+      const role = mode === "microphone" ? "seller" : "client";
+      const ws = new WebSocket(sttStreamURL({ role, sourceLabel }));
+      const nextState = {
+        active: true,
+        stream,
+        context,
+        source,
+        processor,
+        sink,
+        ws,
+        mode,
+        role,
+        sourceLabel,
+        speechOpen: false,
+        lastVoiceAt: 0,
+        lastEndTurnAt: 0,
+        sentChunks: 0,
+      };
       sink.gain.value = 0;
       processor.onaudioprocess = (event) => {
+        if (captureStates[mode] !== nextState || ws.readyState !== WebSocket.OPEN) return;
         const input = event.inputBuffer.getChannelData(0);
-        nextState.chunks.push(new Float32Array(input));
+        streamAudioFrame(nextState, input);
+      };
+      ws.onopen = () => {
+        if (captureStates[mode] === nextState) {
+          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон стримится" : "захват стримится");
+        }
+      };
+      ws.onmessage = (event) => {
+        if (captureStates[mode] !== nextState) return;
+        const data = JSON.parse(event.data || "{}");
+        if (data.type === "error") {
+          setAudioStatus(mode, "err", data.error || "STT stream error");
+        } else if (data.type === "stt.final") {
+          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон · распознано" : "захват · распознано");
+        }
+      };
+      ws.onerror = () => {
+        if (captureStates[mode] === nextState) {
+          setAudioStatus(mode, "err", "STT stream error");
+        }
+      };
+      ws.onclose = () => {
+        if (captureStates[mode] === nextState) {
+          stopCapture(mode, mode === "microphone" ? "микрофон STT закрыт" : "захват STT закрыт");
+        }
       };
       source.connect(processor);
       processor.connect(sink);
       sink.connect(context.destination);
+      for (const track of stream.getAudioTracks()) {
+        track.onended = () => {
+          if (captureStates[mode] === nextState) {
+            stopCapture(mode, mode === "microphone" ? "микрофон завершен браузером" : "захват завершен браузером");
+          }
+        };
+        track.onmute = () => {
+          if (captureStates[mode] === nextState) {
+            setAudioStatus(mode, "warn", mode === "microphone" ? "микрофон без сигнала" : "захват без сигнала");
+          }
+        };
+        track.onunmute = () => {
+          if (captureStates[mode] === nextState) {
+            setAudioStatus(mode, "on", mode === "microphone" ? "микрофон включен" : "захват включен");
+          }
+        };
+      }
       captureStates[mode] = nextState;
-      nextState.timer = setInterval(() => flushAudioChunk(mode), 2400);
     }
 
-    function stopCapture(mode) {
+    function stopCapture(mode, stoppedText = "") {
       const captureState = captureStates[mode];
       if (!captureState?.active) return;
-      if (captureState.timer) clearInterval(captureState.timer);
+      captureStates[mode] = emptyCaptureState(mode);
       if (captureState.processor) captureState.processor.disconnect();
       if (captureState.sink) captureState.sink.disconnect();
       if (captureState.source) captureState.source.disconnect();
       if (captureState.context) captureState.context.close();
       if (captureState.stream) for (const track of captureState.stream.getTracks()) track.stop();
-      captureStates[mode] = emptyCaptureState(mode);
+      if (captureState.ws && captureState.ws.readyState === WebSocket.OPEN) {
+        captureState.ws.send(JSON.stringify({ close_stream: {} }));
+        captureState.ws.close();
+      } else if (captureState.ws && captureState.ws.readyState === WebSocket.CONNECTING) {
+        captureState.ws.close();
+      }
       if (mode === "microphone") {
-        setMicStatus("warn", "микрофон остановлен");
+        setMicStatus("warn", stoppedText || "микрофон остановлен");
         $("micToggle").textContent = "Проверить микрофон";
       } else {
-        setCaptureStatus("warn", "захват остановлен");
+        setCaptureStatus("warn", stoppedText || "захват остановлен");
         $("captureToggle").textContent = "Включить";
       }
     }
 
-    async function flushAudioChunk(mode) {
-      const captureState = captureStates[mode];
-      if (!captureState?.active) return;
-      if (!captureState.chunks.length || !sessionId) return;
-      const sampleRate = captureState.context.sampleRate;
-      const chunks = captureState.chunks.splice(0);
-      const merged = mergeFloat32(chunks);
-      if (merged.length < sampleRate * 0.7) return;
-      if (float32Rms(merged) < 0.003) {
-        setAudioStatus(mode, "on", mode === "microphone" ? "микрофон включен · жду речь" : "захват включен · жду речь");
+    function streamAudioFrame(captureState, samples) {
+      const now = Date.now();
+      const rms = float32Rms(samples);
+      const isVoice = rms >= 0.003;
+      if (isVoice) {
+        captureState.speechOpen = true;
+        captureState.lastVoiceAt = now;
+      }
+
+      if (captureState.speechOpen && !isVoice && now - captureState.lastVoiceAt >= 850) {
+        sendStreamEndTurn(captureState);
+        captureState.speechOpen = false;
+        setAudioStatus(captureState.mode, "on", captureState.mode === "microphone" ? "микрофон · жду финал" : "захват · жду финал");
         return;
       }
-      const sourceLabel = captureState.sourceLabel || "browser-system-audio";
-      const pcm = downsampleToPCM16(merged, sampleRate, 16000);
-      const pcmBase64 = bytesToBase64(new Uint8Array(pcm.buffer));
-      try {
-        const res = await fetch(`/v1/sessions/${sessionId}/stt/transcribe`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role: "client", source: sourceLabel, pcm_base64: pcmBase64 }),
-        });
-        if (res.status === 204) {
-          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон включен · жду речь" : "захват включен · жду речь");
-          return;
-        }
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          setAudioStatus(mode, "err", err.error || `stt http ${res.status}`);
-          return;
-        }
-        setAudioStatus(mode, "on", mode === "microphone" ? "микрофон включен · распознано" : "захват включен · распознано");
-      } catch (error) {
-        setAudioStatus(mode, "err", error.message);
+
+      if (!isVoice && !captureState.speechOpen) {
+        setAudioStatus(captureState.mode, "on", captureState.mode === "microphone" ? "микрофон · жду речь" : "захват · жду речь");
+        return;
       }
+
+      const pcm = downsampleToPCM16(samples, captureState.context.sampleRate, 16000);
+      const pcmBase64 = bytesToBase64(new Uint8Array(pcm.buffer));
+      captureState.ws.send(JSON.stringify({ audio_chunk: { content: pcmBase64 } }));
+      captureState.sentChunks += 1;
+      if (captureState.sentChunks % 12 === 0) {
+        setAudioStatus(captureState.mode, "on", captureState.mode === "microphone" ? "микрофон · слышу речь" : "захват · слышу речь");
+      }
+    }
+
+    function sendStreamEndTurn(captureState) {
+      const now = Date.now();
+      if (captureState.ws.readyState !== WebSocket.OPEN || now - captureState.lastEndTurnAt < 700) return;
+      captureState.ws.send(JSON.stringify({ end_turn: {} }));
+      captureState.lastEndTurnAt = now;
+    }
+
+    function sttStreamURL({ role, sourceLabel }) {
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      const params = new URLSearchParams({ role, source: sourceLabel });
+      return `${scheme}//${location.host}/v1/sessions/${sessionId}/stt/live?${params}`;
     }
 
     function emptyCaptureState(mode) {
       return {
         active: false,
-        timer: null,
         stream: null,
         context: null,
         source: null,
         processor: null,
         sink: null,
+        ws: null,
         mode,
+        role: mode === "microphone" ? "seller" : "client",
         sourceLabel: mode === "microphone" ? "browser-microphone-test" : "browser-system-audio",
-        chunks: [],
+        speechOpen: false,
+        lastVoiceAt: 0,
+        lastEndTurnAt: 0,
+        sentChunks: 0,
       };
-    }
-
-    function mergeFloat32(chunks) {
-      const len = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-      const out = new Float32Array(len);
-      let offset = 0;
-      for (const chunk of chunks) {
-        out.set(chunk, offset);
-        offset += chunk.length;
-      }
-      return out;
     }
 
     function float32Rms(samples) {
