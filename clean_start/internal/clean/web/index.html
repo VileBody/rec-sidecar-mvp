@@ -111,6 +111,25 @@
       padding: 17px 18px;
     }
 
+    .audio-card {
+      display: grid;
+      gap: 12px;
+      padding: 17px 18px;
+    }
+
+    .audio-row {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .audio-row + .audio-row {
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+
     .title {
       margin: 0;
       font-size: 18px;
@@ -385,14 +404,26 @@
         <div id="dialog" class="dialog"></div>
       </section>
 
-      <footer class="card header-card">
-        <div>
-          <div class="title" style="font-size:15px">Системный звук</div>
-          <div id="captureStatus" class="sub">готовлю захват по умолчанию</div>
+      <footer class="card audio-card">
+        <div class="audio-row">
+          <div>
+            <div class="title" style="font-size:15px">Системный звук</div>
+            <div id="captureStatus" class="sub">готовлю захват по умолчанию</div>
+          </div>
+          <div class="capture-row">
+            <span id="capturePill" class="status-pill warn">ожидание</span>
+            <button id="captureToggle" class="blue">Включить</button>
+          </div>
         </div>
-        <div class="capture-row">
-          <span id="capturePill" class="status-pill warn">ожидание</span>
-          <button id="captureToggle" class="blue">Включить</button>
+        <div class="audio-row">
+          <div>
+            <div class="title" style="font-size:15px">Микрофон</div>
+            <div id="micStatus" class="sub">тест выключен</div>
+          </div>
+          <div class="capture-row">
+            <span id="micPill" class="status-pill warn">ожидание</span>
+            <button id="micToggle" class="ghost">Проверить микрофон</button>
+          </div>
         </div>
       </footer>
     </section>
@@ -472,6 +503,8 @@
       source: null,
       processor: null,
       sink: null,
+      mode: "",
+      sourceLabel: "",
       chunks: [],
     };
 
@@ -617,10 +650,11 @@
     }
 
     async function startCapture({ automatic = false } = {}) {
-      if (captureState.active) {
+      if (captureState.active && captureState.mode === "system") {
         stopCapture();
         return;
       }
+      if (captureState.active) stopCapture();
       if (!window.isSecureContext && !["127.0.0.1", "localhost"].includes(location.hostname)) {
         setCaptureStatus("err", "для захвата нужен HTTPS или localhost");
         if (!automatic) showToast("Chrome блокирует системный звук на обычном HTTP");
@@ -636,20 +670,10 @@
         for (const track of stream.getVideoTracks()) track.stop();
         const audioTracks = stream.getAudioTracks();
         if (!audioTracks.length) throw new Error("audio track не выбран");
-        const context = new AudioContext();
-        const source = context.createMediaStreamSource(new MediaStream(audioTracks));
-        const processor = context.createScriptProcessor(4096, 1, 1);
-        const sink = context.createGain();
-        sink.gain.value = 0;
-        processor.onaudioprocess = (event) => {
-          const input = event.inputBuffer.getChannelData(0);
-          captureState.chunks.push(new Float32Array(input));
-        };
-        source.connect(processor);
-        processor.connect(sink);
-        sink.connect(context.destination);
-        captureState = { active: true, timer: null, stream, context, source, processor, sink, chunks: [] };
-        captureState.timer = setInterval(flushAudioChunk, 2400);
+        startAudioStream(new MediaStream(audioTracks), {
+          mode: "system",
+          sourceLabel: "browser-system-audio",
+        });
         setCaptureStatus("on", "захват включен");
         $("captureToggle").textContent = "Стоп";
       } catch (error) {
@@ -658,16 +682,74 @@
       }
     }
 
+    async function startMicTest() {
+      if (captureState.active && captureState.mode === "microphone") {
+        stopCapture();
+        return;
+      }
+      if (captureState.active) stopCapture();
+      if (!window.isSecureContext && !["127.0.0.1", "localhost"].includes(location.hostname)) {
+        setMicStatus("err", "для микрофона нужен HTTPS или localhost");
+        return;
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setMicStatus("err", "браузер не поддерживает микрофон");
+        return;
+      }
+      try {
+        setMicStatus("warn", "запрашиваю микрофон");
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        startAudioStream(stream, {
+          mode: "microphone",
+          sourceLabel: "browser-microphone-test",
+        });
+        setMicStatus("on", "микрофон включен · скажи фразу");
+        $("micToggle").textContent = "Стоп микрофон";
+      } catch (error) {
+        setMicStatus("err", error.message);
+        $("micToggle").textContent = "Проверить микрофон";
+      }
+    }
+
+    function startAudioStream(stream, { mode, sourceLabel }) {
+      const context = new AudioContext();
+      const source = context.createMediaStreamSource(stream);
+      const processor = context.createScriptProcessor(4096, 1, 1);
+      const sink = context.createGain();
+      sink.gain.value = 0;
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        captureState.chunks.push(new Float32Array(input));
+      };
+      source.connect(processor);
+      processor.connect(sink);
+      sink.connect(context.destination);
+      captureState = { active: true, timer: null, stream, context, source, processor, sink, mode, sourceLabel, chunks: [] };
+      captureState.timer = setInterval(flushAudioChunk, 2400);
+    }
+
     function stopCapture() {
+      const mode = captureState.mode;
       if (captureState.timer) clearInterval(captureState.timer);
       if (captureState.processor) captureState.processor.disconnect();
       if (captureState.sink) captureState.sink.disconnect();
       if (captureState.source) captureState.source.disconnect();
       if (captureState.context) captureState.context.close();
       if (captureState.stream) for (const track of captureState.stream.getTracks()) track.stop();
-      captureState = { active: false, timer: null, stream: null, context: null, source: null, processor: null, sink: null, chunks: [] };
-      setCaptureStatus("warn", "захват остановлен");
-      $("captureToggle").textContent = "Включить";
+      captureState = { active: false, timer: null, stream: null, context: null, source: null, processor: null, sink: null, mode: "", sourceLabel: "", chunks: [] };
+      if (mode === "microphone") {
+        setMicStatus("warn", "микрофон остановлен");
+        $("micToggle").textContent = "Проверить микрофон";
+      } else {
+        setCaptureStatus("warn", "захват остановлен");
+        $("captureToggle").textContent = "Включить";
+      }
     }
 
     async function flushAudioChunk() {
@@ -677,29 +759,31 @@
       const merged = mergeFloat32(chunks);
       if (merged.length < sampleRate * 0.7) return;
       if (float32Rms(merged) < 0.003) {
-        setCaptureStatus("on", "захват включен · жду речь");
+        setActiveCaptureStatus("on", captureState.mode === "microphone" ? "микрофон включен · жду речь" : "захват включен · жду речь");
         return;
       }
+      const mode = captureState.mode;
+      const sourceLabel = captureState.sourceLabel || "browser-system-audio";
       const pcm = downsampleToPCM16(merged, sampleRate, 16000);
       const pcmBase64 = bytesToBase64(new Uint8Array(pcm.buffer));
       try {
         const res = await fetch(`/v1/sessions/${sessionId}/stt/transcribe`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role: "client", source: "browser-system-audio", pcm_base64: pcmBase64 }),
+          body: JSON.stringify({ role: "client", source: sourceLabel, pcm_base64: pcmBase64 }),
         });
         if (res.status === 204) {
-          setCaptureStatus("on", "захват включен · жду речь");
+          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон включен · жду речь" : "захват включен · жду речь");
           return;
         }
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          setCaptureStatus("err", err.error || `stt http ${res.status}`);
+          setAudioStatus(mode, "err", err.error || `stt http ${res.status}`);
           return;
         }
-        setCaptureStatus("on", "захват включен · распознано");
+        setAudioStatus(mode, "on", mode === "microphone" ? "микрофон включен · распознано" : "захват включен · распознано");
       } catch (error) {
-        setCaptureStatus("err", error.message);
+        setAudioStatus(mode, "err", error.message);
       }
     }
 
@@ -747,6 +831,24 @@
       $("capturePill").className = `status-pill ${kind}`;
     }
 
+    function setMicStatus(kind, text) {
+      $("micStatus").textContent = text;
+      $("micPill").textContent = kind === "on" ? "вкл" : kind === "err" ? "ошибка" : "ожидание";
+      $("micPill").className = `status-pill ${kind}`;
+    }
+
+    function setActiveCaptureStatus(kind, text) {
+      setAudioStatus(captureState.mode, kind, text);
+    }
+
+    function setAudioStatus(mode, kind, text) {
+      if (mode === "microphone") {
+        setMicStatus(kind, text);
+      } else {
+        setCaptureStatus(kind, text);
+      }
+    }
+
     function setStreamStatus(text) {
       $("streamStatus").textContent = text;
     }
@@ -789,6 +891,7 @@
       createSession().catch((error) => $("session").textContent = error.message);
     };
     $("captureToggle").onclick = () => startCapture({ automatic: false });
+    $("micToggle").onclick = startMicTest;
     $("copyReply").onclick = copyReply;
     $("replyText").onclick = copyReply;
     $("markSaid").onclick = markSaid;
