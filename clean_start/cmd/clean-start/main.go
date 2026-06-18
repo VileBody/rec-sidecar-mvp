@@ -1,0 +1,86 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/VileBody/rec-sidecar-mvp/clean_start/internal/clean"
+)
+
+func main() {
+	roleFlag := flag.String("role", "", "gateway, seller-worker, stage-worker, scorecard-worker, or all")
+	flag.Parse()
+
+	cfg := clean.ConfigFromEnv()
+	if *roleFlag != "" {
+		cfg.Role = *roleFlag
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	nc, err := clean.ConnectNATS(cfg, logger)
+	if err != nil {
+		logger.Error("nats connect failed", "error", err)
+		os.Exit(1)
+	}
+	defer nc.Drain()
+
+	llm := clean.NewLLMClient(cfg, logger)
+
+	var runners []clean.Runner
+	switch cfg.Role {
+	case "gateway":
+		runners = append(runners, clean.NewGateway(cfg, nc, logger))
+	case "seller-worker":
+		runners = append(runners, clean.NewSellerWorker(cfg, nc, llm, logger))
+	case "stage-worker":
+		runners = append(runners, clean.NewStageWorker(cfg, nc, llm, logger))
+	case "scorecard-worker":
+		runners = append(runners, clean.NewScorecardWorker(cfg, nc, logger))
+	case "all":
+		runners = append(
+			runners,
+			clean.NewGateway(cfg, nc, logger),
+			clean.NewSellerWorker(cfg, nc, llm, logger),
+			clean.NewStageWorker(cfg, nc, llm, logger),
+			clean.NewScorecardWorker(cfg, nc, logger),
+		)
+	default:
+		logger.Error("unknown role", "role", cfg.Role)
+		os.Exit(2)
+	}
+
+	errCh := make(chan error, len(runners))
+	for _, runner := range runners {
+		go func(r clean.Runner) {
+			errCh <- r.Run(ctx)
+		}(runner)
+	}
+
+	select {
+	case <-ctx.Done():
+		logger.Info("shutdown requested")
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("runner stopped", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	for _, runner := range runners {
+		if err := runner.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("runner shutdown failed", "error", err)
+		}
+	}
+}

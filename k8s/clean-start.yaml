@@ -1,0 +1,252 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-nats
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-nats
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clean-start-nats
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clean-start-nats
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.11-alpine
+          args: ["-js", "-m", "8222"]
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: monitor
+              containerPort: 8222
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clean-start-nats
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-nats
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  selector:
+    app.kubernetes.io/name: clean-start-nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: client
+    - name: monitor
+      port: 8222
+      targetPort: monitor
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-gateway
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-gateway
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clean-start-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clean-start-gateway
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: gateway
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
+          imagePullPolicy: Always
+          args: ["--role", "gateway"]
+          ports:
+            - name: http
+              containerPort: 8110
+          envFrom:
+            - secretRef:
+                name: llm-helper-env
+          env:
+            - name: CLEAN_START_HTTP_ADDR
+              value: ":8110"
+            - name: NATS_URL
+              value: nats://clean-start-nats:4222
+            - name: COACH_LLM_SERVICE_URL
+              value: http://llm-helper
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clean-start-gateway
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-gateway
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: clean-start-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30916
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-seller-worker
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-seller-worker
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clean-start-seller-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clean-start-seller-worker
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: seller-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
+          imagePullPolicy: Always
+          args: ["--role", "seller-worker"]
+          envFrom:
+            - secretRef:
+                name: llm-helper-env
+          env:
+            - name: NATS_URL
+              value: nats://clean-start-nats:4222
+            - name: COACH_LLM_SERVICE_URL
+              value: http://llm-helper
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-stage-worker
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-stage-worker
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clean-start-stage-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clean-start-stage-worker
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: stage-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
+          imagePullPolicy: Always
+          args: ["--role", "stage-worker"]
+          envFrom:
+            - secretRef:
+                name: llm-helper-env
+          env:
+            - name: NATS_URL
+              value: nats://clean-start-nats:4222
+            - name: COACH_LLM_SERVICE_URL
+              value: http://llm-helper
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-scorecard-worker
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-scorecard-worker
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clean-start-scorecard-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clean-start-scorecard-worker
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: scorecard-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
+          imagePullPolicy: Always
+          args: ["--role", "scorecard-worker"]
+          env:
+            - name: NATS_URL
+              value: nats://clean-start-nats:4222
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
