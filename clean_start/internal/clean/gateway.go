@@ -389,6 +389,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	}
 	speakerRoles := map[string]string{}
 	stabilizer := newSTTStreamStabilizer()
+	segmentTracker := newSTTSegmentTracker()
 
 	browserConn, err := sttWSUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -434,7 +435,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 			}
 			for index, segment := range diarizedTranscriptSegments(transcript) {
 				segmentRole := roleForSTTSpeaker(role, segment.Speaker, speakerRoles)
-				segmentID := transcriptSegmentID(segment, index)
+				segmentID := segmentTracker.ID(segment, index)
 				if !stabilizer.ShouldEmit(segmentID, segment.Text, transcript.Final) {
 					continue
 				}
@@ -472,6 +473,9 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 					done <- err
 					return
 				}
+			}
+			if transcript.Final {
+				segmentTracker.NextTurn()
 			}
 		}
 	}()
@@ -843,12 +847,28 @@ func diarizedTranscriptSegments(transcript STTTranscript) []STTSegment {
 	return transcript.Segments
 }
 
-func transcriptSegmentID(segment STTSegment, index int) string {
+type sttSegmentTracker struct {
+	turn int
+}
+
+func newSTTSegmentTracker() *sttSegmentTracker {
+	return &sttSegmentTracker{}
+}
+
+func (t *sttSegmentTracker) ID(segment STTSegment, index int) string {
+	return transcriptSegmentID(t.turn, segment, index)
+}
+
+func (t *sttSegmentTracker) NextTurn() {
+	t.turn++
+}
+
+func transcriptSegmentID(turn int, segment STTSegment, index int) string {
 	speaker := sanitizeSpeakerID(segment.Speaker)
 	if speaker == "" {
 		speaker = "unknown"
 	}
-	return fmt.Sprintf("%03d-%s", index, speaker)
+	return fmt.Sprintf("%04d-%03d-%s", turn, index, speaker)
 }
 
 type sttStreamStabilizer struct {

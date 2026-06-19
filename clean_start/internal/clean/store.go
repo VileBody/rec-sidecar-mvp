@@ -211,13 +211,7 @@ func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptI
 		if !sameTranscriptStream(items[i], item) {
 			continue
 		}
-		if !items[i].Final {
-			item.ID = stableTranscriptID(items[i], item)
-			item.CreatedAt = stableTranscriptCreatedAt(items[i], item)
-			items[i] = item
-			return items
-		}
-		if item.Final && items[i].Text == item.Text {
+		if !items[i].Final || item.Final {
 			item.ID = stableTranscriptID(items[i], item)
 			item.CreatedAt = stableTranscriptCreatedAt(items[i], item)
 			items[i] = item

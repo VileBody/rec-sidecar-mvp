@@ -143,18 +143,59 @@ func TestAppendTranscriptCoalescesInterleavedDiarizedPartials(t *testing.T) {
 	}
 }
 
+func TestAppendTranscriptAllowsRetroactiveFinalCorrection(t *testing.T) {
+	now := time.Now().UTC()
+	items := []TranscriptItem{}
+	items = appendTranscript(items, TranscriptItem{ID: "partial-1", Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "0000-000-1", Text: "Давай дзюцу при", CreatedAt: now})
+	items = appendTranscript(items, TranscriptItem{ID: "final-1", Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "0000-000-1", Text: "Давай дзюцу призыва.", Final: true, CreatedAt: now.Add(7 * time.Second)})
+	items = appendTranscript(items, TranscriptItem{ID: "final-correction", Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "0000-000-1", Text: "Давай дзюцу призыва!", Final: true, CreatedAt: now.Add(8 * time.Second)})
+
+	if len(items) != 1 {
+		t.Fatalf("correction should update existing bubble, got %#v", items)
+	}
+	if items[0].Text != "Давай дзюцу призыва!" || !items[0].Final {
+		t.Fatalf("unexpected corrected item: %#v", items[0])
+	}
+	if items[0].ID != "partial-1" || !items[0].CreatedAt.Equal(now) {
+		t.Fatalf("correction should preserve bubble identity/time: %#v", items[0])
+	}
+
+	items = appendTranscript(items, TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "0001-000-1", Text: "Новая реплика.", CreatedAt: now.Add(10 * time.Second)})
+	if len(items) != 2 || items[1].Text != "Новая реплика." {
+		t.Fatalf("new turn should append, not overwrite old bubble: %#v", items)
+	}
+}
+
 func TestAppendTranscriptKeepsDiarizedSegmentsFromSameSpeakerSeparate(t *testing.T) {
 	now := time.Now().UTC()
 	items := []TranscriptItem{}
-	items = appendTranscript(items, TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "000-1", Text: "Первая реплика.", CreatedAt: now})
-	items = appendTranscript(items, TranscriptItem{Role: "speaker_2", Speaker: "2", Source: "browser-system-audio", SegmentID: "001-2", Text: "Ответ.", CreatedAt: now})
-	items = appendTranscript(items, TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "002-1", Text: "Вторая реплика того же спикера.", CreatedAt: now})
+	items = appendTranscript(items, TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "0000-000-1", Text: "Первая реплика.", CreatedAt: now})
+	items = appendTranscript(items, TranscriptItem{Role: "speaker_2", Speaker: "2", Source: "browser-system-audio", SegmentID: "0000-001-2", Text: "Ответ.", CreatedAt: now})
+	items = appendTranscript(items, TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "0000-002-1", Text: "Вторая реплика того же спикера.", CreatedAt: now})
 
 	if len(items) != 3 {
 		t.Fatalf("same speaker segments should remain separate by segment_id: %#v", items)
 	}
 	if items[0].Text != "Первая реплика." || items[2].Text != "Вторая реплика того же спикера." {
 		t.Fatalf("same speaker segments were collapsed: %#v", items)
+	}
+}
+
+func TestSTTSegmentTrackerKeepsSegmentIDsUniqueAcrossTurns(t *testing.T) {
+	tracker := newSTTSegmentTracker()
+	first := tracker.ID(STTSegment{Speaker: "1", Text: "Первая"}, 0)
+	again := tracker.ID(STTSegment{Speaker: "1", Text: "Первая поправка"}, 0)
+	tracker.NextTurn()
+	nextTurn := tracker.ID(STTSegment{Speaker: "1", Text: "Новая"}, 0)
+
+	if first != "0000-000-1" {
+		t.Fatalf("first id = %q, want 0000-000-1", first)
+	}
+	if again != first {
+		t.Fatalf("same turn segment id should be stable: %q vs %q", again, first)
+	}
+	if nextTurn != "0001-000-1" {
+		t.Fatalf("next turn id = %q, want 0001-000-1", nextTurn)
 	}
 }
 
