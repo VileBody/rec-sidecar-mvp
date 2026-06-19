@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -84,6 +85,12 @@ type BrowserSTTStreamMessage struct {
 type AudioChunkMessage struct {
 	Content string `json:"content"`
 }
+
+const (
+	sttAudioFlushInterval = 50 * time.Millisecond
+	sttAudioTargetFlush   = 100 * time.Millisecond
+	sttAudioMaxFlush      = 200 * time.Millisecond
+)
 
 func NewGateway(cfg Config, nc *nats.Conn, inworld *InworldClient, logger *slog.Logger) *Gateway {
 	return &Gateway{
@@ -409,6 +416,8 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	g.logger.Info("browser audio stt stream connected", "session_id", sessionID, "role", role, "source", source, "provider", provider)
 
 	done := make(chan error, 2)
+	audioCommands := make(chan sttAudioCommand, 128)
+	audioStats := &sttAudioStats{}
 	go func() {
 		for {
 			transcript, err := stream.ReadTranscript()
@@ -468,28 +477,30 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	go func() {
-		var audioBytes int
-		var audioChunks int
-		var endTurns int
+		err := runSTTAudioJitterBuffer(stream, audioCommands, audioStats)
+		if err != nil {
+			done <- err
+			return
+		}
+		done <- nil
+	}()
+
+	go func() {
+		defer close(audioCommands)
 		for {
 			var msg BrowserSTTStreamMessage
 			if err := browserConn.ReadJSON(&msg); err != nil {
-				g.logger.Info("browser audio stt stream reader closed", "session_id", sessionID, "role", role, "source", source, "audio_chunks", audioChunks, "audio_bytes", audioBytes, "end_turns", endTurns, "error", err)
-				done <- err
+				g.logger.Info("browser audio stt stream reader closed", "session_id", sessionID, "role", role, "source", source, "audio_chunks", audioStats.audioChunks.Load(), "audio_bytes", audioStats.audioBytes.Load(), "audio_flushes", audioStats.audioFlushes.Load(), "audio_flushed_bytes", audioStats.audioFlushedBytes.Load(), "end_turns", audioStats.endTurns.Load(), "error", err)
+				audioCommands <- sttAudioCommand{err: err}
 				return
 			}
 			if msg.CloseStream != nil {
-				g.logger.Info("browser audio stt stream close requested", "session_id", sessionID, "role", role, "source", source, "audio_chunks", audioChunks, "audio_bytes", audioBytes, "end_turns", endTurns)
-				done <- nil
+				g.logger.Info("browser audio stt stream close requested", "session_id", sessionID, "role", role, "source", source, "audio_chunks", audioStats.audioChunks.Load(), "audio_bytes", audioStats.audioBytes.Load(), "audio_flushes", audioStats.audioFlushes.Load(), "audio_flushed_bytes", audioStats.audioFlushedBytes.Load(), "end_turns", audioStats.endTurns.Load())
+				audioCommands <- sttAudioCommand{close: true}
 				return
 			}
 			if msg.EndTurn != nil {
-				if err := stream.SendEndTurn(); err != nil {
-					done <- fmt.Errorf("%s stt stream end_turn: %w", provider, err)
-					return
-				}
-				endTurns++
-				g.logger.Info("browser audio stt stream end_turn", "session_id", sessionID, "role", role, "source", source, "end_turns", endTurns)
+				audioCommands <- sttAudioCommand{endTurn: true}
 				continue
 			}
 			if msg.AudioChunk == nil {
@@ -503,12 +514,9 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 			if len(raw) == 0 {
 				continue
 			}
-			if err := stream.SendAudio(raw); err != nil {
-				done <- err
-				return
-			}
-			audioChunks++
-			audioBytes += len(raw)
+			audioStats.audioChunks.Add(1)
+			audioStats.audioBytes.Add(int64(len(raw)))
+			audioCommands <- sttAudioCommand{audio: raw}
 		}
 	}()
 
@@ -559,6 +567,198 @@ func (g *Gateway) selectedSTTProvider() (string, bool) {
 		}
 		return "auto", false
 	}
+}
+
+type sttAudioCommand struct {
+	audio   []byte
+	endTurn bool
+	close   bool
+	err     error
+}
+
+type sttAudioStats struct {
+	audioChunks       atomic.Int64
+	audioBytes        atomic.Int64
+	audioFlushes      atomic.Int64
+	audioFlushedBytes atomic.Int64
+	endTurns          atomic.Int64
+	coalescedEndTurns atomic.Int64
+	maxBufferBytes    atomic.Int64
+}
+
+func runSTTAudioJitterBuffer(stream STTStream, commands <-chan sttAudioCommand, stats *sttAudioStats) error {
+	buffer := &sttAudioJitterBuffer{
+		stream:      stream,
+		stats:       stats,
+		targetBytes: durationToPCMBytes(sttAudioTargetFlush),
+		maxBytes:    durationToPCMBytes(sttAudioMaxFlush),
+	}
+	ticker := time.NewTicker(sttAudioFlushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case command, ok := <-commands:
+			if !ok {
+				return buffer.FlushAll()
+			}
+			if command.err != nil {
+				if err := buffer.FlushAll(); err != nil {
+					return err
+				}
+				return command.err
+			}
+			if command.close {
+				return buffer.FlushAll()
+			}
+			if len(command.audio) > 0 {
+				if err := buffer.Append(command.audio); err != nil {
+					return err
+				}
+				continue
+			}
+			if command.endTurn {
+				if err := buffer.EndTurn(); err != nil {
+					return err
+				}
+			}
+		case now := <-ticker.C:
+			if err := buffer.FlushStale(now); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+type sttAudioJitterBuffer struct {
+	stream            STTStream
+	stats             *sttAudioStats
+	buffer            []byte
+	firstBufferedAt   time.Time
+	lastEndTurnAt     time.Time
+	audioSinceEndTurn bool
+	targetBytes       int
+	maxBytes          int
+}
+
+func (b *sttAudioJitterBuffer) Append(pcm []byte) error {
+	if len(pcm) == 0 {
+		return nil
+	}
+	if len(b.buffer) == 0 {
+		b.firstBufferedAt = time.Now()
+	}
+	b.buffer = append(b.buffer, pcm...)
+	b.audioSinceEndTurn = true
+	b.rememberMaxBuffer()
+	return b.FlushReady()
+}
+
+func (b *sttAudioJitterBuffer) EndTurn() error {
+	if err := b.FlushAll(); err != nil {
+		return err
+	}
+	now := time.Now()
+	if !b.audioSinceEndTurn {
+		if b.stats != nil {
+			b.stats.coalescedEndTurns.Add(1)
+		}
+		return nil
+	}
+	if err := b.stream.SendEndTurn(); err != nil {
+		return err
+	}
+	if b.stats != nil {
+		b.stats.endTurns.Add(1)
+	}
+	b.lastEndTurnAt = now
+	b.audioSinceEndTurn = false
+	return nil
+}
+
+func (b *sttAudioJitterBuffer) FlushReady() error {
+	for len(b.buffer) >= b.targetBytes {
+		if err := b.flushChunk(minInt(len(b.buffer), b.maxBytes)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *sttAudioJitterBuffer) FlushStale(now time.Time) error {
+	if len(b.buffer) == 0 || b.firstBufferedAt.IsZero() || now.Sub(b.firstBufferedAt) < sttAudioTargetFlush {
+		return nil
+	}
+	return b.flushChunk(minInt(len(b.buffer), b.maxBytes))
+}
+
+func (b *sttAudioJitterBuffer) FlushAll() error {
+	for len(b.buffer) > 0 {
+		if err := b.flushChunk(minInt(len(b.buffer), b.maxBytes)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *sttAudioJitterBuffer) flushChunk(size int) error {
+	size = clampPCMSize(size, len(b.buffer))
+	if size <= 0 {
+		return nil
+	}
+	chunk := make([]byte, size)
+	copy(chunk, b.buffer[:size])
+	if err := b.stream.SendAudio(chunk); err != nil {
+		return err
+	}
+	copy(b.buffer, b.buffer[size:])
+	b.buffer = b.buffer[:len(b.buffer)-size]
+	if len(b.buffer) == 0 {
+		b.firstBufferedAt = time.Time{}
+	} else {
+		b.firstBufferedAt = time.Now()
+	}
+	if b.stats != nil {
+		b.stats.audioFlushes.Add(1)
+		b.stats.audioFlushedBytes.Add(int64(size))
+	}
+	return nil
+}
+
+func (b *sttAudioJitterBuffer) rememberMaxBuffer() {
+	if b.stats == nil {
+		return
+	}
+	size := int64(len(b.buffer))
+	for {
+		previous := b.stats.maxBufferBytes.Load()
+		if size <= previous || b.stats.maxBufferBytes.CompareAndSwap(previous, size) {
+			break
+		}
+	}
+}
+
+func durationToPCMBytes(duration time.Duration) int {
+	bytesPerSecond := audioSampleRate * audioChannels * audioBitDepth / 8
+	bytes := int(duration.Seconds() * float64(bytesPerSecond))
+	return clampPCMSize(bytes, bytes)
+}
+
+func clampPCMSize(size, available int) int {
+	if size > available {
+		size = available
+	}
+	if size%2 != 0 {
+		size--
+	}
+	return size
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func transcribePCMWithStream(stream STTStream, provider string, pcm []byte) (string, error) {

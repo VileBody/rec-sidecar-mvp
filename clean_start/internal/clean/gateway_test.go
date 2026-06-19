@@ -178,6 +178,104 @@ func TestSTTStreamStabilizerSuppressesRepeatedFullHypotheses(t *testing.T) {
 	}
 }
 
+func TestSTTAudioJitterBufferCoalescesBrowserChunks(t *testing.T) {
+	stream := &fakeSTTStream{}
+	stats := &sttAudioStats{}
+	commands := make(chan sttAudioCommand, 3)
+	commands <- sttAudioCommand{audio: make([]byte, durationToPCMBytes(50*time.Millisecond))}
+	commands <- sttAudioCommand{audio: make([]byte, durationToPCMBytes(50*time.Millisecond))}
+	commands <- sttAudioCommand{close: true}
+	close(commands)
+
+	if err := runSTTAudioJitterBuffer(stream, commands, stats); err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.audio) != 1 {
+		t.Fatalf("expected one coalesced audio flush, got %d", len(stream.audio))
+	}
+	if got, want := len(stream.audio[0]), durationToPCMBytes(100*time.Millisecond); got != want {
+		t.Fatalf("audio flush bytes = %d, want %d", got, want)
+	}
+	if stats.audioFlushes.Load() != 1 {
+		t.Fatalf("audio flushes = %d, want 1", stats.audioFlushes.Load())
+	}
+}
+
+func TestSTTAudioJitterBufferFlushesBeforeEndTurn(t *testing.T) {
+	stream := &fakeSTTStream{}
+	stats := &sttAudioStats{}
+	commands := make(chan sttAudioCommand, 4)
+	commands <- sttAudioCommand{audio: make([]byte, durationToPCMBytes(40*time.Millisecond))}
+	commands <- sttAudioCommand{endTurn: true}
+	commands <- sttAudioCommand{endTurn: true}
+	commands <- sttAudioCommand{close: true}
+	close(commands)
+
+	if err := runSTTAudioJitterBuffer(stream, commands, stats); err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.audio) != 1 {
+		t.Fatalf("expected pending short audio to flush before end_turn, got %d flushes", len(stream.audio))
+	}
+	if got, want := len(stream.audio[0]), durationToPCMBytes(40*time.Millisecond); got != want {
+		t.Fatalf("short audio flush bytes = %d, want %d", got, want)
+	}
+	if stream.endTurns != 1 {
+		t.Fatalf("end turns = %d, want 1", stream.endTurns)
+	}
+	if stats.coalescedEndTurns.Load() != 1 {
+		t.Fatalf("coalesced end turns = %d, want 1", stats.coalescedEndTurns.Load())
+	}
+}
+
+func TestSTTAudioJitterBufferCapsFlushSize(t *testing.T) {
+	stream := &fakeSTTStream{}
+	stats := &sttAudioStats{}
+	commands := make(chan sttAudioCommand, 2)
+	commands <- sttAudioCommand{audio: make([]byte, durationToPCMBytes(500*time.Millisecond))}
+	commands <- sttAudioCommand{close: true}
+	close(commands)
+
+	if err := runSTTAudioJitterBuffer(stream, commands, stats); err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.audio) < 2 {
+		t.Fatalf("expected large audio to split into multiple flushes, got %d", len(stream.audio))
+	}
+	for i, chunk := range stream.audio {
+		if len(chunk) > durationToPCMBytes(sttAudioMaxFlush) {
+			t.Fatalf("flush %d was %d bytes, over max %d", i, len(chunk), durationToPCMBytes(sttAudioMaxFlush))
+		}
+	}
+}
+
+type fakeSTTStream struct {
+	audio    [][]byte
+	endTurns int
+}
+
+func (s *fakeSTTStream) SendAudio(pcm []byte) error {
+	copied := make([]byte, len(pcm))
+	copy(copied, pcm)
+	s.audio = append(s.audio, copied)
+	return nil
+}
+
+func (s *fakeSTTStream) SendEndTurn() error {
+	s.endTurns++
+	return nil
+}
+
+func (s *fakeSTTStream) ReadTranscript() (STTTranscript, error) {
+	return STTTranscript{}, nil
+}
+
+func (s *fakeSTTStream) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (s *fakeSTTStream) Close() {}
+
 func TestAppendTranscriptDropsEmptyText(t *testing.T) {
 	items := appendTranscript(nil, TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio"})
 	if len(items) != 0 {
