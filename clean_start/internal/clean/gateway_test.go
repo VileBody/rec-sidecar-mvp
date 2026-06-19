@@ -41,3 +41,53 @@ func TestSellerEchoRejectReason(t *testing.T) {
 		t.Fatalf("seller mic text rejected as %q", got)
 	}
 }
+
+func TestRoleForSTTSpeakerMixed(t *testing.T) {
+	roles := map[string]string{}
+	if got := roleForSTTSpeaker("mixed", "1", roles); got != "seller" {
+		t.Fatalf("first mixed speaker role = %q, want seller", got)
+	}
+	if got := roleForSTTSpeaker("mixed", "2", roles); got != "client" {
+		t.Fatalf("second mixed speaker role = %q, want client", got)
+	}
+	if got := roleForSTTSpeaker("mixed", "1", roles); got != "seller" {
+		t.Fatalf("known first mixed speaker role = %q, want seller", got)
+	}
+	if got := roleForSTTSpeaker("client", "1", roles); got != "client" {
+		t.Fatalf("explicit client role = %q, want client", got)
+	}
+}
+
+func TestParseInworldTranscriptSpeakerSegments(t *testing.T) {
+	raw := []byte(`{
+		"result": {
+			"transcription": {
+				"transcript": "Привет Да, слушаю",
+				"isFinal": true,
+				"wordTimestamps": [
+					{"word":"При","speaker":1},
+					{"word":"вет","speaker":1},
+					{"word":" Да","speaker":2},
+					{"word":",","speaker":2},
+					{"word":" слушаю","speaker":2}
+				]
+			}
+		}
+	}`)
+	transcript, err := parseInworldTranscript(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transcript.Text != "Привет Да, слушаю" || !transcript.Final {
+		t.Fatalf("unexpected transcript: %#v", transcript)
+	}
+	if len(transcript.Segments) != 2 {
+		t.Fatalf("segments len = %d, want 2: %#v", len(transcript.Segments), transcript.Segments)
+	}
+	if transcript.Segments[0].Speaker != "1" || transcript.Segments[0].Text != "Привет" {
+		t.Fatalf("segment 0 = %#v", transcript.Segments[0])
+	}
+	if transcript.Segments[1].Speaker != "2" || transcript.Segments[1].Text != "Да, слушаю" {
+		t.Fatalf("segment 1 = %#v", transcript.Segments[1])
+	}
+}

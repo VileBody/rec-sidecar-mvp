@@ -733,8 +733,8 @@
       $("bothToggle").disabled = true;
       updateBothStatus("включаю звонок");
       try {
-        if (!captureStates.system.active) await startCapture({ automatic: false });
         if (!captureStates.microphone.active) await startMicTest();
+        if (!captureStates.system.active) await startCapture({ automatic: false });
       } finally {
         $("bothToggle").disabled = false;
         updateBothStatus();
@@ -746,7 +746,7 @@
       const source = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(4096, 1, 1);
       const sink = context.createGain();
-      const role = mode === "microphone" ? "seller" : "client";
+      const role = mode === "microphone" ? "seller" : captureStates.microphone.active ? "client" : "mixed";
       const ws = new WebSocket(sttStreamURL({ role, sourceLabel }));
       const nextState = {
         active: true,
@@ -784,7 +784,8 @@
         if (data.type === "error") {
           setAudioStatus(mode, "err", data.error || "STT stream error");
         } else if (data.type === "stt.final") {
-          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон · распознано" : "захват · распознано");
+          const roleText = data.role === "seller" ? "мы" : data.role === "client" ? "клиент" : "роль?";
+          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон · распознано" : `захват · ${roleText}`);
         }
       };
       ws.onerror = () => {
@@ -968,11 +969,11 @@
       } else if (systemOn && micOn) {
         $("bothStatus").textContent = "звонок пишется: system=клиент, mic=мы";
       } else if (systemOn) {
-        $("bothStatus").textContent = "включен только системный звук";
+        $("bothStatus").textContent = "включен только системный звук · диаризация";
       } else if (micOn) {
         $("bothStatus").textContent = "включен только микрофон";
       } else {
-        $("bothStatus").textContent = "system audio = клиент, микрофон = мы";
+        $("bothStatus").textContent = "system audio = диаризация, микрофон = мы";
       }
       $("bothToggle").textContent = systemOn && micOn ? "Стоп всё" : "Включить всё";
     }

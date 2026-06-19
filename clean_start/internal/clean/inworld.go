@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,17 @@ type InworldClient struct {
 
 type InworldSTTStream struct {
 	conn *websocket.Conn
+}
+
+type STTTranscript struct {
+	Text     string
+	Final    bool
+	Segments []STTSegment
+}
+
+type STTSegment struct {
+	Speaker string
+	Text    string
 }
 
 type AudioResult struct {
@@ -138,7 +150,7 @@ func (c *InworldClient) TranscribePCM(ctx context.Context, pcm []byte) (string, 
 	_ = stream.conn.SetReadDeadline(time.Now().Add(8 * time.Second))
 	var lastPartial string
 	for {
-		text, final, err := stream.ReadTranscript()
+		transcript, err := stream.ReadTranscript()
 		if err != nil {
 			if lastPartial != "" {
 				return lastPartial, nil
@@ -151,10 +163,11 @@ func (c *InworldClient) TranscribePCM(ctx context.Context, pcm []byte) (string, 
 			}
 			return "", fmt.Errorf("inworld stt read: %w", err)
 		}
+		text := transcript.Text
 		if text == "" {
 			continue
 		}
-		if final {
+		if transcript.Final {
 			return text, nil
 		}
 		lastPartial = text
@@ -179,10 +192,11 @@ func (c *InworldClient) ConnectSTT(ctx context.Context) (*InworldSTTStream, erro
 
 	config := map[string]any{
 		"transcribe_config": map[string]any{
-			"modelId":          c.cfg.InworldSTTModel,
-			"audioEncoding":    "LINEAR16",
-			"sampleRateHertz":  audioSampleRate,
-			"numberOfChannels": audioChannels,
+			"modelId":                  c.cfg.InworldSTTModel,
+			"audioEncoding":            "LINEAR16",
+			"sampleRateHertz":          audioSampleRate,
+			"numberOfChannels":         audioChannels,
+			"enableSpeakerDiarization": c.cfg.InworldSTTDiarize,
 		},
 	}
 	transcribeConfig := config["transcribe_config"].(map[string]any)
@@ -226,16 +240,16 @@ func (s *InworldSTTStream) SendEndTurn() error {
 	return s.conn.WriteJSON(map[string]any{"end_turn": map[string]any{}})
 }
 
-func (s *InworldSTTStream) ReadTranscript() (string, bool, error) {
+func (s *InworldSTTStream) ReadTranscript() (STTTranscript, error) {
 	_, raw, err := s.conn.ReadMessage()
 	if err != nil {
-		return "", false, err
+		return STTTranscript{}, err
 	}
-	text, final, err := parseInworldTranscript(raw)
+	transcript, err := parseInworldTranscript(raw)
 	if err != nil {
-		return "", false, fmt.Errorf("inworld stt response: %w", err)
+		return STTTranscript{}, fmt.Errorf("inworld stt response: %w", err)
 	}
-	return text, final, nil
+	return transcript, nil
 }
 
 func (s *InworldSTTStream) Close() {
@@ -243,16 +257,16 @@ func (s *InworldSTTStream) Close() {
 	_ = s.conn.Close()
 }
 
-func parseInworldTranscript(raw []byte) (string, bool, error) {
+func parseInworldTranscript(raw []byte) (STTTranscript, error) {
 	var value map[string]any
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return "", false, nil
+		return STTTranscript{}, nil
 	}
 	if code, ok := value["code"]; ok && code != nil {
-		return "", false, fmt.Errorf("%v", value["message"])
+		return STTTranscript{}, fmt.Errorf("%v", value["message"])
 	}
 	if errValue, ok := value["error"].(map[string]any); ok && errValue["code"] != nil {
-		return "", false, fmt.Errorf("%v", errValue["message"])
+		return STTTranscript{}, fmt.Errorf("%v", errValue["message"])
 	}
 	transcription := map[string]any(nil)
 	if result, ok := value["result"].(map[string]any); ok {
@@ -266,18 +280,77 @@ func parseInworldTranscript(raw []byte) (string, bool, error) {
 		}
 	}
 	if transcription == nil {
-		return "", false, nil
+		return STTTranscript{}, nil
 	}
 	text, _ := transcription["transcript"].(string)
 	text = strings.Join(strings.Fields(text), " ")
 	if text == "" {
-		return "", false, nil
+		return STTTranscript{}, nil
 	}
 	final, _ := transcription["isFinal"].(bool)
 	if !final {
 		final, _ = transcription["is_final"].(bool)
 	}
-	return text, final, nil
+	return STTTranscript{
+		Text:     text,
+		Final:    final,
+		Segments: parseSpeakerSegments(transcription["wordTimestamps"], text),
+	}, nil
+}
+
+func parseSpeakerSegments(raw any, fallbackText string) []STTSegment {
+	items, ok := raw.([]any)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+	var segments []STTSegment
+	var currentSpeaker string
+	var currentText strings.Builder
+	flush := func() {
+		text := strings.Join(strings.Fields(currentText.String()), " ")
+		if text == "" {
+			return
+		}
+		segments = append(segments, STTSegment{Speaker: currentSpeaker, Text: text})
+		currentText.Reset()
+	}
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		word, _ := obj["word"].(string)
+		if strings.TrimSpace(word) == "" {
+			continue
+		}
+		speaker := speakerID(obj["speaker"])
+		if currentText.Len() > 0 && speaker != currentSpeaker {
+			flush()
+		}
+		currentSpeaker = speaker
+		currentText.WriteString(word)
+	}
+	flush()
+	if len(segments) == 1 && segments[0].Speaker != "" {
+		segments[0].Text = fallbackText
+	}
+	return segments
+}
+
+func speakerID(raw any) string {
+	switch value := raw.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(value)
+	case float64:
+		if value == float64(int(value)) {
+			return strconv.Itoa(int(value))
+		}
+		return fmt.Sprintf("%g", value)
+	default:
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
 }
 
 func inworldAuthorization(apiKey string) string {

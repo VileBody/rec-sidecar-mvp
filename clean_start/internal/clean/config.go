@@ -27,6 +27,7 @@ type Config struct {
 	InworldSTTWSURL    string
 	InworldSTTModel    string
 	InworldSTTLanguage string
+	InworldSTTDiarize  bool
 	InworldSellerVoice string
 	InworldClientVoice string
 	InworldLanguage    string
@@ -52,6 +53,7 @@ func ConfigFromEnv() Config {
 		InworldSTTWSURL:    env("INWORLD_STT_WS_URL", "wss://api.inworld.ai/stt/v1/transcribe:streamBidirectional"),
 		InworldSTTModel:    env("INWORLD_STT_MODEL", "soniox/stt-rt-v4"),
 		InworldSTTLanguage: env("INWORLD_STT_LANGUAGE", "ru"),
+		InworldSTTDiarize:  envBool("INWORLD_STT_SPEAKER_DIARIZATION", true),
 		InworldSellerVoice: env("INWORLD_TTS_SELLER_VOICE", "Elena"),
 		InworldClientVoice: env("INWORLD_TTS_CLIENT_VOICE", "Arkady"),
 		InworldLanguage:    env("INWORLD_TTS_LANGUAGE", "ru-RU"),
@@ -76,6 +78,21 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func envBool(name string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func parseLogLevel(value string) slog.Level {

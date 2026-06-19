@@ -51,6 +51,7 @@ type InputEventRequest struct {
 	Trigger string `json:"trigger,omitempty"`
 	Role    string `json:"role,omitempty"`
 	Source  string `json:"source,omitempty"`
+	Speaker string `json:"speaker,omitempty"`
 }
 
 type STTTranscribeRequest struct {
@@ -244,9 +245,10 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 			role = "client"
 		}
 		event = NewEvent(sessionID, req.Type, "gateway", SpeechData{
-			Role:   role,
-			Text:   strings.TrimSpace(req.Text),
-			Source: strings.TrimSpace(req.Source),
+			Role:    role,
+			Text:    strings.TrimSpace(req.Text),
+			Source:  strings.TrimSpace(req.Source),
+			Speaker: strings.TrimSpace(req.Speaker),
 		})
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported event type %q", req.Type))
@@ -352,10 +354,14 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	if role == "" {
 		role = "client"
 	}
+	if role == "mixed" || role == "diarized" {
+		role = "mixed"
+	}
 	source := strings.TrimSpace(r.URL.Query().Get("source"))
 	if source == "" {
 		source = "browser-audio"
 	}
+	speakerRoles := map[string]string{}
 
 	browserConn, err := sttWSUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -385,40 +391,45 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	done := make(chan error, 2)
 	go func() {
 		for {
-			text, final, err := stream.ReadTranscript()
+			transcript, err := stream.ReadTranscript()
 			if err != nil {
 				done <- err
 				return
 			}
-			if text == "" {
+			if transcript.Text == "" {
 				continue
 			}
-			if reason := browserTranscriptRejectReason(text); reason != "" {
-				g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", role, "source", source, "reason", reason, "text", text)
-				continue
-			}
-			if reason := g.sellerEchoRejectReason(sessionID, role, source, text); reason != "" {
-				g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", role, "source", source, "reason", reason, "text", text)
-				continue
-			}
-
 			eventType := EventSTTPartial
-			if final {
+			if transcript.Final {
 				eventType = EventSTTFinal
 			}
-			event := NewEvent(sessionID, eventType, "gateway-stt-live", SpeechData{
-				Role:   role,
-				Text:   text,
-				Source: source,
-			})
-			if err := g.emit(event); err != nil {
-				done <- err
-				return
-			}
-			g.logger.Info("browser audio stt stream transcript", "session_id", sessionID, "role", role, "source", source, "final", final, "text_len", len([]rune(text)), "text", text)
-			if err := writeBrowserJSON(map[string]any{"type": eventType, "text": text, "final": final}); err != nil {
-				done <- err
-				return
+			for _, segment := range diarizedTranscriptSegments(transcript) {
+				segmentRole := roleForSTTSpeaker(role, segment.Speaker, speakerRoles)
+				if reason := browserTranscriptRejectReason(segment.Text); reason != "" {
+					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
+					continue
+				}
+				if role != "mixed" {
+					if reason := g.sellerEchoRejectReason(sessionID, segmentRole, source, segment.Text); reason != "" {
+						g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
+						continue
+					}
+				}
+				event := NewEvent(sessionID, eventType, "gateway-stt-live", SpeechData{
+					Role:    segmentRole,
+					Text:    segment.Text,
+					Source:  source,
+					Speaker: segment.Speaker,
+				})
+				if err := g.emit(event); err != nil {
+					done <- err
+					return
+				}
+				g.logger.Info("browser audio stt stream transcript", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "final", transcript.Final, "text_len", len([]rune(segment.Text)), "text", segment.Text)
+				if err := writeBrowserJSON(map[string]any{"type": eventType, "text": segment.Text, "final": transcript.Final, "role": segmentRole, "speaker": segment.Speaker}); err != nil {
+					done <- err
+					return
+				}
 			}
 		}
 	}()
@@ -512,6 +523,32 @@ func browserTranscriptRejectReason(text string) string {
 		return "mostly_non_russian_script"
 	}
 	return ""
+}
+
+func diarizedTranscriptSegments(transcript STTTranscript) []STTSegment {
+	if len(transcript.Segments) == 0 {
+		return []STTSegment{{Text: transcript.Text}}
+	}
+	return transcript.Segments
+}
+
+func roleForSTTSpeaker(defaultRole, speaker string, speakerRoles map[string]string) string {
+	if defaultRole != "mixed" {
+		return defaultRole
+	}
+	speaker = strings.TrimSpace(speaker)
+	if speaker == "" {
+		return "client"
+	}
+	if role, ok := speakerRoles[speaker]; ok {
+		return role
+	}
+	role := "client"
+	if len(speakerRoles) == 0 {
+		role = "seller"
+	}
+	speakerRoles[speaker] = role
+	return role
 }
 
 func isCJKLike(r rune) bool {

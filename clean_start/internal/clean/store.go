@@ -16,6 +16,7 @@ type TranscriptItem struct {
 	Role      string    `json:"role"`
 	Text      string    `json:"text"`
 	Source    string    `json:"source,omitempty"`
+	Speaker   string    `json:"speaker,omitempty"`
 	Final     bool      `json:"final"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -110,7 +111,7 @@ func (s *Store) Apply(event Event) SessionState {
 				state.ClientPartial = data.Text
 			}
 			state.Transcript = appendTranscript(state.Transcript, TranscriptItem{
-				Role: data.Role, Text: data.Text, Source: data.Source, Final: false, CreatedAt: event.CreatedAt,
+				Role: data.Role, Text: data.Text, Source: data.Source, Speaker: data.Speaker, Final: false, CreatedAt: event.CreatedAt,
 			})
 		}
 	case EventSTTFinal:
@@ -124,7 +125,7 @@ func (s *Store) Apply(event Event) SessionState {
 				state.Messages = append(state.Messages, Message{Role: "seller", Text: data.Text, CreatedAt: event.CreatedAt})
 			}
 			state.Transcript = appendTranscript(state.Transcript, TranscriptItem{
-				Role: data.Role, Text: data.Text, Source: data.Source, Final: true, CreatedAt: event.CreatedAt,
+				Role: data.Role, Text: data.Text, Source: data.Source, Speaker: data.Speaker, Final: true, CreatedAt: event.CreatedAt,
 			})
 		}
 	case EventSellerStarted:
