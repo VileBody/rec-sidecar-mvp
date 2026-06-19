@@ -458,7 +458,7 @@
         <div class="audio-row">
           <div>
             <div class="title" style="font-size:15px">Системный звук</div>
-            <div id="captureStatus" class="sub">готовлю захват по умолчанию</div>
+            <div id="captureStatus" class="sub">нажми «Включить» и выбери экран/вкладку со звуком</div>
           </div>
           <div class="capture-row">
             <span id="capturePill" class="status-pill warn">ожидание</span>
@@ -545,7 +545,6 @@
     let events = null;
     let pollTimer = null;
     let state = null;
-    let autoCaptureTried = false;
     let captureStates = {
       system: emptyCaptureState("system"),
       microphone: emptyCaptureState("microphone"),
@@ -568,10 +567,6 @@
       connectStream();
       startStatePolling();
       render();
-      if (!autoCaptureTried) {
-        autoCaptureTried = true;
-        setTimeout(() => startCapture({ automatic: true }), 250);
-      }
     }
 
     function connectStream() {
@@ -1184,7 +1179,6 @@
     }
 
     $("newSession").onclick = () => {
-      autoCaptureTried = false;
       createSession().catch((error) => $("session").textContent = error.message);
     };
     $("bothToggle").onclick = startBothAudio;
