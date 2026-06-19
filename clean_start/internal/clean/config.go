@@ -19,6 +19,8 @@ type Config struct {
 	MinSellerChars            int
 	MinSellerGrowth           int
 	MinStageChars             int
+	MinStageGrowth            int
+	StagePartialMinInterval   time.Duration
 	LLMTimeout                time.Duration
 	SellerTemperature         float64
 	STTProvider               string
@@ -56,6 +58,8 @@ func ConfigFromEnv() Config {
 		MinSellerChars:            envInt("CLEAN_START_MIN_SELLER_CHARS", 12),
 		MinSellerGrowth:           envInt("CLEAN_START_MIN_SELLER_GROWTH", 12),
 		MinStageChars:             envInt("CLEAN_START_MIN_STAGE_CHARS", 18),
+		MinStageGrowth:            envInt("CLEAN_START_MIN_STAGE_GROWTH", 24),
+		StagePartialMinInterval:   time.Duration(envInt("CLEAN_START_STAGE_PARTIAL_INTERVAL_MS", 2200)) * time.Millisecond,
 		LLMTimeout:                time.Duration(envInt("CLEAN_START_LLM_TIMEOUT_SECS", 30)) * time.Second,
 		SellerTemperature:         float64(envInt("CLEAN_START_SELLER_TEMPERATURE_X100", 35)) / 100,
 		STTProvider:               strings.ToLower(env("CLEAN_START_STT_PROVIDER", "auto")),

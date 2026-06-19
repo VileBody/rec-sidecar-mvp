@@ -129,6 +129,8 @@ Gateway STT provider selection:
 - `CLEAN_START_STT_PROVIDER=soniox` forces native Soniox `stt-rt-v5`.
 - `CLEAN_START_STT_PROVIDER=inworld` forces the old Inworld STT proxy.
 
+Stage detection runs on client partials, but partials are coalesced so one spoken phrase cannot create a queue of parallel LLM calls. Tune with `CLEAN_START_STAGE_PARTIAL_INTERVAL_MS` (default `2200`) and `CLEAN_START_MIN_STAGE_GROWTH` (default `24`).
+
 This is reliable only when the microphone does not hear the remote participant, for example when the seller uses headphones. If laptop speakers leak into the microphone, the gateway now applies a text echo filter in both directions:
 
 - system audio that repeats a recent seller line is rejected as seller echo

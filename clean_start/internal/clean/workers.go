@@ -250,10 +250,34 @@ type StageWorker struct {
 	logger *slog.Logger
 	memory *memoryBook
 	sub    *nats.Subscription
+	mu     sync.Mutex
+	states map[string]*stageSessionState
+}
+
+type stageSessionState struct {
+	inFlight        bool
+	pending         *stageDetectionRequest
+	lastStarted     time.Time
+	lastPartialText string
+}
+
+type stageDetectionRequest struct {
+	sessionID string
+	mem       *sessionMemory
+	eventType string
+	text      string
+	force     bool
 }
 
 func NewStageWorker(cfg Config, nc *nats.Conn, llm *LLMClient, logger *slog.Logger) *StageWorker {
-	return &StageWorker{cfg: cfg, nc: nc, llm: llm, logger: logger.With("component", "stage-worker"), memory: newMemoryBook()}
+	return &StageWorker{
+		cfg:    cfg,
+		nc:     nc,
+		llm:    llm,
+		logger: logger.With("component", "stage-worker"),
+		memory: newMemoryBook(),
+		states: make(map[string]*stageSessionState),
+	}
 }
 
 func (w *StageWorker) Run(ctx context.Context) error {
@@ -266,20 +290,19 @@ func (w *StageWorker) Run(ctx context.Context) error {
 		switch event.Type {
 		case EventClientPartial:
 			data, _ := DecodeData[TextData](event)
-			if len([]rune(strings.TrimSpace(data.Text))) >= w.cfg.MinStageChars {
-				go w.detect(ctx, event.SessionID, mem, EventStageCandidate)
-			}
+			w.scheduleDetect(ctx, event.SessionID, mem, EventStageCandidate, data.Text, false)
 		case EventClientFinal:
-			go w.detect(ctx, event.SessionID, mem, EventStageCommitted)
+			data, _ := DecodeData[TextData](event)
+			w.scheduleDetect(ctx, event.SessionID, mem, EventStageCommitted, data.Text, true)
 		case EventSTTPartial:
 			data, _ := DecodeData[SpeechData](event)
-			if data.Role == "client" && len([]rune(strings.TrimSpace(data.Text))) >= w.cfg.MinStageChars {
-				go w.detect(ctx, event.SessionID, mem, EventStageCandidate)
+			if data.Role == "client" {
+				w.scheduleDetect(ctx, event.SessionID, mem, EventStageCandidate, data.Text, false)
 			}
 		case EventSTTFinal:
 			data, _ := DecodeData[SpeechData](event)
 			if data.Role == "client" {
-				go w.detect(ctx, event.SessionID, mem, EventStageCommitted)
+				w.scheduleDetect(ctx, event.SessionID, mem, EventStageCommitted, data.Text, true)
 			}
 		}
 	})
@@ -297,6 +320,93 @@ func (w *StageWorker) Shutdown(context.Context) error {
 		_ = w.sub.Unsubscribe()
 	}
 	return nil
+}
+
+func (w *StageWorker) scheduleDetect(ctx context.Context, sessionID string, mem *sessionMemory, eventType string, text string, force bool) {
+	cleanText := strings.TrimSpace(text)
+	w.mu.Lock()
+	state := w.stageStateLocked(sessionID)
+	if !force {
+		if !w.shouldUsePartialLocked(state, cleanText) {
+			w.mu.Unlock()
+			return
+		}
+		if w.cfg.StagePartialMinInterval > 0 && !state.lastStarted.IsZero() && time.Since(state.lastStarted) < w.cfg.StagePartialMinInterval {
+			w.mu.Unlock()
+			return
+		}
+	}
+
+	req := stageDetectionRequest{
+		sessionID: sessionID,
+		mem:       mem,
+		eventType: eventType,
+		text:      cleanText,
+		force:     force,
+	}
+	if state.inFlight {
+		state.pending = &req
+		w.mu.Unlock()
+		return
+	}
+	w.startStageLocked(ctx, state, req)
+	w.mu.Unlock()
+}
+
+func (w *StageWorker) stageStateLocked(sessionID string) *stageSessionState {
+	state := w.states[sessionID]
+	if state == nil {
+		state = &stageSessionState{}
+		w.states[sessionID] = state
+	}
+	return state
+}
+
+func (w *StageWorker) shouldUsePartialLocked(state *stageSessionState, cleanText string) bool {
+	if len([]rune(cleanText)) < w.cfg.MinStageChars {
+		return false
+	}
+	prev := state.lastPartialText
+	if prev == cleanText {
+		return false
+	}
+	growth := len([]rune(cleanText)) - len([]rune(prev))
+	if prev != "" && strings.HasPrefix(cleanText, prev) && growth < w.cfg.MinStageGrowth && !endsStageSentence(cleanText) {
+		return false
+	}
+	state.lastPartialText = cleanText
+	return true
+}
+
+func endsStageSentence(text string) bool {
+	return strings.HasSuffix(text, ".") || strings.HasSuffix(text, "?") || strings.HasSuffix(text, "!") || strings.HasSuffix(text, "…")
+}
+
+func (w *StageWorker) startStageLocked(ctx context.Context, state *stageSessionState, req stageDetectionRequest) {
+	state.inFlight = true
+	state.lastStarted = time.Now()
+	go w.detectThenContinue(ctx, req)
+}
+
+func (w *StageWorker) detectThenContinue(ctx context.Context, req stageDetectionRequest) {
+	w.detect(ctx, req.sessionID, req.mem, req.eventType)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	state := w.states[req.sessionID]
+	if state == nil {
+		return
+	}
+	state.inFlight = false
+	if ctx.Err() != nil || state.pending == nil {
+		return
+	}
+	next := *state.pending
+	state.pending = nil
+	if !next.force && w.cfg.StagePartialMinInterval > 0 && time.Since(state.lastStarted) < w.cfg.StagePartialMinInterval {
+		return
+	}
+	w.startStageLocked(ctx, state, next)
 }
 
 func (w *StageWorker) detect(ctx context.Context, sessionID string, mem *sessionMemory, eventType string) {

@@ -195,3 +195,24 @@ func TestParseInworldTranscriptSpeakerSegments(t *testing.T) {
 		t.Fatalf("segment 1 = %#v", transcript.Segments[1])
 	}
 }
+
+func TestStagePartialGate(t *testing.T) {
+	w := &StageWorker{cfg: Config{MinStageChars: 5, MinStageGrowth: 5}}
+	state := &stageSessionState{}
+
+	if w.shouldUsePartialLocked(state, "abcd") {
+		t.Fatal("short partial should not trigger stage detection")
+	}
+	if !w.shouldUsePartialLocked(state, "abcdef") {
+		t.Fatal("first long partial should trigger stage detection")
+	}
+	if w.shouldUsePartialLocked(state, "abcdefgh") {
+		t.Fatal("tiny prefix growth should not trigger stage detection")
+	}
+	if !w.shouldUsePartialLocked(state, "abcdefghi?") {
+		t.Fatal("sentence-ending partial should trigger stage detection")
+	}
+	if !w.shouldUsePartialLocked(state, "значимо исправленный текст") {
+		t.Fatal("non-prefix STT correction should trigger stage detection")
+	}
+}
