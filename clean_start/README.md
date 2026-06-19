@@ -116,6 +116,41 @@ test agent:    http://<node-ip>:30917
 
 The test agent needs `INWORLD_API_KEY` for TTS/STT. Without it, `/healthz` still works but `/turn` returns a clear missing-key error.
 
+## Browser Audio Capture
+
+The browser UI treats microphone and system audio as two different sources:
+
+- microphone stream -> seller
+- screen/tab/system audio stream -> client
+
+Gateway STT provider selection:
+
+- `CLEAN_START_STT_PROVIDER=auto` uses native Soniox first when `SONIOX_API_KEY` is present, otherwise falls back to Inworld.
+- `CLEAN_START_STT_PROVIDER=soniox` forces native Soniox `stt-rt-v5`.
+- `CLEAN_START_STT_PROVIDER=inworld` forces the old Inworld STT proxy.
+
+This is reliable only when the microphone does not hear the remote participant, for example when the seller uses headphones. If laptop speakers leak into the microphone, the gateway now applies a text echo filter in both directions:
+
+- system audio that repeats a recent seller line is rejected as seller echo
+- microphone audio that repeats a recent client line is rejected as client echo
+
+This filter is a guardrail, not true diarization. For experiments:
+
+```bash
+python3 scripts/diagnostics/bench_hf_diarization.py --dry-run
+HF_TOKEN=... python3 scripts/diagnostics/bench_hf_diarization.py
+
+python3 scripts/diagnostics/gemini_retro_diarization.py
+
+printf 'SONIOX_API_KEY=...\n' > .env.local
+python3 scripts/diagnostics/check_soniox_diarization.py
+
+set -a; source .env.local; set +a
+docker compose -f clean_start/docker-compose.yml up --build clean-start
+```
+
+`bench_hf_diarization.py` measures pyannote/HF diarization latency on CPU. `gemini_retro_diarization.py` uses Gemini retrospectively on a WAV and should stay out of the live STT critical path. `check_soniox_diarization.py` calls native Soniox `stt-rt-v5` directly, bypassing the Inworld proxy. In the local WebSocket client, raw PCM uses `audio_format=s16le`; finish the stream with an empty text frame. An empty binary frame caused Soniox to process the audio but return `408 request_timeout`.
+
 ## LLM Sidecar
 
 Workers use `COACH_LLM_SERVICE_URL` when available. If the sidecar is unavailable, workers publish deterministic fallback outputs so that NATS/session behavior remains testable.

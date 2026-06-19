@@ -24,7 +24,7 @@ const (
 	audioBitDepth   = 16
 )
 
-var ErrNoSpeech = errors.New("inworld stt returned no speech")
+var ErrNoSpeech = errors.New("stt returned no speech")
 
 type InworldClient struct {
 	cfg    Config
@@ -33,6 +33,14 @@ type InworldClient struct {
 
 type InworldSTTStream struct {
 	conn *websocket.Conn
+}
+
+type STTStream interface {
+	SendAudio(pcm []byte) error
+	SendEndTurn() error
+	ReadTranscript() (STTTranscript, error)
+	SetReadDeadline(deadline time.Time) error
+	Close()
 }
 
 type STTTranscript struct {
@@ -250,6 +258,10 @@ func (s *InworldSTTStream) ReadTranscript() (STTTranscript, error) {
 		return STTTranscript{}, fmt.Errorf("inworld stt response: %w", err)
 	}
 	return transcript, nil
+}
+
+func (s *InworldSTTStream) SetReadDeadline(deadline time.Time) error {
+	return s.conn.SetReadDeadline(deadline)
 }
 
 func (s *InworldSTTStream) Close() {

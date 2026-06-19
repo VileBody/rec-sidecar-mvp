@@ -30,6 +30,7 @@ type Gateway struct {
 	cfg     Config
 	nc      *nats.Conn
 	inworld *InworldClient
+	soniox  *SonioxClient
 	logger  *slog.Logger
 	store   *Store
 	server  *http.Server
@@ -88,6 +89,7 @@ func NewGateway(cfg Config, nc *nats.Conn, inworld *InworldClient, logger *slog.
 		cfg:     cfg,
 		nc:      nc,
 		inworld: inworld,
+		soniox:  NewSonioxClient(cfg),
 		logger:  logger.With("component", "gateway"),
 		store:   NewStore(),
 	}
@@ -170,10 +172,14 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 }
 
 func (g *Gateway) healthz(w http.ResponseWriter, _ *http.Request) {
+	sttProvider, sttConfigured := g.sttStatus()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                 true,
 		"role":               g.cfg.Role,
 		"nats_url":           g.nc.ConnectedUrl(),
+		"stt_provider":       sttProvider,
+		"stt_configured":     sttConfigured,
+		"soniox_configured":  g.soniox != nil && g.soniox.Configured(),
 		"inworld_configured": g.inworld != nil && g.inworld.Configured(),
 	})
 }
@@ -288,10 +294,6 @@ func (g *Gateway) logBrowserAudio(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
-	if g.inworld == nil || !g.inworld.Configured() {
-		writeError(w, http.StatusServiceUnavailable, errors.New("missing INWORLD_API_KEY"))
-		return
-	}
 	var req STTTranscribeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -308,30 +310,36 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 	}
 	source := strings.TrimSpace(req.Source)
 	started := time.Now()
-	g.logger.Info("browser audio stt received", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw))
-	text, err := g.inworld.TranscribePCM(r.Context(), raw)
+	stream, provider, err := g.connectSTT(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	defer stream.Close()
+	g.logger.Info("browser audio stt received", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw))
+	text, err := transcribePCMWithStream(stream, provider, raw)
 	elapsedMS := time.Since(started).Milliseconds()
 	if err != nil {
 		if errors.Is(err, ErrNoSpeech) {
-			g.logger.Info("browser audio stt no speech", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS)
+			g.logger.Info("browser audio stt no speech", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw), "elapsed_ms", elapsedMS)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		g.logger.Warn("browser audio stt failed", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS, "error", err)
+		g.logger.Warn("browser audio stt failed", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw), "elapsed_ms", elapsedMS, "error", err)
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
 	if reason := browserTranscriptRejectReason(text); reason != "" {
-		g.logger.Info("browser audio stt rejected", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS, "reason", reason, "text", text)
+		g.logger.Info("browser audio stt rejected", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw), "elapsed_ms", elapsedMS, "reason", reason, "text", text)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if reason := g.sellerEchoRejectReason(sessionID, role, source, text); reason != "" {
-		g.logger.Info("browser audio stt rejected", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS, "reason", reason, "text", text)
+	if reason := g.crossSourceEchoRejectReason(sessionID, role, source, text); reason != "" {
+		g.logger.Info("browser audio stt rejected", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw), "elapsed_ms", elapsedMS, "reason", reason, "text", text)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	g.logger.Info("browser audio stt final", "session_id", sessionID, "role", role, "source", source, "bytes", len(raw), "elapsed_ms", elapsedMS, "text_len", len([]rune(text)), "text", text)
+	g.logger.Info("browser audio stt final", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw), "elapsed_ms", elapsedMS, "text_len", len([]rune(text)), "text", text)
 	event := NewEvent(sessionID, EventSTTFinal, "gateway-stt", SpeechData{
 		Role:   role,
 		Text:   text,
@@ -346,10 +354,6 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
-	if g.inworld == nil || !g.inworld.Configured() {
-		writeError(w, http.StatusServiceUnavailable, errors.New("missing INWORLD_API_KEY"))
-		return
-	}
 	role := strings.TrimSpace(r.URL.Query().Get("role"))
 	if role == "" {
 		role = "client"
@@ -370,9 +374,9 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	}
 	defer browserConn.Close()
 
-	stream, err := g.inworld.ConnectSTT(r.Context())
+	stream, provider, err := g.connectSTT(r.Context())
 	if err != nil {
-		g.logger.Warn("browser stt inworld connect failed", "session_id", sessionID, "role", role, "source", source, "error", err)
+		g.logger.Warn("browser stt provider connect failed", "session_id", sessionID, "role", role, "source", source, "provider", provider, "error", err)
 		_ = browserConn.WriteJSON(map[string]any{"type": "error", "error": err.Error()})
 		return
 	}
@@ -386,7 +390,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = writeBrowserJSON(map[string]any{"type": "ready"})
-	g.logger.Info("browser audio stt stream connected", "session_id", sessionID, "role", role, "source", source)
+	g.logger.Info("browser audio stt stream connected", "session_id", sessionID, "role", role, "source", source, "provider", provider)
 
 	done := make(chan error, 2)
 	go func() {
@@ -410,7 +414,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if role != "mixed" {
-					if reason := g.sellerEchoRejectReason(sessionID, segmentRole, source, segment.Text); reason != "" {
+					if reason := g.crossSourceEchoRejectReason(sessionID, segmentRole, source, segment.Text); reason != "" {
 						g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
 						continue
 					}
@@ -452,7 +456,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 			}
 			if msg.EndTurn != nil {
 				if err := stream.SendEndTurn(); err != nil {
-					done <- fmt.Errorf("inworld stt stream end_turn: %w", err)
+					done <- fmt.Errorf("%s stt stream end_turn: %w", provider, err)
 					return
 				}
 				endTurns++
@@ -486,6 +490,84 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.logger.Info("browser audio stt stream closed", "session_id", sessionID, "role", role, "source", source)
+}
+
+func (g *Gateway) sttStatus() (string, bool) {
+	provider, configured := g.selectedSTTProvider()
+	return provider, configured
+}
+
+func (g *Gateway) connectSTT(ctx context.Context) (STTStream, string, error) {
+	provider, configured := g.selectedSTTProvider()
+	if !configured {
+		return nil, provider, errors.New("missing STT provider config: set SONIOX_API_KEY or INWORLD_API_KEY")
+	}
+	switch provider {
+	case "soniox":
+		stream, err := g.soniox.ConnectSTT(ctx)
+		return stream, provider, err
+	case "inworld":
+		stream, err := g.inworld.ConnectSTT(ctx)
+		return stream, provider, err
+	default:
+		return nil, provider, fmt.Errorf("unsupported STT provider %q", provider)
+	}
+}
+
+func (g *Gateway) selectedSTTProvider() (string, bool) {
+	provider := strings.ToLower(strings.TrimSpace(g.cfg.STTProvider))
+	switch provider {
+	case "soniox":
+		return "soniox", g.soniox != nil && g.soniox.Configured()
+	case "inworld":
+		return "inworld", g.inworld != nil && g.inworld.Configured()
+	default:
+		if g.soniox != nil && g.soniox.Configured() {
+			return "soniox", true
+		}
+		if g.inworld != nil && g.inworld.Configured() {
+			return "inworld", true
+		}
+		return "auto", false
+	}
+}
+
+func transcribePCMWithStream(stream STTStream, provider string, pcm []byte) (string, error) {
+	if len(pcm) == 0 {
+		return "", errors.New("empty pcm")
+	}
+	if err := stream.SendAudio(pcm); err != nil {
+		return "", err
+	}
+	if err := stream.SendEndTurn(); err != nil {
+		return "", fmt.Errorf("%s stt end_turn: %w", provider, err)
+	}
+
+	_ = stream.SetReadDeadline(time.Now().Add(8 * time.Second))
+	var lastPartial string
+	for {
+		transcript, err := stream.ReadTranscript()
+		if err != nil {
+			if lastPartial != "" {
+				return lastPartial, nil
+			}
+			if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
+				return "", ErrNoSpeech
+			}
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				return "", ErrNoSpeech
+			}
+			return "", fmt.Errorf("%s stt read: %w", provider, err)
+		}
+		text := transcript.Text
+		if text == "" {
+			continue
+		}
+		if transcript.Final {
+			return text, nil
+		}
+		lastPartial = text
+	}
 }
 
 func browserTranscriptRejectReason(text string) string {
@@ -557,6 +639,16 @@ func isCJKLike(r rune) bool {
 		(r >= 0xac00 && r <= 0xd7af) // Hangul
 }
 
+func (g *Gateway) crossSourceEchoRejectReason(sessionID, role, source, text string) string {
+	if reason := g.sellerEchoRejectReason(sessionID, role, source, text); reason != "" {
+		return reason
+	}
+	if reason := g.clientEchoRejectReason(sessionID, role, source, text); reason != "" {
+		return reason
+	}
+	return ""
+}
+
 func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) string {
 	if role != "client" || source != "browser-system-audio" {
 		return ""
@@ -592,6 +684,46 @@ func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) s
 		}
 		if textSimilarity(probe, normalizeEchoText(item.Text)) >= 0.82 {
 			return "seller_echo_transcript"
+		}
+	}
+	return ""
+}
+
+func (g *Gateway) clientEchoRejectReason(sessionID, role, source, text string) string {
+	if role != "seller" || source != "browser-microphone-test" {
+		return ""
+	}
+	probe := normalizeEchoText(text)
+	if len([]rune(probe)) < 8 {
+		return ""
+	}
+	state, ok := g.store.Get(sessionID)
+	if !ok {
+		return ""
+	}
+	now := time.Now()
+	for i := len(state.Messages) - 1; i >= 0; i-- {
+		msg := state.Messages[i]
+		if msg.Role != "client" {
+			continue
+		}
+		if now.Sub(msg.CreatedAt) > 45*time.Second {
+			break
+		}
+		if textSimilarity(probe, normalizeEchoText(msg.Text)) >= 0.82 {
+			return "client_echo_message"
+		}
+	}
+	for i := len(state.Transcript) - 1; i >= 0; i-- {
+		item := state.Transcript[i]
+		if item.Role != "client" {
+			continue
+		}
+		if now.Sub(item.CreatedAt) > 45*time.Second {
+			break
+		}
+		if textSimilarity(probe, normalizeEchoText(item.Text)) >= 0.82 {
+			return "client_echo_transcript"
 		}
 	}
 	return ""
