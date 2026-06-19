@@ -594,6 +594,7 @@
         renderDialogEmpty(dialog, "Пока пусто. Включи системный звук или микрофон: здесь будут реплики, speaker id и время.");
         return;
       }
+      if (dialog.dataset.empty !== "0") dialog.innerHTML = "";
       dialog.dataset.empty = "0";
       const container = dialog.parentElement;
       const stickToBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
