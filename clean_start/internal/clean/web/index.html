@@ -543,6 +543,7 @@
     const $ = (id) => document.getElementById(id);
     let sessionId = "";
     let events = null;
+    let pollTimer = null;
     let state = null;
     let autoCaptureTried = false;
     let captureStates = {
@@ -552,6 +553,7 @@
 
     async function createSession() {
       if (events) events.close();
+      if (pollTimer) clearInterval(pollTimer);
       state = null;
       render();
       const res = await fetch("/v1/sessions", {
@@ -564,6 +566,7 @@
       $("session").textContent = sessionId;
       state = data.state;
       connectStream();
+      startStatePolling();
       render();
       if (!autoCaptureTried) {
         autoCaptureTried = true;
@@ -579,6 +582,23 @@
         render();
       });
       events.onerror = () => setStreamStatus("reconnecting...");
+    }
+
+    function startStatePolling() {
+      if (pollTimer) clearInterval(pollTimer);
+      const poll = async () => {
+        if (!sessionId) return;
+        try {
+          const res = await fetch(`/v1/sessions/${sessionId}`, { cache: "no-store" });
+          if (!res.ok) return;
+          state = await res.json();
+          render();
+        } catch (_) {
+          // EventSource remains the primary live path; polling only smooths over proxy hiccups.
+        }
+      };
+      pollTimer = setInterval(poll, 2000);
+      setTimeout(poll, 700);
     }
 
     async function postEvent(payload) {
