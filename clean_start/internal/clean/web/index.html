@@ -840,7 +840,7 @@
     function startAudioStream(stream, { mode, sourceLabel }) {
       const context = new AudioContext();
       const source = context.createMediaStreamSource(stream);
-      const processor = context.createScriptProcessor(4096, 1, 1);
+      const processor = context.createScriptProcessor(2048, 1, 1);
       const sink = context.createGain();
       const role = mode === "microphone" ? "seller" : "mixed";
       const ws = new WebSocket(sttStreamURL({ role, sourceLabel }));
@@ -957,7 +957,7 @@
         captureState.lastVoiceAt = now;
       }
 
-      if (captureState.speechOpen && !isVoice && now - captureState.lastVoiceAt >= 850) {
+      if (captureState.speechOpen && !isVoice && now - captureState.lastVoiceAt >= 650) {
         sendStreamEndTurn(captureState);
         captureState.speechOpen = false;
         setAudioStatus(captureState.mode, "on", captureState.mode === "microphone" ? "микрофон · жду финал" : "захват · жду финал");
