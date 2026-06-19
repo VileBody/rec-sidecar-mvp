@@ -90,6 +90,11 @@ const (
 	sttAudioFlushInterval = 50 * time.Millisecond
 	sttAudioTargetFlush   = 100 * time.Millisecond
 	sttAudioMaxFlush      = 200 * time.Millisecond
+
+	// Browser audio arrives in ~40-50ms chunks. If STT/network stalls, keep the
+	// freshest audio instead of letting seconds of stale speech trail behind.
+	sttAudioQueueCriticalCommands = 48
+	sttAudioQueueTargetCommands   = 24
 )
 
 func NewGateway(cfg Config, nc *nats.Conn, inworld *InworldClient, logger *slog.Logger) *Gateway {
@@ -494,16 +499,19 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 		for {
 			var msg BrowserSTTStreamMessage
 			if err := browserConn.ReadJSON(&msg); err != nil {
-				g.logger.Info("browser audio stt stream reader closed", "session_id", sessionID, "role", role, "source", source, "audio_chunks", audioStats.audioChunks.Load(), "audio_bytes", audioStats.audioBytes.Load(), "audio_flushes", audioStats.audioFlushes.Load(), "audio_flushed_bytes", audioStats.audioFlushedBytes.Load(), "end_turns", audioStats.endTurns.Load(), "error", err)
+				g.logger.Info("browser audio stt stream reader closed", "session_id", sessionID, "role", role, "source", source, "audio_chunks", audioStats.audioChunks.Load(), "audio_bytes", audioStats.audioBytes.Load(), "audio_flushes", audioStats.audioFlushes.Load(), "audio_flushed_bytes", audioStats.audioFlushedBytes.Load(), "queue_half_flushes", audioStats.audioQueueFlushes.Load(), "dropped_queue_commands", audioStats.audioDroppedQueueCommands.Load(), "dropped_queue_bytes", audioStats.audioDroppedQueueBytes.Load(), "end_turns", audioStats.endTurns.Load(), "error", err)
+				halfFlushSTTAudioCommandQueue(audioCommands, audioStats)
 				audioCommands <- sttAudioCommand{err: err}
 				return
 			}
 			if msg.CloseStream != nil {
-				g.logger.Info("browser audio stt stream close requested", "session_id", sessionID, "role", role, "source", source, "audio_chunks", audioStats.audioChunks.Load(), "audio_bytes", audioStats.audioBytes.Load(), "audio_flushes", audioStats.audioFlushes.Load(), "audio_flushed_bytes", audioStats.audioFlushedBytes.Load(), "end_turns", audioStats.endTurns.Load())
+				g.logger.Info("browser audio stt stream close requested", "session_id", sessionID, "role", role, "source", source, "audio_chunks", audioStats.audioChunks.Load(), "audio_bytes", audioStats.audioBytes.Load(), "audio_flushes", audioStats.audioFlushes.Load(), "audio_flushed_bytes", audioStats.audioFlushedBytes.Load(), "queue_half_flushes", audioStats.audioQueueFlushes.Load(), "dropped_queue_commands", audioStats.audioDroppedQueueCommands.Load(), "dropped_queue_bytes", audioStats.audioDroppedQueueBytes.Load(), "end_turns", audioStats.endTurns.Load())
+				halfFlushSTTAudioCommandQueue(audioCommands, audioStats)
 				audioCommands <- sttAudioCommand{close: true}
 				return
 			}
 			if msg.EndTurn != nil {
+				halfFlushSTTAudioCommandQueue(audioCommands, audioStats)
 				audioCommands <- sttAudioCommand{endTurn: true}
 				continue
 			}
@@ -520,7 +528,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 			}
 			audioStats.audioChunks.Add(1)
 			audioStats.audioBytes.Add(int64(len(raw)))
-			audioCommands <- sttAudioCommand{audio: raw}
+			enqueueSTTAudioCommand(audioCommands, sttAudioCommand{audio: raw}, audioStats)
 		}
 	}()
 
@@ -581,13 +589,76 @@ type sttAudioCommand struct {
 }
 
 type sttAudioStats struct {
-	audioChunks       atomic.Int64
-	audioBytes        atomic.Int64
-	audioFlushes      atomic.Int64
-	audioFlushedBytes atomic.Int64
-	endTurns          atomic.Int64
-	coalescedEndTurns atomic.Int64
-	maxBufferBytes    atomic.Int64
+	audioChunks               atomic.Int64
+	audioBytes                atomic.Int64
+	audioFlushes              atomic.Int64
+	audioFlushedBytes         atomic.Int64
+	audioQueueFlushes         atomic.Int64
+	audioDroppedQueueCommands atomic.Int64
+	audioDroppedQueueBytes    atomic.Int64
+	endTurns                  atomic.Int64
+	coalescedEndTurns         atomic.Int64
+	maxBufferBytes            atomic.Int64
+}
+
+func enqueueSTTAudioCommand(commands chan sttAudioCommand, command sttAudioCommand, stats *sttAudioStats) {
+	halfFlushSTTAudioCommandQueue(commands, stats)
+	select {
+	case commands <- command:
+		return
+	default:
+		halfFlushSTTAudioCommandQueue(commands, stats)
+	}
+	select {
+	case commands <- command:
+		return
+	default:
+		if len(command.audio) > 0 && stats != nil {
+			stats.audioDroppedQueueCommands.Add(1)
+			stats.audioDroppedQueueBytes.Add(int64(len(command.audio)))
+		}
+	}
+}
+
+func halfFlushSTTAudioCommandQueue(commands chan sttAudioCommand, stats *sttAudioStats) {
+	queued := len(commands)
+	if queued < sttAudioQueueCriticalCommands {
+		return
+	}
+	target := sttAudioQueueTargetCommands
+	if target < 1 {
+		target = 1
+	}
+	dropBudget := queued - target
+	if dropBudget <= 0 {
+		return
+	}
+
+	kept := make([]sttAudioCommand, 0, queued)
+	droppedCommands := 0
+	droppedBytes := 0
+	for i := 0; i < queued; i++ {
+		select {
+		case queuedCommand := <-commands:
+			if dropBudget > 0 && len(queuedCommand.audio) > 0 {
+				droppedCommands++
+				droppedBytes += len(queuedCommand.audio)
+				dropBudget--
+				continue
+			}
+			kept = append(kept, queuedCommand)
+		default:
+			i = queued
+		}
+	}
+	for _, queuedCommand := range kept {
+		commands <- queuedCommand
+	}
+	if droppedCommands > 0 && stats != nil {
+		stats.audioQueueFlushes.Add(1)
+		stats.audioDroppedQueueCommands.Add(int64(droppedCommands))
+		stats.audioDroppedQueueBytes.Add(int64(droppedBytes))
+	}
 }
 
 func runSTTAudioJitterBuffer(stream STTStream, commands <-chan sttAudioCommand, stats *sttAudioStats) error {

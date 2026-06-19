@@ -290,6 +290,42 @@ func TestSTTAudioJitterBufferCapsFlushSize(t *testing.T) {
 	}
 }
 
+func TestEnqueueSTTAudioCommandHalfFlushesQueuedAudio(t *testing.T) {
+	stats := &sttAudioStats{}
+	commands := make(chan sttAudioCommand, 64)
+	chunk := make([]byte, durationToPCMBytes(50*time.Millisecond))
+	for i := 0; i < sttAudioQueueCriticalCommands; i++ {
+		commands <- sttAudioCommand{audio: chunk}
+	}
+	commands <- sttAudioCommand{endTurn: true}
+
+	enqueueSTTAudioCommand(commands, sttAudioCommand{audio: chunk}, stats)
+
+	if stats.audioQueueFlushes.Load() != 1 {
+		t.Fatalf("queue half flushes = %d, want 1", stats.audioQueueFlushes.Load())
+	}
+	if stats.audioDroppedQueueCommands.Load() == 0 {
+		t.Fatal("expected old queued audio commands to be dropped")
+	}
+	if stats.audioDroppedQueueBytes.Load() == 0 {
+		t.Fatal("expected old queued audio bytes to be dropped")
+	}
+	if got, max := len(commands), sttAudioQueueTargetCommands+2; got > max {
+		t.Fatalf("queued commands after half flush = %d, want <= %d", got, max)
+	}
+
+	foundEndTurn := false
+	for len(commands) > 0 {
+		if (<-commands).endTurn {
+			foundEndTurn = true
+			break
+		}
+	}
+	if !foundEndTurn {
+		t.Fatal("expected queued end_turn control command to be preserved")
+	}
+}
+
 type fakeSTTStream struct {
 	audio    [][]byte
 	endTurns int
