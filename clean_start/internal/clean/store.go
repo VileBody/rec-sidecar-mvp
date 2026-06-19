@@ -13,10 +13,12 @@ type Message struct {
 }
 
 type TranscriptItem struct {
+	ID        string    `json:"id,omitempty"`
 	Role      string    `json:"role"`
 	Text      string    `json:"text"`
 	Source    string    `json:"source,omitempty"`
 	Speaker   string    `json:"speaker,omitempty"`
+	SegmentID string    `json:"segment_id,omitempty"`
 	Final     bool      `json:"final"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -111,7 +113,7 @@ func (s *Store) Apply(event Event) SessionState {
 				state.ClientPartial = data.Text
 			}
 			state.Transcript = appendTranscript(state.Transcript, TranscriptItem{
-				Role: data.Role, Text: data.Text, Source: data.Source, Speaker: data.Speaker, Final: false, CreatedAt: event.CreatedAt,
+				ID: event.ID, Role: data.Role, Text: data.Text, Source: data.Source, Speaker: data.Speaker, SegmentID: data.SegmentID, Final: false, CreatedAt: event.CreatedAt,
 			})
 		}
 	case EventSTTFinal:
@@ -125,7 +127,7 @@ func (s *Store) Apply(event Event) SessionState {
 				state.Messages = append(state.Messages, Message{Role: "seller", Text: data.Text, CreatedAt: event.CreatedAt})
 			}
 			state.Transcript = appendTranscript(state.Transcript, TranscriptItem{
-				Role: data.Role, Text: data.Text, Source: data.Source, Speaker: data.Speaker, Final: true, CreatedAt: event.CreatedAt,
+				ID: event.ID, Role: data.Role, Text: data.Text, Source: data.Source, Speaker: data.Speaker, SegmentID: data.SegmentID, Final: true, CreatedAt: event.CreatedAt,
 			})
 		}
 	case EventSellerStarted:
@@ -210,10 +212,14 @@ func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptI
 			continue
 		}
 		if !items[i].Final {
+			item.ID = stableTranscriptID(items[i], item)
+			item.CreatedAt = stableTranscriptCreatedAt(items[i], item)
 			items[i] = item
 			return items
 		}
 		if item.Final && items[i].Text == item.Text {
+			item.ID = stableTranscriptID(items[i], item)
+			item.CreatedAt = stableTranscriptCreatedAt(items[i], item)
 			items[i] = item
 			return items
 		}
@@ -227,9 +233,29 @@ func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptI
 }
 
 func sameTranscriptStream(left, right TranscriptItem) bool {
+	if left.SegmentID != "" || right.SegmentID != "" {
+		return left.Role == right.Role &&
+			left.Speaker == right.Speaker &&
+			left.Source == right.Source &&
+			left.SegmentID == right.SegmentID
+	}
 	return left.Role == right.Role &&
 		left.Speaker == right.Speaker &&
 		left.Source == right.Source
+}
+
+func stableTranscriptID(previous, next TranscriptItem) string {
+	if previous.ID != "" {
+		return previous.ID
+	}
+	return next.ID
+}
+
+func stableTranscriptCreatedAt(previous, next TranscriptItem) time.Time {
+	if !previous.CreatedAt.IsZero() {
+		return previous.CreatedAt
+	}
+	return next.CreatedAt
 }
 
 func (s *Store) Subscribe(sessionID string) (<-chan Event, func()) {

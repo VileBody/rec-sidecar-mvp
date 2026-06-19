@@ -379,6 +379,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 		source = "browser-audio"
 	}
 	speakerRoles := map[string]string{}
+	stabilizer := newSTTStreamStabilizer()
 
 	browserConn, err := sttWSUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -420,8 +421,12 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 			if transcript.Final {
 				eventType = EventSTTFinal
 			}
-			for _, segment := range diarizedTranscriptSegments(transcript) {
+			for index, segment := range diarizedTranscriptSegments(transcript) {
 				segmentRole := roleForSTTSpeaker(role, segment.Speaker, speakerRoles)
+				segmentID := transcriptSegmentID(segment, index)
+				if !stabilizer.ShouldEmit(segmentID, segment.Text, transcript.Final) {
+					continue
+				}
 				if reason := browserTranscriptRejectReason(segment.Text); reason != "" {
 					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
 					continue
@@ -433,10 +438,11 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				event := NewEvent(sessionID, eventType, "gateway-stt-live", SpeechData{
-					Role:    segmentRole,
-					Text:    segment.Text,
-					Source:  source,
-					Speaker: segment.Speaker,
+					Role:      segmentRole,
+					Text:      segment.Text,
+					Source:    source,
+					Speaker:   segment.Speaker,
+					SegmentID: segmentID,
 				})
 				if err := g.emit(event); err != nil {
 					done <- err
@@ -449,6 +455,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 					"final":      transcript.Final,
 					"role":       segmentRole,
 					"speaker":    segment.Speaker,
+					"segment_id": segmentID,
 					"created_at": event.CreatedAt.Format(time.RFC3339Nano),
 				}); err != nil {
 					done <- err
@@ -632,6 +639,49 @@ func diarizedTranscriptSegments(transcript STTTranscript) []STTSegment {
 		return []STTSegment{{Text: transcript.Text}}
 	}
 	return transcript.Segments
+}
+
+func transcriptSegmentID(segment STTSegment, index int) string {
+	speaker := sanitizeSpeakerID(segment.Speaker)
+	if speaker == "" {
+		speaker = "unknown"
+	}
+	return fmt.Sprintf("%03d-%s", index, speaker)
+}
+
+type sttStreamStabilizer struct {
+	segments map[string]sttSegmentState
+}
+
+type sttSegmentState struct {
+	text  string
+	final bool
+}
+
+func newSTTStreamStabilizer() *sttStreamStabilizer {
+	return &sttStreamStabilizer{segments: make(map[string]sttSegmentState)}
+}
+
+func (s *sttStreamStabilizer) ShouldEmit(segmentID, text string, final bool) bool {
+	normalized := strings.Join(strings.Fields(text), " ")
+	if normalized == "" {
+		return false
+	}
+	previous, ok := s.segments[segmentID]
+	if ok {
+		if previous.text == normalized {
+			if final && !previous.final {
+				s.segments[segmentID] = sttSegmentState{text: normalized, final: true}
+				return true
+			}
+			return false
+		}
+		if !final && !previous.final && len([]rune(normalized)) < len([]rune(previous.text)) && strings.HasPrefix(previous.text, normalized) {
+			return false
+		}
+	}
+	s.segments[segmentID] = sttSegmentState{text: normalized, final: final}
+	return true
 }
 
 func roleForSTTSpeaker(defaultRole, speaker string, speakerRoles map[string]string) string {

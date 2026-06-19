@@ -109,31 +109,72 @@ func TestAppendTranscriptKeepsDifferentSpeakersSeparate(t *testing.T) {
 
 func TestAppendTranscriptCoalescesInterleavedDiarizedPartials(t *testing.T) {
 	now := time.Now().UTC()
-	spk2 := TranscriptItem{Role: "speaker_2", Speaker: "2", Source: "browser-system-audio", Text: "Хм.", CreatedAt: now}
-	spk1 := TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", Text: "Согласен. Ты всё равно ниндзя.", CreatedAt: now}
+	spk2 := TranscriptItem{ID: "partial-1", Role: "speaker_2", Speaker: "2", Source: "browser-system-audio", SegmentID: "000-2", Text: "Хм.", CreatedAt: now}
+	spk1 := TranscriptItem{ID: "partial-2", Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "001-1", Text: "Согласен. Ты всё равно ниндзя.", CreatedAt: now}
 	items := []TranscriptItem{}
 
 	items = appendTranscript(items, spk2)
 	items = appendTranscript(items, spk1)
-	items = appendTranscript(items, TranscriptItem{Role: spk2.Role, Speaker: spk2.Speaker, Source: spk2.Source, Text: spk2.Text, CreatedAt: now.Add(time.Second)})
-	items = appendTranscript(items, TranscriptItem{Role: spk1.Role, Speaker: spk1.Speaker, Source: spk1.Source, Text: spk1.Text, CreatedAt: now.Add(time.Second)})
+	items = appendTranscript(items, TranscriptItem{ID: "partial-3", Role: spk2.Role, Speaker: spk2.Speaker, Source: spk2.Source, SegmentID: spk2.SegmentID, Text: spk2.Text, CreatedAt: now.Add(time.Second)})
+	items = appendTranscript(items, TranscriptItem{ID: "partial-4", Role: spk1.Role, Speaker: spk1.Speaker, Source: spk1.Source, SegmentID: spk1.SegmentID, Text: spk1.Text, CreatedAt: now.Add(time.Second)})
 
 	if len(items) != 2 {
 		t.Fatalf("repeated interleaved partials should stay two bubbles, got %#v", items)
+	}
+	if items[0].ID != spk2.ID || !items[0].CreatedAt.Equal(now) {
+		t.Fatalf("first bubble identity should stay stable: %#v", items[0])
 	}
 	if items[0].Text != spk2.Text || items[1].Text != spk1.Text {
 		t.Fatalf("unexpected partial ordering/content: %#v", items)
 	}
 
-	items = appendTranscript(items, TranscriptItem{Role: spk2.Role, Speaker: spk2.Speaker, Source: spk2.Source, Text: spk2.Text, Final: true, CreatedAt: now.Add(2 * time.Second)})
-	items = appendTranscript(items, TranscriptItem{Role: spk1.Role, Speaker: spk1.Speaker, Source: spk1.Source, Text: spk1.Text, Final: true, CreatedAt: now.Add(2 * time.Second)})
+	items = appendTranscript(items, TranscriptItem{ID: "final-1", Role: spk2.Role, Speaker: spk2.Speaker, Source: spk2.Source, SegmentID: spk2.SegmentID, Text: spk2.Text, Final: true, CreatedAt: now.Add(2 * time.Second)})
+	items = appendTranscript(items, TranscriptItem{ID: "final-2", Role: spk1.Role, Speaker: spk1.Speaker, Source: spk1.Source, SegmentID: spk1.SegmentID, Text: spk1.Text, Final: true, CreatedAt: now.Add(2 * time.Second)})
 	if len(items) != 2 || !items[0].Final || !items[1].Final {
 		t.Fatalf("finals should replace matching partials without duplicates: %#v", items)
 	}
+	if items[0].ID != spk2.ID || !items[0].CreatedAt.Equal(now) {
+		t.Fatalf("final should preserve partial identity/time: %#v", items[0])
+	}
 
-	items = appendTranscript(items, TranscriptItem{Role: spk1.Role, Speaker: spk1.Speaker, Source: spk1.Source, Text: "Тогда разговор окончен.", CreatedAt: now.Add(7 * time.Second)})
+	items = appendTranscript(items, TranscriptItem{Role: spk1.Role, Speaker: spk1.Speaker, Source: spk1.Source, SegmentID: spk1.SegmentID, Text: "Тогда разговор окончен.", CreatedAt: now.Add(7 * time.Second)})
 	if len(items) != 3 || items[2].Final {
 		t.Fatalf("new partial after final should start a new bubble: %#v", items)
+	}
+}
+
+func TestAppendTranscriptKeepsDiarizedSegmentsFromSameSpeakerSeparate(t *testing.T) {
+	now := time.Now().UTC()
+	items := []TranscriptItem{}
+	items = appendTranscript(items, TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "000-1", Text: "Первая реплика.", CreatedAt: now})
+	items = appendTranscript(items, TranscriptItem{Role: "speaker_2", Speaker: "2", Source: "browser-system-audio", SegmentID: "001-2", Text: "Ответ.", CreatedAt: now})
+	items = appendTranscript(items, TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", SegmentID: "002-1", Text: "Вторая реплика того же спикера.", CreatedAt: now})
+
+	if len(items) != 3 {
+		t.Fatalf("same speaker segments should remain separate by segment_id: %#v", items)
+	}
+	if items[0].Text != "Первая реплика." || items[2].Text != "Вторая реплика того же спикера." {
+		t.Fatalf("same speaker segments were collapsed: %#v", items)
+	}
+}
+
+func TestSTTStreamStabilizerSuppressesRepeatedFullHypotheses(t *testing.T) {
+	stabilizer := newSTTStreamStabilizer()
+
+	if !stabilizer.ShouldEmit("000-1", "Один из первых.", false) {
+		t.Fatal("first partial should emit")
+	}
+	if stabilizer.ShouldEmit("000-1", "Один из первых.", false) {
+		t.Fatal("same partial should be suppressed")
+	}
+	if !stabilizer.ShouldEmit("000-1", "Один из первых.", true) {
+		t.Fatal("matching final should still emit")
+	}
+	if stabilizer.ShouldEmit("000-1", "Один из первых.", true) {
+		t.Fatal("duplicate final should be suppressed")
+	}
+	if !stabilizer.ShouldEmit("001-2", "Новая реплика.", false) {
+		t.Fatal("different segment should emit")
 	}
 }
 

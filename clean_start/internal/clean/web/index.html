@@ -584,36 +584,74 @@
     }
 
     function renderDialog() {
+      const dialog = $("dialog");
       if (!state) {
-        $("dialog").innerHTML = `<div class="empty">Создаю диалог...</div>`;
+        renderDialogEmpty(dialog, "Создаю диалог...");
         return;
       }
-      const rows = [];
-      for (const item of state.transcript || []) {
-        rows.push(transcriptBubble(item));
+      const items = state.transcript || [];
+      if (!items.length) {
+        renderDialogEmpty(dialog, "Пока пусто. Включи системный звук или микрофон: здесь будут реплики, speaker id и время.");
+        return;
       }
-      $("dialog").innerHTML = rows.join("") || `<div class="empty">Пока пусто. Включи системный звук или микрофон: здесь будут реплики, speaker id и время.</div>`;
-      const container = $("dialog").parentElement;
-      container.scrollTop = container.scrollHeight;
+      dialog.dataset.empty = "0";
+      const container = dialog.parentElement;
+      const stickToBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+      const existing = new Map([...dialog.querySelectorAll(".bubble[data-key]")].map((node) => [node.dataset.key, node]));
+      const used = new Set();
+      items.forEach((item, index) => {
+        const key = transcriptKey(item, index);
+        let node = existing.get(key);
+        if (!node) {
+          node = document.createElement("div");
+          node.dataset.key = key;
+        }
+        const nextClass = transcriptBubbleClass(item);
+        if (node.className !== nextClass) node.className = nextClass;
+        const nextHtml = transcriptBubbleHTML(item);
+        if (node.dataset.html !== nextHtml) {
+          node.innerHTML = nextHtml;
+          node.dataset.html = nextHtml;
+        }
+        dialog.appendChild(node);
+        used.add(key);
+      });
+      for (const [key, node] of existing.entries()) {
+        if (!used.has(key)) node.remove();
+      }
+      if (stickToBottom) container.scrollTop = container.scrollHeight;
     }
 
-    function transcriptBubble(item) {
+    function renderDialogEmpty(dialog, text) {
+      if (dialog.dataset.empty === text) return;
+      dialog.dataset.empty = text;
+      dialog.innerHTML = `<div class="empty">${escapeHtml(text)}</div>`;
+    }
+
+    function transcriptKey(item, index) {
+      return item.id || `${item.role || "speaker"}:${item.source || ""}:${item.speaker || ""}:${item.segment_id || ""}:${index}`;
+    }
+
+    function transcriptBubbleClass(item) {
       const role = item.role || "speaker";
       const side = role === "seller" ? "seller" : role === "client" ? "client" : "speaker";
       const partial = item.final ? "" : " partial";
+      return `bubble ${side}${partial}`;
+    }
+
+    function transcriptBubbleHTML(item) {
+      const role = item.role || "speaker";
       const speaker = item.speaker ? `spk ${escapeHtml(item.speaker)}` : roleLabel(role);
       const source = item.source ? sourceLabel(item.source) : "";
       return `
-        <div class="bubble ${side}${partial}">
-          <div class="meta">
-            <span class="speaker">${speaker}</span>
-            <span>${formatTime(item.created_at)}</span>
-            <span>${escapeHtml(roleLabel(role))}</span>
-            ${source ? `<span>${escapeHtml(source)}</span>` : ""}
-            ${item.final ? "" : "<span>partial</span>"}
-          </div>
-          ${escapeHtml(item.text)}
-        </div>`;
+        <div class="meta">
+          <span class="speaker">${speaker}</span>
+          <span>${formatTime(item.created_at)}</span>
+          <span>${escapeHtml(roleLabel(role))}</span>
+          ${source ? `<span>${escapeHtml(source)}</span>` : ""}
+          ${item.final ? "" : "<span>partial</span>"}
+        </div>
+        ${escapeHtml(item.text)}`;
     }
 
     function roleLabel(role) {

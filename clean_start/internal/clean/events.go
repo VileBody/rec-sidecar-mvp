@@ -49,10 +49,11 @@ type TextData struct {
 }
 
 type SpeechData struct {
-	Role    string `json:"role"`
-	Text    string `json:"text"`
-	Source  string `json:"source,omitempty"`
-	Speaker string `json:"speaker,omitempty"`
+	Role      string `json:"role"`
+	Text      string `json:"text"`
+	Source    string `json:"source,omitempty"`
+	Speaker   string `json:"speaker,omitempty"`
+	SegmentID string `json:"segment_id,omitempty"`
 }
 
 type SellerRequestData struct {
