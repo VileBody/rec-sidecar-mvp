@@ -1077,7 +1077,7 @@ async def test_stage_agenda_uses_cerebras_text_contract_for_stage_fallback():
 
 
 @pytest.mark.anyio
-async def test_stage_agenda_returns_none_when_stage_is_unchanged():
+async def test_stage_agenda_returns_none_when_stage_is_unchanged_without_scorecard():
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1101,10 +1101,55 @@ async def test_stage_agenda_returns_none_when_stage_is_unchanged():
         orchestrator = LlmOrchestrator(make_settings(), client)
 
         response = await orchestrator.stage_agenda(
-            StageRequest(run_id="run", context="dialogue", current_stage="S2.2")
+            StageRequest(
+                run_id="run",
+                context="dialogue",
+                current_stage="S2.2",
+                include_scorecard=False,
+            )
         )
 
         assert response is None
+        assert len(calls) == 1
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_stage_agenda_returns_scorecard_when_stage_is_unchanged_but_committed():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"stage":"S2.2","confidence":0.91}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(vertex_project=None),
+            client,
+        )
+
+        response = await orchestrator.stage_agenda(
+            StageRequest(run_id="run", context="dialogue", current_stage="S2.2")
+        )
+
+        assert response is not None
+        assert response.stage == "S2.2"
+        assert response.scorecard is not None
+        assert response.scorecard.readiness == "pending"
         assert len(calls) == 1
     finally:
         await client.aclose()

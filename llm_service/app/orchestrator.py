@@ -287,7 +287,9 @@ class LlmOrchestrator:
                 )
                 stage, confidence = parse_stage_detection(text)
                 stage = self._clamp_detected_stage(request, stage, model)
-                if self._stage_unchanged(request, stage, provider="cerebras", model=model):
+                if self._stage_unchanged(
+                    request, stage, provider="cerebras", model=model
+                ) and not request.include_scorecard:
                     return None
                 return await self._stage_response(
                     request=request,
@@ -319,7 +321,9 @@ class LlmOrchestrator:
                 )
                 stage, confidence = parse_stage_detection(text)
                 stage = self._clamp_detected_stage(request, stage, model)
-                if self._stage_unchanged(request, stage, provider="vertex", model=model):
+                if self._stage_unchanged(
+                    request, stage, provider="vertex", model=model
+                ) and not request.include_scorecard:
                     return None
                 return await self._stage_response(
                     request=request,
