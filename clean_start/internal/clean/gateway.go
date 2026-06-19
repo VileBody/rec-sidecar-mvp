@@ -177,6 +177,7 @@ func (g *Gateway) healthz(w http.ResponseWriter, _ *http.Request) {
 		"ok":                 true,
 		"role":               g.cfg.Role,
 		"nats_url":           g.nc.ConnectedUrl(),
+		"coach_enabled":      g.cfg.CoachEnabled,
 		"stt_provider":       sttProvider,
 		"stt_configured":     sttConfigured,
 		"soniox_configured":  g.soniox != nil && g.soniox.Configured(),
@@ -186,7 +187,7 @@ func (g *Gateway) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (g *Gateway) createSession(w http.ResponseWriter, r *http.Request) {
 	var req CreateSessionRequest
-	req.AutoOpener = true
+	req.AutoOpener = g.cfg.CoachEnabled
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
@@ -196,7 +197,7 @@ func (g *Gateway) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	if req.AutoOpener {
+	if g.cfg.CoachEnabled && req.AutoOpener {
 		opener := NewEvent(sessionID, EventSellerRequest, "gateway", SellerRequestData{Trigger: "opener"})
 		if err := g.emit(opener); err != nil {
 			writeError(w, http.StatusBadGateway, err)
@@ -234,12 +235,24 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 	case EventClientFinal:
 		event = NewEvent(sessionID, EventClientFinal, "gateway", TextData{Text: strings.TrimSpace(req.Text)})
 	case EventSellerRequest:
+		if !g.cfg.CoachEnabled {
+			g.logger.Info("coach request ignored", "session_id", sessionID, "type", req.Type, "reason", "coach_disabled")
+			state, _ := g.store.Get(sessionID)
+			writeJSON(w, http.StatusAccepted, state)
+			return
+		}
 		trigger := req.Trigger
 		if trigger == "" {
 			trigger = "manual"
 		}
 		event = NewEvent(sessionID, EventSellerRequest, "gateway", SellerRequestData{Trigger: trigger, Text: strings.TrimSpace(req.Text)})
 	case EventAssistRequest:
+		if !g.cfg.CoachEnabled {
+			g.logger.Info("coach request ignored", "session_id", sessionID, "type", req.Type, "reason", "coach_disabled")
+			state, _ := g.store.Get(sessionID)
+			writeJSON(w, http.StatusAccepted, state)
+			return
+		}
 		trigger := req.Trigger
 		if trigger == "" {
 			trigger = "manual"
@@ -429,8 +442,15 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 					done <- err
 					return
 				}
-				g.logger.Info("browser audio stt stream transcript", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "final", transcript.Final, "text_len", len([]rune(segment.Text)), "text", segment.Text)
-				if err := writeBrowserJSON(map[string]any{"type": eventType, "text": segment.Text, "final": transcript.Final, "role": segmentRole, "speaker": segment.Speaker}); err != nil {
+				g.logger.Info("browser audio stt stream transcript", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "final", transcript.Final, "created_at", event.CreatedAt.Format(time.RFC3339Nano), "text_len", len([]rune(segment.Text)), "text", segment.Text)
+				if err := writeBrowserJSON(map[string]any{
+					"type":       eventType,
+					"text":       segment.Text,
+					"final":      transcript.Final,
+					"role":       segmentRole,
+					"speaker":    segment.Speaker,
+					"created_at": event.CreatedAt.Format(time.RFC3339Nano),
+				}); err != nil {
 					done <- err
 					return
 				}
@@ -615,22 +635,33 @@ func diarizedTranscriptSegments(transcript STTTranscript) []STTSegment {
 }
 
 func roleForSTTSpeaker(defaultRole, speaker string, speakerRoles map[string]string) string {
+	defaultRole = strings.TrimSpace(defaultRole)
 	if defaultRole != "mixed" {
 		return defaultRole
 	}
 	speaker = strings.TrimSpace(speaker)
 	if speaker == "" {
-		return "client"
+		return "speaker"
 	}
 	if role, ok := speakerRoles[speaker]; ok {
 		return role
 	}
-	role := "client"
-	if len(speakerRoles) == 0 {
-		role = "seller"
-	}
+	role := "speaker_" + sanitizeSpeakerID(speaker)
 	speakerRoles[speaker] = role
 	return role
+}
+
+func sanitizeSpeakerID(speaker string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(speaker) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "unknown"
+	}
+	return b.String()
 }
 
 func isCJKLike(r rune) bool {

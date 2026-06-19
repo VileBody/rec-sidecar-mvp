@@ -75,7 +75,7 @@
 
     .app {
       display: grid;
-      grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.02fr) minmax(300px, .78fr);
+      grid-template-columns: minmax(420px, 1fr);
       gap: 16px;
       height: 100vh;
       padding: 16px;
@@ -92,6 +92,7 @@
     .dialog-col { grid-template-rows: auto minmax(0, 1fr) auto; }
     .reply-col { grid-template-rows: auto minmax(300px, 1fr) minmax(160px, .45fr); }
     .assist-col { grid-template-rows: auto minmax(250px, .9fr) minmax(230px, .85fr); }
+    .reply-col, .assist-col { display: none; }
 
     .card {
       min-width: 0;
@@ -198,6 +199,22 @@
       text-transform: uppercase;
     }
 
+    .bubble .meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .bubble .speaker {
+      color: var(--ink);
+      font-weight: 850;
+    }
+
     .bubble.client {
       align-self: flex-start;
       background: var(--green-soft);
@@ -214,6 +231,12 @@
       align-self: flex-start;
       background: var(--yellow-soft);
       border-color: #f1d98a;
+    }
+
+    .bubble.speaker {
+      align-self: flex-start;
+      background: var(--paper-soft);
+      border-color: var(--line-strong);
     }
 
     .capture-row, .action-row {
@@ -394,7 +417,7 @@
     <section class="column dialog-col">
       <header class="card header-card">
         <div>
-          <h1 class="title">Диалог</h1>
+          <h1 class="title">STT монитор</h1>
           <div id="session" class="sub">создаю сессию...</div>
         </div>
         <button id="newSession" class="ghost">Новый</button>
@@ -408,7 +431,7 @@
         <div class="audio-row">
           <div>
             <div class="title" style="font-size:15px">Звонок</div>
-            <div id="bothStatus" class="sub">system audio = клиент, микрофон = мы</div>
+            <div id="bothStatus" class="sub">system audio = диаризация, микрофон = мы</div>
           </div>
           <div class="capture-row">
             <button id="bothToggle" class="blue">Включить всё</button>
@@ -516,7 +539,7 @@
       const res = await fetch("/v1/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ auto_opener: true }),
+        body: JSON.stringify({ auto_opener: false }),
       });
       const data = await res.json();
       sessionId = data.session_id;
@@ -566,21 +589,55 @@
         return;
       }
       const rows = [];
-      for (const msg of state.messages || []) {
-        rows.push(bubble(msg.role, msg.text));
+      for (const item of state.transcript || []) {
+        rows.push(transcriptBubble(item));
       }
-      if (state.client_partial) {
-        rows.push(`<div class="bubble partial"><span class="role">клиент говорит</span>${escapeHtml(state.client_partial)}</div>`);
-      }
-      $("dialog").innerHTML = rows.join("") || `<div class="empty">Пока пусто. Захват звука включается по умолчанию; если браузер попросит действие, нажми «Включить».</div>`;
+      $("dialog").innerHTML = rows.join("") || `<div class="empty">Пока пусто. Включи системный звук или микрофон: здесь будут реплики, speaker id и время.</div>`;
       const container = $("dialog").parentElement;
       container.scrollTop = container.scrollHeight;
     }
 
-    function bubble(role, text) {
-      const side = role === "seller" ? "seller" : "client";
-      const label = role === "seller" ? "мы" : "клиент";
-      return `<div class="bubble ${side}"><span class="role">${label}</span>${escapeHtml(text)}</div>`;
+    function transcriptBubble(item) {
+      const role = item.role || "speaker";
+      const side = role === "seller" ? "seller" : role === "client" ? "client" : "speaker";
+      const partial = item.final ? "" : " partial";
+      const speaker = item.speaker ? `spk ${escapeHtml(item.speaker)}` : roleLabel(role);
+      const source = item.source ? sourceLabel(item.source) : "";
+      return `
+        <div class="bubble ${side}${partial}">
+          <div class="meta">
+            <span class="speaker">${speaker}</span>
+            <span>${formatTime(item.created_at)}</span>
+            <span>${escapeHtml(roleLabel(role))}</span>
+            ${source ? `<span>${escapeHtml(source)}</span>` : ""}
+            ${item.final ? "" : "<span>partial</span>"}
+          </div>
+          ${escapeHtml(item.text)}
+        </div>`;
+    }
+
+    function roleLabel(role) {
+      if (role === "seller") return "мы";
+      if (role === "client") return "клиент";
+      if (String(role || "").startsWith("speaker_")) return role.replace("_", " ");
+      return role || "speaker";
+    }
+
+    function sourceLabel(source) {
+      if (source === "browser-system-audio") return "system";
+      if (source === "browser-microphone-test") return "mic";
+      return source;
+    }
+
+    function formatTime(value) {
+      if (!value) return "--:--:--";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "--:--:--";
+      return date.toLocaleTimeString("ru-RU", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
     }
 
     function renderReply() {
@@ -746,7 +803,7 @@
       const source = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(4096, 1, 1);
       const sink = context.createGain();
-      const role = mode === "microphone" ? "seller" : captureStates.microphone.active ? "client" : "mixed";
+      const role = mode === "microphone" ? "seller" : "mixed";
       const ws = new WebSocket(sttStreamURL({ role, sourceLabel }));
       const nextState = {
         active: true,
@@ -784,8 +841,9 @@
         if (data.type === "error") {
           setAudioStatus(mode, "err", data.error || "STT stream error");
         } else if (data.type === "stt.final") {
-          const roleText = data.role === "seller" ? "мы" : data.role === "client" ? "клиент" : "роль?";
-          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон · распознано" : `захват · ${roleText}`);
+          const roleText = roleLabel(data.role);
+          const speakerText = data.speaker ? ` · spk ${data.speaker}` : "";
+          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон · распознано" : `захват · ${roleText}${speakerText}`);
         }
       };
       ws.onerror = () => {
@@ -904,7 +962,7 @@
         sink: null,
         ws: null,
         mode,
-        role: mode === "microphone" ? "seller" : "client",
+        role: mode === "microphone" ? "seller" : "mixed",
         sourceLabel: mode === "microphone" ? "browser-microphone-test" : "browser-system-audio",
         speechOpen: false,
         lastVoiceAt: 0,
@@ -967,13 +1025,13 @@
       if (text) {
         $("bothStatus").textContent = text;
       } else if (systemOn && micOn) {
-        $("bothStatus").textContent = "звонок пишется: system=клиент, mic=мы";
+        $("bothStatus").textContent = "звонок пишется: system=диаризация, mic=мы";
       } else if (systemOn) {
-        $("bothStatus").textContent = "включен только системный звук · диаризация";
+        $("bothStatus").textContent = "включен системный звук · Soniox diarization";
       } else if (micOn) {
         $("bothStatus").textContent = "включен только микрофон";
       } else {
-        $("bothStatus").textContent = "system audio = диаризация, микрофон = мы";
+        $("bothStatus").textContent = "system audio = speaker_1/speaker_2, микрофон = мы";
       }
       $("bothToggle").textContent = systemOn && micOn ? "Стоп всё" : "Включить всё";
     }

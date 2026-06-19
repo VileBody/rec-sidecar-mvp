@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 )
 
 func noopLogger() *slog.Logger {
@@ -73,17 +74,36 @@ func TestClientEchoRejectReason(t *testing.T) {
 
 func TestRoleForSTTSpeakerMixed(t *testing.T) {
 	roles := map[string]string{}
-	if got := roleForSTTSpeaker("mixed", "1", roles); got != "seller" {
-		t.Fatalf("first mixed speaker role = %q, want seller", got)
+	if got := roleForSTTSpeaker("mixed", "1", roles); got != "speaker_1" {
+		t.Fatalf("first mixed speaker role = %q, want speaker_1", got)
 	}
-	if got := roleForSTTSpeaker("mixed", "2", roles); got != "client" {
-		t.Fatalf("second mixed speaker role = %q, want client", got)
+	if got := roleForSTTSpeaker("mixed", "2", roles); got != "speaker_2" {
+		t.Fatalf("second mixed speaker role = %q, want speaker_2", got)
 	}
-	if got := roleForSTTSpeaker("mixed", "1", roles); got != "seller" {
-		t.Fatalf("known first mixed speaker role = %q, want seller", got)
+	if got := roleForSTTSpeaker("mixed", "1", roles); got != "speaker_1" {
+		t.Fatalf("known first mixed speaker role = %q, want speaker_1", got)
 	}
 	if got := roleForSTTSpeaker("client", "1", roles); got != "client" {
 		t.Fatalf("explicit client role = %q, want client", got)
+	}
+}
+
+func TestAppendTranscriptKeepsDifferentSpeakersSeparate(t *testing.T) {
+	now := time.Now().UTC()
+	items := appendTranscript(nil, TranscriptItem{
+		Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", Text: "первая", CreatedAt: now,
+	})
+	items = appendTranscript(items, TranscriptItem{
+		Role: "speaker_2", Speaker: "2", Source: "browser-system-audio", Text: "вторая", CreatedAt: now.Add(time.Second),
+	})
+	if len(items) != 2 {
+		t.Fatalf("different speakers were collapsed: %#v", items)
+	}
+	items = appendTranscript(items, TranscriptItem{
+		Role: "speaker_2", Speaker: "2", Source: "browser-system-audio", Text: "вторая правка", CreatedAt: now.Add(2 * time.Second),
+	})
+	if len(items) != 2 || items[1].Text != "вторая правка" {
+		t.Fatalf("same speaker partial should replace last item: %#v", items)
 	}
 }
 

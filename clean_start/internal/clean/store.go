@@ -202,7 +202,12 @@ func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptI
 	if item.Role == "" {
 		item.Role = "unknown"
 	}
-	if len(items) > 0 && !items[len(items)-1].Final && !item.Final && items[len(items)-1].Role == item.Role {
+	if len(items) > 0 &&
+		!items[len(items)-1].Final &&
+		!item.Final &&
+		items[len(items)-1].Role == item.Role &&
+		items[len(items)-1].Speaker == item.Speaker &&
+		items[len(items)-1].Source == item.Source {
 		items[len(items)-1] = item
 		return items
 	}

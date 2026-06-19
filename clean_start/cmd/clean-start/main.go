@@ -46,24 +46,42 @@ func main() {
 	case "gateway":
 		runners = append(runners, clean.NewGateway(cfg, nc, inworld, logger))
 	case "seller-worker":
-		runners = append(runners, clean.NewSellerWorker(cfg, nc, llm, logger))
+		if cfg.CoachEnabled {
+			runners = append(runners, clean.NewSellerWorker(cfg, nc, llm, logger))
+		} else {
+			runners = append(runners, clean.NewIdleRunner(cfg.Role, logger))
+		}
 	case "assist-worker":
-		runners = append(runners, clean.NewAssistWorker(cfg, nc, llm, logger))
+		if cfg.CoachEnabled {
+			runners = append(runners, clean.NewAssistWorker(cfg, nc, llm, logger))
+		} else {
+			runners = append(runners, clean.NewIdleRunner(cfg.Role, logger))
+		}
 	case "stage-worker":
-		runners = append(runners, clean.NewStageWorker(cfg, nc, llm, logger))
+		if cfg.CoachEnabled {
+			runners = append(runners, clean.NewStageWorker(cfg, nc, llm, logger))
+		} else {
+			runners = append(runners, clean.NewIdleRunner(cfg.Role, logger))
+		}
 	case "scorecard-worker":
-		runners = append(runners, clean.NewScorecardWorker(cfg, nc, logger))
+		if cfg.CoachEnabled {
+			runners = append(runners, clean.NewScorecardWorker(cfg, nc, logger))
+		} else {
+			runners = append(runners, clean.NewIdleRunner(cfg.Role, logger))
+		}
 	case "test-agent":
 		runners = append(runners, clean.NewTestAgentGateway(cfg, llm, inworld, logger))
 	case "all":
-		runners = append(
-			runners,
-			clean.NewGateway(cfg, nc, inworld, logger),
-			clean.NewSellerWorker(cfg, nc, llm, logger),
-			clean.NewAssistWorker(cfg, nc, llm, logger),
-			clean.NewStageWorker(cfg, nc, llm, logger),
-			clean.NewScorecardWorker(cfg, nc, logger),
-		)
+		runners = append(runners, clean.NewGateway(cfg, nc, inworld, logger))
+		if cfg.CoachEnabled {
+			runners = append(
+				runners,
+				clean.NewSellerWorker(cfg, nc, llm, logger),
+				clean.NewAssistWorker(cfg, nc, llm, logger),
+				clean.NewStageWorker(cfg, nc, llm, logger),
+				clean.NewScorecardWorker(cfg, nc, logger),
+			)
+		}
 	default:
 		logger.Error("unknown role", "role", cfg.Role)
 		os.Exit(2)

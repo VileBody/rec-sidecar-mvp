@@ -13,6 +13,7 @@ type Config struct {
 	HTTPAddr                  string
 	NATSURL                   string
 	SubjectPrefix             string
+	CoachEnabled              bool
 	LLMServiceURL             string
 	LLMServiceToken           string
 	LogLevel                  slog.Level
@@ -52,6 +53,7 @@ func ConfigFromEnv() Config {
 		HTTPAddr:                  env("CLEAN_START_HTTP_ADDR", ":8110"),
 		NATSURL:                   env("NATS_URL", "nats://127.0.0.1:4222"),
 		SubjectPrefix:             strings.Trim(env("CLEAN_START_SUBJECT_PREFIX", "clean.session"), "."),
+		CoachEnabled:              envBool("CLEAN_START_COACH_ENABLED", true),
 		LLMServiceURL:             strings.TrimRight(env("COACH_LLM_SERVICE_URL", "http://127.0.0.1:8088"), "/"),
 		LLMServiceToken:           env("COACH_LLM_SERVICE_TOKEN", ""),
 		LogLevel:                  parseLogLevel(env("CLEAN_START_LOG_LEVEL", "info")),
