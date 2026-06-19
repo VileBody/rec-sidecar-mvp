@@ -47,12 +47,13 @@ type CreateSessionResponse struct {
 }
 
 type InputEventRequest struct {
-	Type    string `json:"type"`
-	Text    string `json:"text,omitempty"`
-	Trigger string `json:"trigger,omitempty"`
-	Role    string `json:"role,omitempty"`
-	Source  string `json:"source,omitempty"`
-	Speaker string `json:"speaker,omitempty"`
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	Trigger   string `json:"trigger,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Speaker   string `json:"speaker,omitempty"`
+	SegmentID string `json:"segment_id,omitempty"`
 }
 
 type STTTranscribeRequest struct {
@@ -264,10 +265,11 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 			role = "client"
 		}
 		event = NewEvent(sessionID, req.Type, "gateway", SpeechData{
-			Role:    role,
-			Text:    strings.TrimSpace(req.Text),
-			Source:  strings.TrimSpace(req.Source),
-			Speaker: strings.TrimSpace(req.Speaker),
+			Role:      role,
+			Text:      strings.TrimSpace(req.Text),
+			Source:    strings.TrimSpace(req.Source),
+			Speaker:   strings.TrimSpace(req.Speaker),
+			SegmentID: strings.TrimSpace(req.SegmentID),
 		})
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported event type %q", req.Type))
