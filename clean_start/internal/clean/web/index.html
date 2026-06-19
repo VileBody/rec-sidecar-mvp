@@ -75,7 +75,7 @@
 
     .app {
       display: grid;
-      grid-template-columns: minmax(420px, 1fr);
+      grid-template-columns: minmax(360px, 1.08fr) minmax(360px, .96fr) minmax(320px, .78fr);
       gap: 16px;
       height: 100vh;
       padding: 16px;
@@ -90,15 +90,14 @@
     }
 
     .dialog-col { grid-template-rows: auto minmax(0, 1fr) auto; }
-    .reply-col { grid-template-rows: auto minmax(300px, 1fr) minmax(160px, .45fr); }
-    .assist-col { grid-template-rows: auto minmax(250px, .9fr) minmax(230px, .85fr); }
-    .reply-col, .assist-col { display: none; }
+    .reply-col { grid-template-rows: auto minmax(280px, 1fr) minmax(190px, .54fr); }
+    .assist-col { grid-template-rows: auto minmax(260px, .9fr) minmax(230px, .82fr); }
 
     .card {
       min-width: 0;
       min-height: 0;
       border: 1px solid var(--line);
-      border-radius: 22px;
+      border-radius: 18px;
       background: rgba(255,255,255,.92);
       box-shadow: var(--shadow);
       overflow: hidden;
@@ -180,7 +179,7 @@
 
     .bubble {
       width: fit-content;
-      max-width: min(78%, 520px);
+      max-width: min(82%, 560px);
       border: 1px solid transparent;
       border-radius: 19px;
       padding: 12px 14px;
@@ -233,6 +232,10 @@
       border-color: #f1d98a;
     }
 
+    .bubble.partial.seller {
+      align-self: flex-end;
+    }
+
     .bubble.speaker {
       align-self: flex-start;
       background: var(--paper-soft);
@@ -274,7 +277,7 @@
       align-items: center;
       width: 100%;
       padding: clamp(18px, 3vw, 34px);
-      font-size: clamp(24px, 2.3vw, 36px);
+      font-size: clamp(22px, 2.1vw, 34px);
       line-height: 1.16;
       font-weight: 760;
       letter-spacing: -.015em;
@@ -348,8 +351,8 @@
 
     .chat-log {
       flex: 0 0 auto;
-      min-height: 76px;
-      max-height: 122px;
+      min-height: 120px;
+      max-height: 220px;
       overflow: auto;
       display: flex;
       flex-direction: column;
@@ -400,15 +403,30 @@
       transform: translateX(-50%);
     }
 
-    @media (max-width: 1120px) {
+    @media (max-width: 1180px) {
       .app {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         height: auto;
         min-height: 100vh;
         overflow: auto;
       }
-      .column { min-height: 420px; }
+      .assist-col { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto minmax(300px, auto); }
+      .assist-col > header { grid-column: 1 / -1; }
+      .column { min-height: 520px; }
       .reply-text { min-height: 280px; }
+    }
+
+    @media (max-width: 760px) {
+      .app {
+        grid-template-columns: 1fr;
+        padding: 10px;
+      }
+      .assist-col { grid-template-columns: 1fr; }
+      .assist-col > header { grid-column: auto; }
+      .column { min-height: auto; }
+      .header-card, .audio-row, .reply-actions { align-items: stretch; flex-direction: column; }
+      .header-card button, .audio-row button, .reply-actions button { width: 100%; }
+      .bubble { max-width: 94%; }
     }
   </style>
 </head>
@@ -417,7 +435,7 @@
     <section class="column dialog-col">
       <header class="card header-card">
         <div>
-          <h1 class="title">STT монитор</h1>
+          <h1 class="title">REC Coach</h1>
           <div id="session" class="sub">создаю сессию...</div>
         </div>
         <button id="newSession" class="ghost">Новый</button>
@@ -430,7 +448,7 @@
       <footer class="card audio-card">
         <div class="audio-row">
           <div>
-            <div class="title" style="font-size:15px">Звонок</div>
+            <div class="title" style="font-size:15px">Захват звонка</div>
             <div id="bothStatus" class="sub">system audio = диаризация, микрофон = мы</div>
           </div>
           <div class="capture-row">
@@ -470,7 +488,7 @@
       </header>
 
       <section class="card reply-main">
-        <p class="eyebrow" style="padding:18px 18px 0;margin:0">читать / копировать</p>
+        <p class="eyebrow" style="padding:18px 18px 0;margin:0">следующая реплика</p>
         <div id="replyText" class="reply-text muted">Жду речь клиента...</div>
         <div class="reply-actions">
           <button id="markSaid" class="ghost">Я это сказал</button>
@@ -508,8 +526,8 @@
       </section>
 
       <section class="card section">
-        <p class="eyebrow">ручной fallback</p>
-        <textarea id="manualText" rows="5" placeholder="Если звук не подключен, вставь сюда реплику"></textarea>
+        <p class="eyebrow">ручной ввод</p>
+        <textarea id="manualText" rows="5" placeholder="Вставь реплику клиента или продавца"></textarea>
         <div class="action-row manual-controls">
           <button id="sendSeller" class="ghost">Мы сказали</button>
           <button id="sendClient" class="ghost">Клиент сказал</button>
@@ -539,7 +557,7 @@
       const res = await fetch("/v1/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ auto_opener: false }),
+        body: JSON.stringify({ auto_opener: true }),
       });
       const data = await res.json();
       sessionId = data.session_id;
@@ -589,9 +607,9 @@
         renderDialogEmpty(dialog, "Создаю диалог...");
         return;
       }
-      const items = state.transcript || [];
+      const items = dialogItems(state);
       if (!items.length) {
-        renderDialogEmpty(dialog, "Пока пусто. Включи системный звук или микрофон: здесь будут реплики, speaker id и время.");
+        renderDialogEmpty(dialog, "Пока пусто. Включи захват звука или вставь первую реплику вручную.");
         return;
       }
       if (dialog.dataset.empty !== "0") dialog.innerHTML = "";
@@ -601,15 +619,15 @@
       const existing = new Map([...dialog.querySelectorAll(".bubble[data-key]")].map((node) => [node.dataset.key, node]));
       const used = new Set();
       items.forEach((item, index) => {
-        const key = transcriptKey(item, index);
+        const key = dialogKey(item, index);
         let node = existing.get(key);
         if (!node) {
           node = document.createElement("div");
           node.dataset.key = key;
         }
-        const nextClass = transcriptBubbleClass(item);
+        const nextClass = dialogBubbleClass(item);
         if (node.className !== nextClass) node.className = nextClass;
-        const nextHtml = transcriptBubbleHTML(item);
+        const nextHtml = dialogBubbleHTML(item);
         if (node.dataset.html !== nextHtml) {
           node.innerHTML = nextHtml;
           node.dataset.html = nextHtml;
@@ -623,32 +641,49 @@
       if (stickToBottom) container.scrollTop = container.scrollHeight;
     }
 
+    function dialogItems(currentState) {
+      const items = (currentState.messages || []).map((item, index) => ({
+        ...item,
+        id: `msg:${index}:${item.created_at || ""}:${item.role || ""}`,
+        final: true,
+      }));
+      const partial = (currentState.client_partial || "").trim();
+      if (partial) {
+        items.push({
+          id: "client-partial",
+          role: "client",
+          text: partial,
+          created_at: currentState.updated_at,
+          final: false,
+        });
+      }
+      return items;
+    }
+
     function renderDialogEmpty(dialog, text) {
       if (dialog.dataset.empty === text) return;
       dialog.dataset.empty = text;
       dialog.innerHTML = `<div class="empty">${escapeHtml(text)}</div>`;
     }
 
-    function transcriptKey(item, index) {
+    function dialogKey(item, index) {
       return item.id || `${item.role || "speaker"}:${item.source || ""}:${item.speaker || ""}:${item.segment_id || ""}:${index}`;
     }
 
-    function transcriptBubbleClass(item) {
+    function dialogBubbleClass(item) {
       const role = item.role || "speaker";
       const side = role === "seller" ? "seller" : role === "client" ? "client" : "speaker";
       const partial = item.final ? "" : " partial";
       return `bubble ${side}${partial}`;
     }
 
-    function transcriptBubbleHTML(item) {
+    function dialogBubbleHTML(item) {
       const role = item.role || "speaker";
-      const speaker = item.speaker ? `spk ${escapeHtml(item.speaker)}` : roleLabel(role);
       const source = item.source ? sourceLabel(item.source) : "";
       return `
         <div class="meta">
-          <span class="speaker">${speaker}</span>
+          <span class="speaker">${escapeHtml(roleLabel(role))}</span>
           <span>${formatTime(item.created_at)}</span>
-          <span>${escapeHtml(roleLabel(role))}</span>
           ${source ? `<span>${escapeHtml(source)}</span>` : ""}
           ${item.final ? "" : "<span>partial</span>"}
         </div>
