@@ -202,20 +202,34 @@ func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptI
 	if item.Role == "" {
 		item.Role = "unknown"
 	}
-	if len(items) > 0 &&
-		!items[len(items)-1].Final &&
-		!item.Final &&
-		items[len(items)-1].Role == item.Role &&
-		items[len(items)-1].Speaker == item.Speaker &&
-		items[len(items)-1].Source == item.Source {
-		items[len(items)-1] = item
+	if item.Text == "" {
 		return items
+	}
+	for i := len(items) - 1; i >= 0; i-- {
+		if !sameTranscriptStream(items[i], item) {
+			continue
+		}
+		if !items[i].Final {
+			items[i] = item
+			return items
+		}
+		if item.Final && items[i].Text == item.Text {
+			items[i] = item
+			return items
+		}
+		break
 	}
 	items = append(items, item)
 	if len(items) > 200 {
 		items = items[len(items)-200:]
 	}
 	return items
+}
+
+func sameTranscriptStream(left, right TranscriptItem) bool {
+	return left.Role == right.Role &&
+		left.Speaker == right.Speaker &&
+		left.Source == right.Source
 }
 
 func (s *Store) Subscribe(sessionID string) (<-chan Event, func()) {

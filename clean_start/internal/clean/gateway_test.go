@@ -107,6 +107,43 @@ func TestAppendTranscriptKeepsDifferentSpeakersSeparate(t *testing.T) {
 	}
 }
 
+func TestAppendTranscriptCoalescesInterleavedDiarizedPartials(t *testing.T) {
+	now := time.Now().UTC()
+	spk2 := TranscriptItem{Role: "speaker_2", Speaker: "2", Source: "browser-system-audio", Text: "Хм.", CreatedAt: now}
+	spk1 := TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio", Text: "Согласен. Ты всё равно ниндзя.", CreatedAt: now}
+	items := []TranscriptItem{}
+
+	items = appendTranscript(items, spk2)
+	items = appendTranscript(items, spk1)
+	items = appendTranscript(items, TranscriptItem{Role: spk2.Role, Speaker: spk2.Speaker, Source: spk2.Source, Text: spk2.Text, CreatedAt: now.Add(time.Second)})
+	items = appendTranscript(items, TranscriptItem{Role: spk1.Role, Speaker: spk1.Speaker, Source: spk1.Source, Text: spk1.Text, CreatedAt: now.Add(time.Second)})
+
+	if len(items) != 2 {
+		t.Fatalf("repeated interleaved partials should stay two bubbles, got %#v", items)
+	}
+	if items[0].Text != spk2.Text || items[1].Text != spk1.Text {
+		t.Fatalf("unexpected partial ordering/content: %#v", items)
+	}
+
+	items = appendTranscript(items, TranscriptItem{Role: spk2.Role, Speaker: spk2.Speaker, Source: spk2.Source, Text: spk2.Text, Final: true, CreatedAt: now.Add(2 * time.Second)})
+	items = appendTranscript(items, TranscriptItem{Role: spk1.Role, Speaker: spk1.Speaker, Source: spk1.Source, Text: spk1.Text, Final: true, CreatedAt: now.Add(2 * time.Second)})
+	if len(items) != 2 || !items[0].Final || !items[1].Final {
+		t.Fatalf("finals should replace matching partials without duplicates: %#v", items)
+	}
+
+	items = appendTranscript(items, TranscriptItem{Role: spk1.Role, Speaker: spk1.Speaker, Source: spk1.Source, Text: "Тогда разговор окончен.", CreatedAt: now.Add(7 * time.Second)})
+	if len(items) != 3 || items[2].Final {
+		t.Fatalf("new partial after final should start a new bubble: %#v", items)
+	}
+}
+
+func TestAppendTranscriptDropsEmptyText(t *testing.T) {
+	items := appendTranscript(nil, TranscriptItem{Role: "speaker_1", Speaker: "1", Source: "browser-system-audio"})
+	if len(items) != 0 {
+		t.Fatalf("empty transcript item should be ignored: %#v", items)
+	}
+}
+
 func TestSelectedSTTProvider(t *testing.T) {
 	t.Run("auto prefers soniox", func(t *testing.T) {
 		g := NewGateway(Config{STTProvider: "auto", SonioxAPIKey: "soniox", InworldAPIKey: "inworld"}, nil, NewInworldClient(Config{InworldAPIKey: "inworld"}), noopLogger())
