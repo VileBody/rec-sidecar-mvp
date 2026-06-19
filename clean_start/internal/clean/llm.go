@@ -33,6 +33,13 @@ type helpOpenerResponse struct {
 	Fallback bool   `json:"fallback"`
 }
 
+type liveSellerResponse struct {
+	Action   string `json:"action"`
+	Text     string `json:"text"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
 func NewLLMClient(cfg Config, logger *slog.Logger) *LLMClient {
 	return &LLMClient{
 		cfg: cfg,
@@ -101,6 +108,67 @@ func (c *LLMClient) StreamSeller(ctx context.Context, sessionID, contextText, qu
 		return strings.Join(parts, ""), "llm-helper", model, nil
 	}
 	return strings.Join(parts, ""), "llm-helper", model, nil
+}
+
+func (c *LLMClient) LiveSellerSuggestion(ctx context.Context, sessionID, contextText, currentText string, force bool) (liveSellerResponse, error) {
+	if c.cfg.LLMServiceURL == "" {
+		return liveSellerResponse{
+			Action:   "suggest",
+			Text:     fallbackSeller(contextText),
+			Provider: "fallback",
+			Model:    "local",
+		}, nil
+	}
+	body := map[string]any{
+		"run_id":       sessionID,
+		"content":      contextText,
+		"current_text": currentText,
+		"force":        force,
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.LLMServiceURL+"/v1/coach/live", bytes.NewReader(raw))
+	if err != nil {
+		return liveSellerResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.cfg.LLMServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return liveSellerResponse{
+			Action:   "suggest",
+			Text:     fallbackSeller(contextText),
+			Provider: "fallback",
+			Model:    "local-after-error",
+		}, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return liveSellerResponse{
+			Action:   "suggest",
+			Text:     fallbackSeller(contextText),
+			Provider: "fallback",
+			Model:    fmt.Sprintf("http-%d", resp.StatusCode),
+		}, nil
+	}
+
+	var out liveSellerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return liveSellerResponse{}, err
+	}
+	out.Action = strings.TrimSpace(out.Action)
+	out.Text = strings.TrimSpace(out.Text)
+	out.Provider = strings.TrimSpace(out.Provider)
+	out.Model = strings.TrimSpace(out.Model)
+	if out.Action == "" {
+		out.Action = "suggest"
+	}
+	if out.Provider == "" {
+		out.Provider = "llm-helper"
+	}
+	return out, nil
 }
 
 func (c *LLMClient) DetectStage(ctx context.Context, sessionID, contextText, currentStage string, includeScorecard bool) (*StageData, error) {

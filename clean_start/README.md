@@ -131,6 +131,8 @@ Gateway STT provider selection:
 
 Set `CLEAN_START_COACH_ENABLED=false` for STT-only debugging. In that mode sessions do not create an opener, manual seller/help requests are ignored, and the UI shows the diarized transcript with timestamps instead of LLM suggestions.
 
+Seller suggestions use the ZAI gate -> Gemini reply loop. Client partials are first filtered by local growth thresholds. If a seller reply is already visible, the worker calls `/v1/coach/live` with `current_text`; Cerebras/ZAI can return `skip` to keep the current reply, or `suggest` to let Vertex/Gemini replace it. Final client turns and stage changes force a fresh Gemini reply.
+
 Stage detection runs on client partials, but partials are coalesced so one spoken phrase cannot create a queue of parallel LLM calls. Tune with `CLEAN_START_STAGE_PARTIAL_INTERVAL_MS` (default `2200`) and `CLEAN_START_MIN_STAGE_GROWTH` (default `24`).
 
 This is reliable only when the microphone does not hear the remote participant, for example when the seller uses headphones. If laptop speakers leak into the microphone, the gateway now applies a text echo filter in both directions:

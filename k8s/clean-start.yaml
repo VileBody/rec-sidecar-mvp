@@ -95,7 +95,7 @@ spec:
             - name: CLEAN_START_HTTP_ADDR
               value: ":8110"
             - name: CLEAN_START_COACH_ENABLED
-              value: "false"
+              value: "true"
             - name: NATS_URL
               value: nats://clean-start-nats:4222
             - name: COACH_LLM_SERVICE_URL
@@ -242,7 +242,7 @@ metadata:
     app.kubernetes.io/name: clean-start-seller-worker
     app.kubernetes.io/part-of: rec-sidecar
 spec:
-  replicas: 0
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: clean-start-seller-worker
@@ -284,7 +284,7 @@ metadata:
     app.kubernetes.io/name: clean-start-assist-worker
     app.kubernetes.io/part-of: rec-sidecar
 spec:
-  replicas: 0
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: clean-start-assist-worker
@@ -326,7 +326,7 @@ metadata:
     app.kubernetes.io/name: clean-start-stage-worker
     app.kubernetes.io/part-of: rec-sidecar
 spec:
-  replicas: 0
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: clean-start-stage-worker
@@ -368,7 +368,7 @@ metadata:
     app.kubernetes.io/name: clean-start-scorecard-worker
     app.kubernetes.io/part-of: rec-sidecar
 spec:
-  replicas: 0
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: clean-start-scorecard-worker
