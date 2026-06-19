@@ -983,6 +983,55 @@ async def test_stage_agenda_uses_cerebras_stage_detection_and_vertex_scorecard_m
 
 
 @pytest.mark.anyio
+async def test_stage_agenda_can_skip_scorecard_for_candidate():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append((request, payload))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"stage":"S2.2","confidence":0.73}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                vertex_project="project-id",
+                vertex_access_token="token",
+            ),
+            client,
+        )
+
+        response = await orchestrator.stage_agenda(
+            StageRequest(
+                run_id="run",
+                context="dialogue",
+                current_stage="S2.1",
+                include_scorecard=False,
+            )
+        )
+
+        assert response.stage == "S2.2"
+        assert response.scorecard is None
+        assert len(calls) == 1
+        request, payload = calls[0]
+        assert str(request.url) == "https://cerebras.test/v1/chat/completions"
+        assert payload["response_format"]["json_schema"]["name"] == "sales_stage_detection"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_stage_agenda_uses_cerebras_text_contract_for_stage_fallback():
     calls = []
 

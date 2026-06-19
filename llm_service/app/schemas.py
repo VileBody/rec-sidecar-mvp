@@ -52,6 +52,7 @@ class StageRequest(StrictModel):
     run_id: str
     context: str
     current_stage: str | None = None
+    include_scorecard: bool = True
 
 
 class StageScoreEvidence(BaseModel):

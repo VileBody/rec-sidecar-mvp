@@ -103,14 +103,15 @@ func (c *LLMClient) StreamSeller(ctx context.Context, sessionID, contextText, qu
 	return strings.Join(parts, ""), "llm-helper", model, nil
 }
 
-func (c *LLMClient) DetectStage(ctx context.Context, sessionID, contextText, currentStage string) (*StageData, error) {
+func (c *LLMClient) DetectStage(ctx context.Context, sessionID, contextText, currentStage string, includeScorecard bool) (*StageData, error) {
 	if c.cfg.LLMServiceURL == "" {
 		return fallbackStage(currentStage), nil
 	}
 	body := map[string]any{
-		"run_id":        sessionID,
-		"context":       contextText,
-		"current_stage": currentStage,
+		"run_id":            sessionID,
+		"context":           contextText,
+		"current_stage":     currentStage,
+		"include_scorecard": includeScorecard,
 	}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.LLMServiceURL+"/v1/coach/stage", bytes.NewReader(raw))

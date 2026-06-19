@@ -411,7 +411,8 @@ func (w *StageWorker) detectThenContinue(ctx context.Context, req stageDetection
 
 func (w *StageWorker) detect(ctx context.Context, sessionID string, mem *sessionMemory, eventType string) {
 	started := time.Now()
-	stage, err := w.llm.DetectStage(ctx, sessionID, mem.contextBlock(), mem.CurrentStage)
+	includeScorecard := eventType == EventStageCommitted
+	stage, err := w.llm.DetectStage(ctx, sessionID, mem.contextBlock(), mem.CurrentStage, includeScorecard)
 	if err != nil {
 		_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "stage-worker", ErrorData{Where: "stage", Message: err.Error()}))
 		return
@@ -419,7 +420,7 @@ func (w *StageWorker) detect(ctx context.Context, sessionID string, mem *session
 	if stage == nil {
 		return
 	}
-	w.logger.Info("stage detected", "session_id", sessionID, "stage", stage.Stage, "event", eventType, "elapsed_ms", time.Since(started).Milliseconds())
+	w.logger.Info("stage detected", "session_id", sessionID, "stage", stage.Stage, "event", eventType, "include_scorecard", includeScorecard, "elapsed_ms", time.Since(started).Milliseconds())
 	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, eventType, "stage-worker", stage))
 }
 

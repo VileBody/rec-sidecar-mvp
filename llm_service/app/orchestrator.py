@@ -717,7 +717,7 @@ class LlmOrchestrator:
             confidence,
             detect_elapsed_ms,
         )
-        scorecard = await self._stage_scorecard(request, agenda)
+        scorecard = await self._stage_scorecard(request, agenda) if request.include_scorecard else None
         response_elapsed_ms = int((time.monotonic() - response_started_at) * 1000)
         total_elapsed_ms = (
             detect_elapsed_ms + response_elapsed_ms
@@ -725,11 +725,12 @@ class LlmOrchestrator:
             else response_elapsed_ms
         )
         logger.info(
-            "stage_response run_id=%s stage=%s total_elapsed_ms=%s post_detect_elapsed_ms=%s",
+            "stage_response run_id=%s stage=%s total_elapsed_ms=%s post_detect_elapsed_ms=%s include_scorecard=%s",
             request.run_id,
             stage,
             total_elapsed_ms,
             response_elapsed_ms,
+            request.include_scorecard,
         )
         return StageAgendaResponse(
             stage=agenda.stage,
