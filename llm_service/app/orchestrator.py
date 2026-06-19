@@ -93,7 +93,8 @@ class LlmOrchestrator:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None):
         self.settings = settings
         self.client = client or httpx.AsyncClient(
-            timeout=settings.timeout_secs,
+            timeout=httpx.Timeout(settings.timeout_secs, pool=2.0),
+            limits=httpx.Limits(max_connections=500, max_keepalive_connections=100),
             proxy=settings.outbound_proxy,
         )
         self._owns_client = client is None
@@ -659,7 +660,7 @@ class LlmOrchestrator:
         except ProviderError as exc:
             if exc.is_structured_output_error:
                 suggestion = await self._cerebras_live_unstructured(request)
-            elif exc.is_rate_limit and self._auto_provider() and self.vertex.configured():
+            elif self._auto_provider() and self.vertex.configured():
                 suggestion = await self._vertex_live(request)
                 return ("vertex", self.settings.vertex_model, suggestion)
             else:

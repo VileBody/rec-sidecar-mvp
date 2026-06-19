@@ -452,32 +452,40 @@ class CerebrasClient:
 
     async def _post_json(self, body: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.settings.cerebras_api_base.rstrip('/')}/chat/completions"
-        response = await self.client.post(url, headers=self._headers(), json=body)
+        try:
+            response = await self.client.post(url, headers=self._headers(), json=body)
+        except httpx.HTTPError as exc:
+            raise ProviderError("cerebras", f"{exc.__class__.__name__}: {exc}") from exc
         if not response.is_success:
             raise ProviderError("cerebras", response.text, response.status_code)
         return response.json()
 
     async def _stream_json_deltas(self, body: dict[str, Any]) -> AsyncIterator[str]:
         url = f"{self.settings.cerebras_api_base.rstrip('/')}/chat/completions"
-        async with self.client.stream("POST", url, headers=self._headers(), json=body) as response:
-            if not response.is_success:
-                text = (await response.aread()).decode("utf-8", errors="replace")
-                raise ProviderError("cerebras", text, response.status_code)
+        try:
+            async with self.client.stream(
+                "POST", url, headers=self._headers(), json=body
+            ) as response:
+                if not response.is_success:
+                    text = (await response.aread()).decode("utf-8", errors="replace")
+                    raise ProviderError("cerebras", text, response.status_code)
 
-            async for line in response.aiter_lines():
-                line = line.strip()
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line.removeprefix("data:").strip()
-                if data == "[DONE]":
-                    return
-                try:
-                    value = json.loads(data)
-                except ValueError:
-                    continue
-                for part in stream_content_parts(value):
-                    if part:
-                        yield part
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line.removeprefix("data:").strip()
+                    if data == "[DONE]":
+                        return
+                    try:
+                        value = json.loads(data)
+                    except ValueError:
+                        continue
+                    for part in stream_content_parts(value):
+                        if part:
+                            yield part
+        except httpx.HTTPError as exc:
+            raise ProviderError("cerebras", f"{exc.__class__.__name__}: {exc}") from exc
 
 
 class VertexClient:
