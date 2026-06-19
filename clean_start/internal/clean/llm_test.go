@@ -60,3 +60,18 @@ func TestSessionMemoryTracksSellerDraftForGate(t *testing.T) {
 		t.Fatalf("seller generation id should be cleared, got %q", mem.SellerGenerationID)
 	}
 }
+
+func TestSessionMemoryIgnoresDuplicateSellerEvents(t *testing.T) {
+	book := newMemoryBook()
+	sessionID := "sess-test"
+	started := NewEvent(sessionID, EventSellerStarted, "test", SellerStartedData{GenerationID: "gen-1", Trigger: "test"})
+	delta := NewEvent(sessionID, EventSellerDelta, "test", SellerDeltaData{GenerationID: "gen-1", Delta: "Версия"})
+
+	book.apply(started)
+	book.apply(delta)
+	mem := book.apply(delta)
+
+	if mem.SellerDraft != "Версия" {
+		t.Fatalf("draft after duplicate delta = %q", mem.SellerDraft)
+	}
+}

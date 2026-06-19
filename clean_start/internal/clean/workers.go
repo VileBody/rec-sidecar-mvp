@@ -53,10 +53,14 @@ func (m *sessionMemory) contextBlock() string {
 type memoryBook struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionMemory
+	seen     map[string]struct{}
 }
 
 func newMemoryBook() *memoryBook {
-	return &memoryBook{sessions: make(map[string]*sessionMemory)}
+	return &memoryBook{
+		sessions: make(map[string]*sessionMemory),
+		seen:     make(map[string]struct{}),
+	}
 }
 
 func (b *memoryBook) apply(event Event) *sessionMemory {
@@ -67,6 +71,10 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 		mem = &sessionMemory{CurrentStage: "S2.1"}
 		b.sessions[event.SessionID] = mem
 	}
+	if _, ok := b.seen[event.ID]; ok {
+		return cloneSessionMemory(mem)
+	}
+	b.seen[event.ID] = struct{}{}
 	switch event.Type {
 	case EventSellerInput:
 		if data, err := DecodeData[TextData](event); err == nil && data.Text != "" {
@@ -118,6 +126,10 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 	case EventSellerCanceled:
 		mem.SellerGenerationID = ""
 	}
+	return cloneSessionMemory(mem)
+}
+
+func cloneSessionMemory(mem *sessionMemory) *sessionMemory {
 	copy := *mem
 	copy.Messages = append([]Message(nil), mem.Messages...)
 	return &copy
@@ -212,6 +224,11 @@ func (w *SellerWorker) Shutdown(context.Context) error {
 	return nil
 }
 
+func (w *SellerWorker) publish(event Event) error {
+	w.memory.apply(event)
+	return PublishEvent(w.nc, w.cfg, event)
+}
+
 func (w *SellerWorker) maybeStartFromPartial(ctx context.Context, sessionID string, mem *sessionMemory, text string) {
 	cleanText := strings.TrimSpace(text)
 	if len([]rune(cleanText)) < w.cfg.MinSellerChars {
@@ -270,7 +287,7 @@ func (w *SellerWorker) startGeneration(parent context.Context, sessionID string,
 	w.cancels[sessionID] = cancel
 	w.activeGen[sessionID] = generationID
 	w.mu.Unlock()
-	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventSellerStarted, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
+	_ = w.publish(NewEvent(sessionID, EventSellerStarted, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
 
 	go func() {
 		defer func() {
@@ -289,7 +306,7 @@ func (w *SellerWorker) startGeneration(parent context.Context, sessionID string,
 		started := time.Now()
 		suggestion, err := w.llm.LiveSellerSuggestion(ctx, sessionID, contextText, strings.TrimSpace(mem.SellerDraft), true)
 		if ctx.Err() != nil {
-			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventSellerCanceled, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
+			_ = w.publish(NewEvent(sessionID, EventSellerCanceled, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
 			return
 		}
 		if err != nil {
@@ -297,7 +314,7 @@ func (w *SellerWorker) startGeneration(parent context.Context, sessionID string,
 			return
 		}
 		if suggestion.Action == "skip" {
-			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventSellerCanceled, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
+			_ = w.publish(NewEvent(sessionID, EventSellerCanceled, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
 			w.logger.Info("seller force generation skipped", "session_id", sessionID, "generation_id", generationID, "elapsed_ms", time.Since(started).Milliseconds(), "provider", suggestion.Provider, "model", suggestion.Model)
 			return
 		}
@@ -305,9 +322,9 @@ func (w *SellerWorker) startGeneration(parent context.Context, sessionID string,
 			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "seller-worker", ErrorData{Where: "seller", Message: "empty seller suggestion"}))
 			return
 		}
-		_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventSellerDelta, "seller-worker", SellerDeltaData{GenerationID: generationID, Delta: suggestion.Text}))
+		_ = w.publish(NewEvent(sessionID, EventSellerDelta, "seller-worker", SellerDeltaData{GenerationID: generationID, Delta: suggestion.Text}))
 		w.logger.Info("seller generation done", "session_id", sessionID, "generation_id", generationID, "trigger", trigger, "elapsed_ms", time.Since(started).Milliseconds(), "provider", suggestion.Provider, "model", suggestion.Model)
-		_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventSellerDone, "seller-worker", SellerDoneData{GenerationID: generationID, Text: suggestion.Text, Provider: suggestion.Provider, Model: suggestion.Model}))
+		_ = w.publish(NewEvent(sessionID, EventSellerDone, "seller-worker", SellerDoneData{GenerationID: generationID, Text: suggestion.Text, Provider: suggestion.Provider, Model: suggestion.Model}))
 	}()
 }
 
@@ -367,9 +384,9 @@ func (w *SellerWorker) publishImmediateSuggestion(sessionID, trigger string, sug
 	w.activeGen[sessionID] = generationID
 	w.mu.Unlock()
 
-	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventSellerStarted, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
-	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventSellerDelta, "seller-worker", SellerDeltaData{GenerationID: generationID, Delta: suggestion.Text}))
-	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventSellerDone, "seller-worker", SellerDoneData{GenerationID: generationID, Text: suggestion.Text, Provider: suggestion.Provider, Model: suggestion.Model}))
+	_ = w.publish(NewEvent(sessionID, EventSellerStarted, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
+	_ = w.publish(NewEvent(sessionID, EventSellerDelta, "seller-worker", SellerDeltaData{GenerationID: generationID, Delta: suggestion.Text}))
+	_ = w.publish(NewEvent(sessionID, EventSellerDone, "seller-worker", SellerDoneData{GenerationID: generationID, Text: suggestion.Text, Provider: suggestion.Provider, Model: suggestion.Model}))
 
 	w.mu.Lock()
 	if w.activeGen[sessionID] == generationID {
