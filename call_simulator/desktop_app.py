@@ -17,7 +17,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import END, N, S, E, W, BooleanVar, StringVar, Tk, messagebox
+from tkinter import END, N, S, E, W, BooleanVar, StringVar, TclError, Tk, messagebox
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -293,11 +293,18 @@ class CallSimulatorApp:
         self.seller_input.grid(row=1, column=0, sticky=(N, S, E, W), pady=(10, 12))
         self.seller_input.bind("<Command-Return>", lambda _event: self.submit_seller_line())
         self.seller_input.bind("<Control-Return>", lambda _event: self.submit_seller_line())
+        self.seller_input.bind("<Command-v>", self.paste_into_seller)
+        self.seller_input.bind("<Command-V>", self.paste_into_seller)
+        self.seller_input.bind("<Control-v>", self.paste_into_seller)
+        self.seller_input.bind("<Control-V>", self.paste_into_seller)
+        self.seller_input.bind("<Command-a>", self.select_seller_input)
+        self.seller_input.bind("<Command-A>", self.select_seller_input)
         buttons = ttk.Frame(input_panel, style="Panel.TFrame")
         buttons.grid(row=2, column=0, sticky=(W, E))
         self.send_button = ttk.Button(buttons, text="Клиент отвечает", style="Primary.TButton", command=self.submit_seller_line)
         self.send_button.grid(row=0, column=0, sticky=W)
-        ttk.Button(buttons, text="Очистить поле", command=self.clear_input).grid(row=0, column=1, sticky=W, padx=(8, 0))
+        ttk.Button(buttons, text="Вставить", command=self.paste_into_seller).grid(row=0, column=1, sticky=W, padx=(8, 0))
+        ttk.Button(buttons, text="Очистить поле", command=self.clear_input).grid(row=0, column=2, sticky=W, padx=(8, 0))
 
         footer = ttk.Label(self.root, textvariable=self.output_dir_var, foreground="#697589", background="#0e1118")
         footer.grid(row=2, column=0, columnspan=2, sticky=(W, E), padx=18, pady=(0, 10))
@@ -447,6 +454,24 @@ class CallSimulatorApp:
 
     def clear_input(self) -> None:
         self.seller_input.delete("1.0", END)
+
+    def paste_into_seller(self, _event: object | None = None) -> str:
+        try:
+            value = self.root.clipboard_get()
+        except TclError:
+            self.status_var.set("clipboard empty")
+            return "break"
+        if value:
+            self.seller_input.focus_set()
+            self.seller_input.insert("insert", value)
+            self.status_var.set("pasted")
+        return "break"
+
+    def select_seller_input(self, _event: object | None = None) -> str:
+        self.seller_input.tag_add("sel", "1.0", "end-1c")
+        self.seller_input.mark_set("insert", "end-1c")
+        self.seller_input.see("insert")
+        return "break"
 
     def copy_opener(self) -> None:
         value = self.opener_text.get("1.0", END).strip()
