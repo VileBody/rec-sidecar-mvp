@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Desktop call simulator for the Clean Start coach.
 
-The app is intentionally small: the seller types the line they said, the
-simulated client answers through the existing client-actor + Inworld TTS
-pipeline, and only the client audio is played into the system output.
+The seller line is typed, then voiced with the seller voice. The simulated
+client answers through the existing client-actor + Inworld TTS pipeline.
 """
 
 from __future__ import annotations
@@ -159,6 +158,7 @@ class CallSimulatorApp:
         self.history: list[tuple[str, str]] = []
         self.turn_index = 0
         self.busy = False
+        self.last_seller_audio: Path | None = None
         self.last_client_audio: Path | None = None
 
         self.configure_style()
@@ -201,8 +201,9 @@ class CallSimulatorApp:
         controls = ttk.Frame(header, style="Panel.TFrame")
         controls.grid(row=0, column=1, rowspan=2, sticky=E)
         ttk.Button(controls, text="Новый диалог", command=self.reset_session).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(controls, text="Повторить клиента", command=self.replay_last_client).grid(row=0, column=1, padx=(0, 8))
-        ttk.Checkbutton(controls, text="Проигрывать звук", variable=self.play_audio_var).grid(row=0, column=2)
+        ttk.Button(controls, text="Повторить продавца", command=lambda: self.replay_audio("seller")).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(controls, text="Повторить клиента", command=lambda: self.replay_audio("client")).grid(row=0, column=2, padx=(0, 8))
+        ttk.Checkbutton(controls, text="Проигрывать звук", variable=self.play_audio_var).grid(row=0, column=3)
 
         left = ttk.Frame(self.root, padding=0)
         left.grid(row=1, column=0, sticky=(N, S, E, W), padx=(16, 8), pady=(0, 16))
@@ -326,21 +327,23 @@ class CallSimulatorApp:
         self.logger.log(
             "session_start",
             app="desktop_call_simulator",
-            mode="seller_text_client_voice",
+            mode="both_sides_voice",
             script_number=self.reference.number,
             script_title=self.reference.title,
             persona_mode=self.persona_var.get(),
+            seller_voice=self.args.inworld_seller_voice,
             client_voice=self.args.inworld_client_voice,
             client_actor_model=self.args.client_actor_model,
         )
         self.history = []
         self.turn_index = 0
+        self.last_seller_audio = None
         self.last_client_audio = None
         self.status_var.set(f"ready · script {self.reference.number} · {self.persona_var.get()}")
         self.output_dir_var.set(str(output_dir))
         self.clear_transcript()
         self.append_system(f"Сценарий {self.reference.number}: {self.reference.title}")
-        self.append_system("Продавца вводим текстом. Озвучивается только клиент.")
+        self.append_system("Продавец и клиент озвучиваются разными голосами.")
 
     def submit_seller_line(self) -> str:
         if self.busy:
@@ -357,7 +360,7 @@ class CallSimulatorApp:
             self.logger.log("seller_text", turn=turn, text=text)
             self.logger.append_dialogue("Seller", text)
         self.append_message("seller", "Продавец", text)
-        self.set_busy(True, "client thinking...")
+        self.set_busy(True, "seller voice...")
         thread = threading.Thread(target=self.client_worker, args=(turn, text, list(self.history)), daemon=True)
         thread.start()
         return "break"
@@ -366,6 +369,29 @@ class CallSimulatorApp:
         try:
             if self.args is None or self.reference is None or self.logger is None:
                 raise RuntimeError("Session is not initialized.")
+            seller_tts_started_at = time.monotonic()
+            seller_pcm = synthesize_inworld_text(self.args, seller_text, speaker="Seller")
+            seller_tts_elapsed_ms = int((time.monotonic() - seller_tts_started_at) * 1000)
+            seller_audio_path = self.args.output_dir / f"seller_turn_{turn:03d}.wav"
+            write_pcm_wav(seller_audio_path, seller_pcm)
+            self.logger.log(
+                "seller_audio",
+                turn=turn,
+                elapsed_ms=seller_tts_elapsed_ms,
+                audio_path=str(seller_audio_path),
+            )
+            self.events.put(
+                WorkerEvent(
+                    "seller_audio",
+                    {"turn": turn, "audio_path": str(seller_audio_path), "tts_ms": seller_tts_elapsed_ms},
+                )
+            )
+            if self.play_audio_var.get():
+                play_started_at = time.monotonic()
+                play_audio(seller_audio_path)
+                play_elapsed_ms = int((time.monotonic() - play_started_at) * 1000)
+                self.logger.log("seller_audio_played", turn=turn, elapsed_ms=play_elapsed_ms)
+
             llm_started_at = time.monotonic()
             client_text = generate_client_reply(
                 args=self.args,
@@ -413,7 +439,10 @@ class CallSimulatorApp:
         self.root.after(100, self.drain_events)
 
     def handle_worker_event(self, event: WorkerEvent) -> None:
-        if event.kind == "client_text":
+        if event.kind == "seller_audio":
+            self.last_seller_audio = Path(str(event.payload["audio_path"]))
+            self.status_var.set(f"seller audio · {event.payload.get('tts_ms')} ms")
+        elif event.kind == "client_text":
             self.status_var.set(f"client generated · {event.payload.get('llm_ms')} ms")
             self.append_message("client", "Клиент", str(event.payload["text"]))
             self.history.append(("Client", str(event.payload["text"])))
@@ -430,14 +459,15 @@ class CallSimulatorApp:
                 self.logger.log("turn_error", turn=event.payload.get("turn"), error=event.payload.get("error"))
             messagebox.showerror("Call Simulator", str(event.payload.get("error")))
 
-    def replay_last_client(self) -> None:
+    def replay_audio(self, role: str) -> None:
         if self.busy:
             return
-        if self.last_client_audio is None or not self.last_client_audio.exists():
-            messagebox.showinfo("Call Simulator", "Пока нет клиентской аудио-реплики.")
+        audio_path = self.last_seller_audio if role == "seller" else self.last_client_audio
+        if audio_path is None or not audio_path.exists():
+            messagebox.showinfo("Call Simulator", f"Пока нет аудио-реплики: {role}.")
             return
-        self.set_busy(True, "replaying client...")
-        thread = threading.Thread(target=self.replay_worker, args=(self.last_client_audio,), daemon=True)
+        self.set_busy(True, f"replaying {role}...")
+        thread = threading.Thread(target=self.replay_worker, args=(audio_path,), daemon=True)
         thread.start()
 
     def replay_worker(self, path: Path) -> None:

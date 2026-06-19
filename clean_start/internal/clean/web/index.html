@@ -667,10 +667,9 @@
       try {
         setCaptureStatus("warn", automatic ? "запрашиваю доступ" : "выберите вкладку/экран со звуком");
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        for (const track of stream.getVideoTracks()) track.stop();
         const audioTracks = stream.getAudioTracks();
         if (!audioTracks.length) throw new Error("audio track не выбран");
-        startAudioStream(new MediaStream(audioTracks), {
+        startAudioStream(stream, {
           mode: "system",
           sourceLabel: "browser-system-audio",
         });

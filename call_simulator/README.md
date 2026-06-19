@@ -16,6 +16,6 @@ The app loads `.env` and `.env.iac`, uses the existing `zai-glm-4.7` client acto
 - Read or copy the opener from the app.
 - Paste what the seller said into the right textarea.
 - Press `Клиент отвечает`.
-- The app generates the client reply, saves a WAV, and plays only the client voice.
+- The app voices the seller line, generates the client reply, then voices the client line.
 
-This keeps seller context textual while the played system audio belongs to the simulated client.
+Seller and client use separate Inworld voices, so the simulator behaves like a complete two-sided call.
