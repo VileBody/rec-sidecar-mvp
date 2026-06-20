@@ -509,7 +509,10 @@
           <h2 class="title">Предлагаемая реплика</h2>
           <div id="replyMeta" class="sub">обновляется по речи клиента</div>
         </div>
-        <button id="copyReply" class="blue">Скопировать</button>
+        <div class="action-row">
+          <button id="openReplyPip" class="ghost">Окошко</button>
+          <button id="copyReply" class="blue">Скопировать</button>
+        </div>
       </header>
 
       <section class="card reply-main">
@@ -576,6 +579,7 @@
     };
     const SPEAKER_STORAGE_KEY = "rec-coach-seller-speaker";
     let sellerSpeaker = localStorage.getItem(SPEAKER_STORAGE_KEY) || "";
+    let replyPipWindow = null;
 
     async function createSession() {
       if (events) events.close();
@@ -779,6 +783,7 @@
       $("replyMeta").textContent = text ? streaming : "обновляется по речи клиента";
       $("copyReply").disabled = !text;
       $("markSaid").disabled = !text;
+      syncReplyPip();
     }
 
     function renderStage() {
@@ -832,6 +837,87 @@
       if (!text) return;
       await postEvent({ type: "seller.input", text });
       showToast("Добавил в диалог как нашу реплику");
+    }
+
+    async function openReplyPip() {
+      if (!("documentPictureInPicture" in window)) {
+        showToast("Этот браузер не поддерживает окошко поверх вкладок");
+        return;
+      }
+      if (replyPipWindow && !replyPipWindow.closed) {
+        replyPipWindow.focus();
+        syncReplyPip();
+        return;
+      }
+      replyPipWindow = await window.documentPictureInPicture.requestWindow({
+        width: 560,
+        height: 380,
+      });
+      replyPipWindow.addEventListener("pagehide", () => {
+        replyPipWindow = null;
+      });
+      const doc = replyPipWindow.document;
+      doc.body.innerHTML = `
+        <style>
+          :root {
+            color-scheme: light;
+            --ink: #222734;
+            --muted: #7b8496;
+            --line: #d9e0ec;
+            --paper: #ffffff;
+            --paper-soft: #f6f8fc;
+            --blue: #2f6ee7;
+            --blue-soft: #eef4ff;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          }
+          * { box-sizing: border-box; }
+          html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--paper); color: var(--ink); }
+          body { display: grid; grid-template-rows: auto 1fr auto; }
+          header { padding: 18px 20px 8px; border-bottom: 1px solid var(--line); }
+          .eyebrow { color: #8a92a4; font-size: 12px; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
+          .meta { margin-top: 6px; color: var(--muted); font-size: 13px; font-weight: 650; }
+          #pipReplyText { display: flex; align-items: center; padding: 22px 24px; font-size: clamp(25px, 8.4vw, 44px); line-height: 1.13; font-weight: 820; overflow: auto; word-break: break-word; }
+          #pipReplyText.muted { color: #9aa3b5; font-weight: 680; }
+          footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--paper-soft); }
+          button { appearance: none; border: 1px solid #cfd8e8; border-radius: 14px; min-height: 44px; padding: 9px 16px; background: var(--paper); color: var(--ink); font: inherit; font-weight: 800; cursor: pointer; }
+          button.primary { background: var(--blue); color: white; border-color: var(--blue); }
+          button:disabled { opacity: .45; cursor: default; }
+        </style>
+        <header>
+          <div class="eyebrow">следующая реплика</div>
+          <div id="pipReplyMeta" class="meta">обновляется по речи клиента</div>
+        </header>
+        <main id="pipReplyText" class="muted">Жду речь клиента...</main>
+        <footer>
+          <button id="pipMarkSaid">Я это сказал</button>
+          <button id="pipRefresh" class="primary">Перегенерить</button>
+        </footer>
+      `;
+      doc.getElementById("pipMarkSaid").onclick = markSaid;
+      doc.getElementById("pipRefresh").onclick = refreshReply;
+      syncReplyPip();
+    }
+
+    function syncReplyPip() {
+      if (!replyPipWindow || replyPipWindow.closed) return;
+      const doc = replyPipWindow.document;
+      const text = state?.seller_draft || "";
+      const textNode = doc.getElementById("pipReplyText");
+      const metaNode = doc.getElementById("pipReplyMeta");
+      const markButton = doc.getElementById("pipMarkSaid");
+      if (!textNode || !metaNode || !markButton) return;
+      textNode.textContent = text || "Жду речь клиента...";
+      textNode.classList.toggle("muted", !text);
+      metaNode.textContent = text ? (state?.seller_streaming ? "генерируется" : "готово") : "обновляется по речи клиента";
+      markButton.disabled = !text;
+    }
+
+    function refreshReply() {
+      return postEvent({
+        type: "seller.request",
+        trigger: "manual_refresh",
+        text: "Перегенерируй следующую реплику продавца короче и ближе к текущему контексту.",
+      });
     }
 
     async function requestAssist(trigger, text = "") {
@@ -1322,14 +1408,11 @@
     $("bothToggle").onclick = startBothAudio;
     $("captureToggle").onclick = () => startCapture({ automatic: false });
     $("micToggle").onclick = startMicTest;
+    $("openReplyPip").onclick = () => openReplyPip().catch((error) => showToast(error.message));
     $("copyReply").onclick = copyReply;
     $("replyText").onclick = copyReply;
     $("markSaid").onclick = markSaid;
-    $("refreshReply").onclick = () => postEvent({
-      type: "seller.request",
-      trigger: "manual_refresh",
-      text: "Перегенерируй следующую реплику продавца короче и ближе к текущему контексту.",
-    });
+    $("refreshReply").onclick = refreshReply;
     $("help").onclick = () => requestAssist("button");
     $("askAssist").onclick = () => {
       const text = $("assistQuestion").value.trim();
