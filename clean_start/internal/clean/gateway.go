@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -392,7 +393,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	if source == "" {
 		source = "browser-audio"
 	}
-	speakerRoles := map[string]string{}
+	speakerRoles := speakerRolesFromQuery(r.URL.Query())
 	stabilizer := newSTTStreamStabilizer()
 	segmentTracker := newSTTSegmentTracker()
 
@@ -419,7 +420,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = writeBrowserJSON(map[string]any{"type": "ready"})
-	g.logger.Info("browser audio stt stream connected", "session_id", sessionID, "role", role, "source", source, "provider", provider)
+	g.logger.Info("browser audio stt stream connected", "session_id", sessionID, "role", role, "source", source, "provider", provider, "speaker_roles", speakerRoles)
 
 	done := make(chan error, 2)
 	audioCommands := make(chan sttAudioCommand, 128)
@@ -1013,6 +1014,38 @@ func roleForSTTSpeaker(defaultRole, speaker string, speakerRoles map[string]stri
 	role := "speaker_" + sanitizeSpeakerID(speaker)
 	speakerRoles[speaker] = role
 	return role
+}
+
+func speakerRolesFromQuery(values url.Values) map[string]string {
+	roles := map[string]string{}
+	sellerSpeaker := normalizeQuerySpeaker(values.Get("seller_speaker"))
+	clientSpeaker := normalizeQuerySpeaker(values.Get("client_speaker"))
+	if sellerSpeaker != "" {
+		roles[sellerSpeaker] = "seller"
+	}
+	if clientSpeaker != "" && clientSpeaker != sellerSpeaker {
+		roles[clientSpeaker] = "client"
+	}
+	if clientSpeaker == "" {
+		switch sellerSpeaker {
+		case "1":
+			roles["2"] = "client"
+		case "2":
+			roles["1"] = "client"
+		}
+	}
+	return roles
+}
+
+func normalizeQuerySpeaker(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" || value == "auto" || value == "unknown" {
+		return ""
+	}
+	for _, prefix := range []string{"speaker_", "speaker-", "speaker", "spk_", "spk-", "spk"} {
+		value = strings.TrimPrefix(value, prefix)
+	}
+	return sanitizeSpeakerID(value)
 }
 
 func sanitizeSpeakerID(speaker string) string {

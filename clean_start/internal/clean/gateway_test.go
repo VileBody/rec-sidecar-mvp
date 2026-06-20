@@ -3,6 +3,7 @@ package clean
 import (
 	"io"
 	"log/slog"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -85,6 +86,19 @@ func TestRoleForSTTSpeakerMixed(t *testing.T) {
 	}
 	if got := roleForSTTSpeaker("client", "1", roles); got != "client" {
 		t.Fatalf("explicit client role = %q, want client", got)
+	}
+}
+
+func TestSpeakerRolesFromQueryMapsSellerAndClient(t *testing.T) {
+	roles := speakerRolesFromQuery(url.Values{"seller_speaker": []string{"speaker_2"}})
+	if got := roleForSTTSpeaker("mixed", "2", roles); got != "seller" {
+		t.Fatalf("speaker 2 role = %q, want seller", got)
+	}
+	if got := roleForSTTSpeaker("mixed", "1", roles); got != "client" {
+		t.Fatalf("speaker 1 role = %q, want client", got)
+	}
+	if got := roleForSTTSpeaker("mixed", "3", roles); got != "speaker_3" {
+		t.Fatalf("speaker 3 role = %q, want speaker_3", got)
 	}
 }
 
