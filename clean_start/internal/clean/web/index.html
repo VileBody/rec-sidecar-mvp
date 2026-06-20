@@ -893,7 +893,6 @@
       const processor = context.createScriptProcessor(2048, 1, 1);
       const sink = context.createGain();
       const role = mode === "microphone" ? "seller" : "mixed";
-      const ws = new WebSocket(sttStreamURL({ role, sourceLabel }));
       const nextState = {
         active: true,
         stream,
@@ -901,7 +900,7 @@
         source,
         processor,
         sink,
-        ws,
+        ws: null,
         mode,
         role,
         sourceLabel,
@@ -909,44 +908,19 @@
         lastVoiceAt: 0,
         lastEndTurnAt: 0,
         sentChunks: 0,
+        reconnectAttempts: 0,
+        reconnectTimer: null,
+        stopping: false,
       };
       captureStates[mode] = nextState;
       logAudioEvent(nextState, "start");
       sink.gain.value = 0;
       processor.onaudioprocess = (event) => {
-        if (captureStates[mode] !== nextState || ws.readyState !== WebSocket.OPEN) return;
+        if (captureStates[mode] !== nextState || nextState.ws?.readyState !== WebSocket.OPEN) return;
         const input = event.inputBuffer.getChannelData(0);
         streamAudioFrame(nextState, input);
       };
-      ws.onopen = () => {
-        if (captureStates[mode] === nextState) {
-          logAudioEvent(nextState, "ws_open");
-          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон стримится" : "захват стримится");
-        }
-      };
-      ws.onmessage = (event) => {
-        if (captureStates[mode] !== nextState) return;
-        const data = JSON.parse(event.data || "{}");
-        if (data.type === "error") {
-          setAudioStatus(mode, "err", data.error || "STT stream error");
-        } else if (data.type === "stt.final") {
-          const roleText = roleLabel(data.role);
-          const speakerText = data.speaker ? ` · spk ${data.speaker}` : "";
-          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон · распознано" : `захват · ${roleText}${speakerText}`);
-        }
-      };
-      ws.onerror = () => {
-        if (captureStates[mode] === nextState) {
-          logAudioEvent(nextState, "ws_error");
-          setAudioStatus(mode, "err", "STT stream error");
-        }
-      };
-      ws.onclose = () => {
-        if (captureStates[mode] === nextState) {
-          logAudioEvent(nextState, "ws_close");
-          stopCapture(mode, mode === "microphone" ? "микрофон STT закрыт" : "захват STT закрыт");
-        }
-      };
+      connectSTTWebSocket(nextState);
       source.connect(processor);
       processor.connect(sink);
       sink.connect(context.destination);
@@ -972,9 +946,71 @@
       }
     }
 
+    function connectSTTWebSocket(captureState) {
+      if (!captureState?.active) return;
+      const { mode, role, sourceLabel } = captureState;
+      const ws = new WebSocket(sttStreamURL({ role, sourceLabel }));
+      captureState.ws = ws;
+      ws.onopen = () => {
+        if (captureStates[mode] === captureState) {
+          captureState.reconnectAttempts = 0;
+          logAudioEvent(captureState, "ws_open");
+          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон стримится" : "захват стримится");
+        }
+      };
+      ws.onmessage = (event) => {
+        if (captureStates[mode] !== captureState) return;
+        const data = JSON.parse(event.data || "{}");
+        if (data.type === "error") {
+          setAudioStatus(mode, "err", data.error || "STT stream error");
+        } else if (data.type === "stt.final") {
+          const roleText = roleLabel(data.role);
+          const speakerText = data.speaker ? ` · spk ${data.speaker}` : "";
+          setAudioStatus(mode, "on", mode === "microphone" ? "микрофон · распознано" : `захват · ${roleText}${speakerText}`);
+        }
+      };
+      ws.onerror = () => {
+        if (captureStates[mode] === captureState) {
+          logAudioEvent(captureState, "ws_error");
+          setAudioStatus(mode, "warn", "STT stream error · переподключаю");
+        }
+      };
+      ws.onclose = () => {
+        if (captureStates[mode] !== captureState || captureState.stopping) return;
+        logAudioEvent(captureState, "ws_close");
+        scheduleSTTReconnect(captureState);
+      };
+    }
+
+    function scheduleSTTReconnect(captureState) {
+      const mode = captureState.mode;
+      const hasLiveTrack = Array.from(captureState.stream?.getAudioTracks?.() || []).some((track) => track.readyState === "live");
+      if (!hasLiveTrack) {
+        stopCapture(mode, mode === "microphone" ? "микрофон STT закрыт" : "захват STT закрыт");
+        return;
+      }
+      if (captureState.reconnectTimer) return;
+      const attempt = captureState.reconnectAttempts + 1;
+      captureState.reconnectAttempts = attempt;
+      const delay = Math.min(5000, 500 * Math.pow(1.6, attempt - 1));
+      logAudioEvent(captureState, "ws_reconnect_scheduled", `${Math.round(delay)}ms`);
+      setAudioStatus(mode, "warn", mode === "microphone" ? "микрофон · переподключаю STT" : "захват · переподключаю STT");
+      captureState.reconnectTimer = setTimeout(() => {
+        captureState.reconnectTimer = null;
+        if (captureStates[mode] !== captureState || captureState.stopping) return;
+        logAudioEvent(captureState, "ws_reconnect", `attempt=${attempt}`);
+        connectSTTWebSocket(captureState);
+      }, delay);
+    }
+
     function stopCapture(mode, stoppedText = "") {
       const captureState = captureStates[mode];
       if (!captureState?.active) return;
+      captureState.stopping = true;
+      if (captureState.reconnectTimer) {
+        clearTimeout(captureState.reconnectTimer);
+        captureState.reconnectTimer = null;
+      }
       captureStates[mode] = emptyCaptureState(mode);
       logAudioEvent(captureState, "stop", stoppedText);
       if (captureState.processor) captureState.processor.disconnect();
@@ -1057,6 +1093,9 @@
         lastVoiceAt: 0,
         lastEndTurnAt: 0,
         sentChunks: 0,
+        reconnectAttempts: 0,
+        reconnectTimer: null,
+        stopping: false,
       };
     }
 

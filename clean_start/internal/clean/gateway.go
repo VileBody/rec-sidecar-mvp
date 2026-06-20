@@ -496,6 +496,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer close(audioCommands)
+		lastAudioLogAt := time.Now()
 		for {
 			var msg BrowserSTTStreamMessage
 			if err := browserConn.ReadJSON(&msg); err != nil {
@@ -528,6 +529,26 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 			}
 			audioStats.audioChunks.Add(1)
 			audioStats.audioBytes.Add(int64(len(raw)))
+			if now := time.Now(); now.Sub(lastAudioLogAt) >= 5*time.Second {
+				lastAudioLogAt = now
+				g.logger.Info(
+					"browser audio stt stream audio",
+					"session_id", sessionID,
+					"role", role,
+					"source", source,
+					"audio_chunks", audioStats.audioChunks.Load(),
+					"audio_bytes", audioStats.audioBytes.Load(),
+					"audio_flushes", audioStats.audioFlushes.Load(),
+					"audio_flushed_bytes", audioStats.audioFlushedBytes.Load(),
+					"queued_commands", len(audioCommands),
+					"queue_half_flushes", audioStats.audioQueueFlushes.Load(),
+					"dropped_queue_commands", audioStats.audioDroppedQueueCommands.Load(),
+					"dropped_queue_bytes", audioStats.audioDroppedQueueBytes.Load(),
+					"end_turns", audioStats.endTurns.Load(),
+					"coalesced_end_turns", audioStats.coalescedEndTurns.Load(),
+					"max_buffer_bytes", audioStats.maxBufferBytes.Load(),
+				)
+			}
 			enqueueSTTAudioCommand(audioCommands, sttAudioCommand{audio: raw}, audioStats)
 		}
 	}()
