@@ -3,6 +3,7 @@ name: clean-start image
 on:
   push:
     branches:
+      - main
       - clean_start
     paths:
       - "clean_start/**"

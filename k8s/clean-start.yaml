@@ -73,6 +73,7 @@ metadata:
     app.kubernetes.io/name: clean-start-postgres
     app.kubernetes.io/part-of: rec-sidecar
 spec:
+  storageClassName: hdd.network-drives.csi.timeweb.cloud
   accessModes:
     - ReadWriteOnce
   resources:
