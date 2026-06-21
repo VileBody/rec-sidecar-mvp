@@ -59,6 +59,97 @@ spec:
       port: 8222
       targetPort: monitor
 ---
+# Required external secrets:
+# - clean-start-postgres: POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+# - clean-start-auth: CLEAN_START_DATABASE_URL, CLEAN_START_JWT_SECRET
+#
+# Keep these out of git. See clean_start/README.md for kubectl commands.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clean-start-postgres-data
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-postgres
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-postgres
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-postgres
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clean-start-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clean-start-postgres
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: clean-start-postgres
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: clean-start-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clean-start-postgres
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-postgres
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  selector:
+    app.kubernetes.io/name: clean-start-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -91,9 +182,15 @@ spec:
           envFrom:
             - secretRef:
                 name: llm-helper-env
+            - secretRef:
+                name: clean-start-auth
           env:
             - name: CLEAN_START_HTTP_ADDR
               value: ":8110"
+            - name: CLEAN_START_AUTH_ENABLED
+              value: "true"
+            - name: CLEAN_START_AUTH_COOKIE_SECURE
+              value: "true"
             - name: CLEAN_START_COACH_ENABLED
               value: "true"
             - name: NATS_URL
@@ -394,6 +491,48 @@ spec:
               memory: 64Mi
             limits:
               cpu: 300m
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-student-worker
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-student-worker
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clean-start-student-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clean-start-student-worker
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: student-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
+          imagePullPolicy: Always
+          args: ["--role", "student-worker"]
+          envFrom:
+            - secretRef:
+                name: llm-helper-env
+          env:
+            - name: NATS_URL
+              value: nats://clean-start-nats:4222
+            - name: COACH_LLM_SERVICE_URL
+              value: http://llm-helper
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
               memory: 256Mi
 ---
 apiVersion: apps/v1

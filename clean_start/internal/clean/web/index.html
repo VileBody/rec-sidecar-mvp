@@ -35,7 +35,7 @@
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    button, textarea {
+    button, textarea, input, select {
       font: inherit;
     }
 
@@ -58,7 +58,7 @@
     button.ghost { background: var(--paper-soft); }
     button.full { width: 100%; justify-content: center; }
 
-    textarea, select {
+    textarea, input, select {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 16px;
@@ -83,7 +83,7 @@
       font-weight: 760;
     }
 
-    textarea:focus, select:focus { border-color: #aab8d0; background: #fff; }
+    textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #fff; }
 
     .app {
       display: grid;
@@ -93,6 +93,8 @@
       padding: 16px;
       overflow: hidden;
     }
+
+    .app[hidden] { display: none; }
 
     .column {
       min-width: 0;
@@ -372,6 +374,42 @@
       padding-right: 2px;
     }
 
+    .student-app {
+      grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr) minmax(320px, .78fr);
+    }
+
+    .student-pane {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .student-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 100%;
+    }
+
+    .student-item {
+      border: 1px solid var(--line);
+      border-radius: 17px;
+      padding: 12px 13px;
+      background: var(--paper-soft);
+      line-height: 1.38;
+      font-size: 16px;
+    }
+
+    .student-item .meta {
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
     .assist-msg {
       border: 1px solid var(--line);
       border-radius: 16px;
@@ -415,6 +453,76 @@
       transform: translateX(-50%);
     }
 
+    .auth-panel {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      background: rgba(246,247,251,.78);
+      backdrop-filter: blur(16px);
+    }
+
+    .auth-panel[hidden] {
+      display: none;
+    }
+
+    body.auth-locked .app {
+      filter: blur(4px);
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .auth-card {
+      width: min(440px, 100%);
+      display: grid;
+      gap: 14px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: rgba(255,255,255,.96);
+      box-shadow: 0 24px 70px rgba(28,35,50,.18);
+    }
+
+    .auth-card h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.08;
+      letter-spacing: -.02em;
+    }
+
+    .auth-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.42;
+    }
+
+    .auth-error {
+      min-height: 20px;
+      color: var(--red);
+      font-size: 14px;
+      font-weight: 750;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 9px;
+      flex-wrap: wrap;
+    }
+
+    .user-chip {
+      max-width: 190px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 760;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     @media (max-width: 1180px) {
       .app {
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -443,14 +551,37 @@
   </style>
 </head>
 <body>
-  <main class="app">
+  <div id="authPanel" class="auth-panel" hidden>
+    <section class="auth-card">
+      <p class="eyebrow" style="margin:0">доступ</p>
+      <h1>Войти в REC Coach</h1>
+      <p>Аккаунт нужен, чтобы параллельные звонки и сессии не смешивались между пользователями.</p>
+      <input id="authEmail" type="email" autocomplete="email" placeholder="email">
+      <input id="authPassword" type="password" autocomplete="current-password" placeholder="пароль, минимум 8 символов">
+      <select id="authRole">
+        <option value="sales">sales</option>
+        <option value="student">student</option>
+      </select>
+      <div class="action-row">
+        <button id="authLogin" class="blue">Войти</button>
+        <button id="authRegister" class="ghost">Создать аккаунт</button>
+      </div>
+      <div id="authError" class="auth-error"></div>
+    </section>
+  </div>
+
+  <main id="salesApp" class="app">
     <section class="column dialog-col">
       <header class="card header-card">
         <div>
           <h1 class="title">REC Coach</h1>
           <div id="session" class="sub">создаю сессию...</div>
         </div>
-        <button id="newSession" class="ghost">Новый</button>
+        <div class="header-actions">
+          <span id="authStatus" class="user-chip">проверяю доступ...</span>
+          <button id="newSession" class="ghost">Новый</button>
+          <button id="logout" class="ghost">Выйти</button>
+        </div>
       </header>
 
       <section class="card section">
@@ -565,10 +696,101 @@
     </section>
   </main>
 
+  <main id="studentApp" class="app student-app" hidden>
+    <section class="column dialog-col">
+      <header class="card header-card">
+        <div>
+          <h1 class="title">REC Student</h1>
+          <div id="studentSession" class="sub">создаю сессию...</div>
+        </div>
+        <div class="header-actions">
+          <span id="studentAuthStatus" class="user-chip">проверяю доступ...</span>
+          <button id="studentNewSession" class="ghost">Новый</button>
+        </div>
+      </header>
+
+      <section class="card section">
+        <p class="eyebrow">оригинал</p>
+        <div id="studentOriginal" class="student-list"></div>
+      </section>
+
+      <footer class="card audio-card">
+        <div class="audio-row">
+          <div>
+            <div class="title" style="font-size:15px">Направление</div>
+            <div id="studentDirectionStatus" class="sub">оригинал -> перевод</div>
+          </div>
+          <div class="capture-row">
+            <select id="studentDirection">
+              <option value="en-ru">EN -> RU</option>
+              <option value="ru-en">RU -> EN</option>
+            </select>
+          </div>
+        </div>
+        <div class="audio-row">
+          <div>
+            <div class="title" style="font-size:15px">Захват звука</div>
+            <div id="studentCaptureStatus" class="sub">нажми «Включить» и выбери вкладку/экран</div>
+          </div>
+          <div class="capture-row">
+            <span id="studentCapturePill" class="status-pill warn">ожидание</span>
+            <button id="studentCaptureToggle" class="blue">Включить</button>
+          </div>
+        </div>
+      </footer>
+    </section>
+
+    <section class="column reply-col">
+      <header class="card header-card">
+        <div>
+          <h2 class="title">Перевод</h2>
+          <div id="studentTranslationMeta" class="sub">gpt-oss-120b</div>
+        </div>
+      </header>
+
+      <section class="card section">
+        <div id="studentTranslated" class="student-list"></div>
+      </section>
+    </section>
+
+    <section class="column assist-col">
+      <header class="card header-card">
+        <div>
+          <h2 class="title">Чат / Помоги</h2>
+          <div id="studentAnswerMeta" class="sub">gemini-3.5-flash</div>
+        </div>
+        <button id="studentHelp" class="primary">Помоги</button>
+      </header>
+
+      <section class="card section">
+        <p class="eyebrow">ответ</p>
+        <div class="chat">
+          <div id="studentAssistLog" class="chat-log">
+            <div class="empty">Нажми «Помоги» или задай вопрос ниже.</div>
+          </div>
+          <textarea id="studentQuestion" rows="4" placeholder="Спроси по переписке или переводу"></textarea>
+          <div class="action-row">
+            <button id="studentAsk" class="blue">Спросить</button>
+            <button id="studentClear" class="ghost">Очистить</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card section">
+        <p class="eyebrow">ручной ввод</p>
+        <textarea id="studentManualText" rows="5" placeholder="Вставь фразу на исходном языке"></textarea>
+        <div class="action-row manual-controls">
+          <button id="studentSendOriginal" class="ghost">Добавить и перевести</button>
+        </div>
+      </section>
+    </section>
+  </main>
+
   <div id="toast" class="toast"></div>
 
   <script>
     const $ = (id) => document.getElementById(id);
+    let currentUser = null;
     let sessionId = "";
     let events = null;
     let pollTimer = null;
@@ -581,6 +803,100 @@
     let sellerSpeaker = localStorage.getItem(SPEAKER_STORAGE_KEY) || "";
     let replyPipWindow = null;
 
+    function isStudentUser() {
+      return currentUser?.role === "student";
+    }
+
+    async function boot() {
+      initSpeakerMap();
+      const ok = await loadMe();
+      if (ok) await createSession();
+    }
+
+    async function loadMe() {
+      const res = await fetch("/v1/auth/me", {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        currentUser = data.user || null;
+        renderAuth(false);
+        return true;
+      }
+      currentUser = null;
+      renderAuth(true);
+      $("session").textContent = res.status === 401 ? "нужно войти" : `auth http ${res.status}`;
+      return false;
+    }
+
+    function renderAuth(locked) {
+      const isDevUser = currentUser?.id === "dev";
+      document.body.classList.toggle("auth-locked", locked);
+      $("authPanel").hidden = !locked;
+      $("authStatus").textContent = isDevUser ? "dev mode" : (currentUser?.email || "не авторизован");
+      $("studentAuthStatus").textContent = isDevUser ? "dev mode" : (currentUser?.email || "не авторизован");
+      $("logout").hidden = locked || isDevUser;
+      $("newSession").disabled = locked;
+      $("studentNewSession").disabled = locked;
+      $("salesApp").hidden = !locked && isStudentUser();
+      $("studentApp").hidden = locked || !isStudentUser();
+    }
+
+    async function submitAuth(mode) {
+      const email = $("authEmail").value.trim();
+      const password = $("authPassword").value;
+      $("authError").textContent = "";
+      $("authLogin").disabled = true;
+      $("authRegister").disabled = true;
+      try {
+        const path = mode === "register" ? "/v1/auth/register" : "/v1/auth/login";
+        const res = await fetch(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ email, password, role: $("authRole").value || "sales" }),
+        });
+        if (!res.ok) {
+          throw new Error(await responseError(res));
+        }
+        const data = await res.json();
+        currentUser = data.user || null;
+        renderAuth(false);
+        showToast(mode === "register" ? "Аккаунт создан" : "Вошли");
+        await createSession();
+      } catch (error) {
+        $("authError").textContent = error.message;
+      } finally {
+        $("authLogin").disabled = false;
+        $("authRegister").disabled = false;
+      }
+    }
+
+    async function logout() {
+      stopCapture("system");
+      stopCapture("microphone");
+      if (events) events.close();
+      if (pollTimer) clearInterval(pollTimer);
+      await fetch("/v1/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+      }).catch(() => {});
+      currentUser = null;
+      sessionId = "";
+      state = null;
+      $("session").textContent = "нужно войти";
+      $("studentSession").textContent = "нужно войти";
+      setStreamStatus("offline");
+      render();
+      renderAuth(true);
+    }
+
+    async function responseError(res) {
+      const data = await res.json().catch(() => ({}));
+      return data.error || `HTTP ${res.status}`;
+    }
+
     async function createSession() {
       if (events) events.close();
       if (pollTimer) clearInterval(pollTimer);
@@ -589,11 +905,22 @@
       const res = await fetch("/v1/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ auto_opener: true }),
+        credentials: "same-origin",
+        body: JSON.stringify({ auto_opener: !isStudentUser() }),
       });
+      if (res.status === 401) {
+        currentUser = null;
+        renderAuth(true);
+        $("session").textContent = "нужно войти";
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(await responseError(res));
+      }
       const data = await res.json();
       sessionId = data.session_id;
       $("session").textContent = sessionId;
+      $("studentSession").textContent = sessionId;
       state = data.state;
       connectStream();
       startStatePolling();
@@ -615,7 +942,12 @@
       const poll = async () => {
         if (!sessionId) return;
         try {
-          const res = await fetch(`/v1/sessions/${sessionId}`, { cache: "no-store" });
+          const res = await fetch(`/v1/sessions/${sessionId}`, { cache: "no-store", credentials: "same-origin" });
+          if (res.status === 401) {
+            currentUser = null;
+            renderAuth(true);
+            return;
+          }
           if (!res.ok) return;
           state = await res.json();
           render();
@@ -632,11 +964,16 @@
       const res = await fetch(`/v1/sessions/${sessionId}/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        showToast(err.error || `HTTP ${res.status}`);
+        if (res.status === 401) {
+          currentUser = null;
+          renderAuth(true);
+          return;
+        }
+        showToast(await responseError(res));
       }
     }
 
@@ -645,6 +982,7 @@
       renderReply();
       renderStage();
       renderAssist();
+      renderStudent();
       renderSpeakerMapStatus();
     }
 
@@ -749,6 +1087,7 @@
     function roleLabel(role) {
       if (role === "seller") return "мы";
       if (role === "client") return "клиент";
+      if (role === "student_original") return "оригинал";
       if (String(role || "").startsWith("speaker_")) {
         const speaker = String(role).replace("speaker_", "");
         if (sellerSpeaker && speaker === sellerSpeaker) return `мы · speaker ${speaker}`;
@@ -823,6 +1162,51 @@
         bits.push(`<div class="assist-msg">Думаю...</div>`);
       }
       $("assistLog").innerHTML = bits.join("") || `<div class="empty">Нажми «Помоги» или задай уточнение ниже.</div>`;
+    }
+
+    function renderStudent() {
+      if (!state) {
+        $("studentOriginal").innerHTML = `<div class="empty">Создаю диалог...</div>`;
+        $("studentTranslated").innerHTML = `<div class="empty">Перевод появится после первой финальной фразы.</div>`;
+        $("studentAssistLog").innerHTML = `<div class="empty">Нажми «Помоги» или задай вопрос ниже.</div>`;
+        return;
+      }
+      const student = state?.student || {};
+      const direction = student.direction || $("studentDirection")?.value || "en-ru";
+      if ($("studentDirection").value !== direction) $("studentDirection").value = direction;
+      $("studentDirectionStatus").textContent = direction === "ru-en" ? "RU -> EN" : "EN -> RU";
+      $("studentTranslationMeta").textContent = student.translation_streaming ? "перевожу..." : "gpt-oss-120b";
+      $("studentAnswerMeta").textContent = student.answer_streaming ? "gemini думает..." : (student.answer_model || "gemini-3.5-flash");
+
+      const originals = Array.isArray(student.originals) ? student.originals : [];
+      $("studentOriginal").innerHTML = originals.length
+        ? originals.slice(-80).map((item) => studentItemHTML(item.text, `${sourceLanguageForDirection(direction).toUpperCase()} · ${formatTime(item.created_at)}${item.final ? "" : " · partial"}`)).join("")
+        : `<div class="empty">Пока пусто. Включи захват звука или вставь фразу вручную.</div>`;
+
+      const translations = Array.isArray(student.translations) ? student.translations : [];
+      $("studentTranslated").innerHTML = translations.length
+        ? translations.slice(-80).map((item) => studentItemHTML(item.text, `${targetLanguageForDirection(item.direction || direction).toUpperCase()} · ${formatTime(item.created_at)} · ${escapeHtml(item.model || "gpt-oss-120b")}`)).join("")
+        : `<div class="empty">Перевод появится после первой финальной фразы.</div>`;
+
+      if (student.answer_text) {
+        $("studentAssistLog").innerHTML = `<div class="assist-msg">${escapeHtml(student.answer_text)}</div>`;
+      } else if (student.answer_streaming) {
+        $("studentAssistLog").innerHTML = `<div class="assist-msg">Думаю...</div>`;
+      } else {
+        $("studentAssistLog").innerHTML = `<div class="empty">Нажми «Помоги» или задай вопрос ниже.</div>`;
+      }
+    }
+
+    function studentItemHTML(text, meta) {
+      return `<div class="student-item"><div class="meta">${escapeHtml(meta)}</div>${escapeHtml(text)}</div>`;
+    }
+
+    function sourceLanguageForDirection(direction) {
+      return direction === "ru-en" ? "ru" : "en";
+    }
+
+    function targetLanguageForDirection(direction) {
+      return direction === "ru-en" ? "en" : "ru";
     }
 
     async function copyReply() {
@@ -924,7 +1308,24 @@
       await postEvent({ type: "assist.request", trigger, text });
     }
 
-    async function startCapture({ automatic = false } = {}) {
+    async function requestStudentAnswer(trigger, text = "") {
+      await postEvent({ type: "student.answer.request", trigger, text });
+    }
+
+    async function updateStudentDirection() {
+      const direction = $("studentDirection").value || "en-ru";
+      await postEvent({ type: "student.direction", direction });
+      reconnectCaptureSTT("system", "student_direction_changed");
+    }
+
+    async function sendStudentOriginal() {
+      const text = $("studentManualText").value.trim();
+      if (!text) return;
+      await postEvent({ type: "student.input", text, direction: $("studentDirection").value || "en-ru" });
+      $("studentManualText").value = "";
+    }
+
+    async function startCapture({ automatic = false, student = false } = {}) {
       if (captureStates.system.active) {
         stopCapture("system");
         return false;
@@ -945,18 +1346,27 @@
         if (!audioTracks.length) throw new Error("audio track не выбран");
         startAudioStream(stream, {
           mode: "system",
-          sourceLabel: "browser-system-audio",
+          sourceLabel: student ? "student-system-audio" : "browser-system-audio",
+          roleOverride: student ? "student_original" : "mixed",
+          direction: student ? ($("studentDirection").value || "en-ru") : "",
+          language: student ? sourceLanguageForDirection($("studentDirection").value || "en-ru") : "",
         });
         setCaptureStatus("on", "захват включен");
         $("captureToggle").textContent = "Стоп";
+        $("studentCaptureToggle").textContent = "Стоп";
         updateBothStatus();
         return true;
       } catch (error) {
         setCaptureStatus("warn", automatic ? "нужен клик для захвата" : error.message);
         $("captureToggle").textContent = "Включить";
+        $("studentCaptureToggle").textContent = "Включить";
         updateBothStatus();
         return false;
       }
+    }
+
+    async function startStudentCapture() {
+      return startCapture({ automatic: false, student: true });
     }
 
     async function startMicTest() {
@@ -1015,12 +1425,12 @@
       }
     }
 
-    function startAudioStream(stream, { mode, sourceLabel }) {
+    function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direction = "", language = "" }) {
       const context = new AudioContext();
       const source = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(2048, 1, 1);
       const sink = context.createGain();
-      const role = mode === "microphone" ? "seller" : "mixed";
+      const role = roleOverride || (mode === "microphone" ? "seller" : "mixed");
       const nextState = {
         active: true,
         stream,
@@ -1032,6 +1442,8 @@
         mode,
         role,
         sourceLabel,
+        direction,
+        language,
         speechOpen: false,
         lastVoiceAt: 0,
         lastEndTurnAt: 0,
@@ -1076,8 +1488,8 @@
 
     function connectSTTWebSocket(captureState) {
       if (!captureState?.active) return;
-      const { mode, role, sourceLabel } = captureState;
-      const ws = new WebSocket(sttStreamURL({ role, sourceLabel }));
+      const { mode, role, sourceLabel, direction, language } = captureState;
+      const ws = new WebSocket(sttStreamURL({ role, sourceLabel, direction, language }));
       captureState.ws = ws;
       ws.onopen = () => {
         if (captureStates[mode] === captureState) {
@@ -1179,6 +1591,7 @@
       } else {
         setCaptureStatus("warn", stoppedText || "захват остановлен");
         $("captureToggle").textContent = "Включить";
+        $("studentCaptureToggle").textContent = "Включить";
       }
       updateBothStatus();
     }
@@ -1220,12 +1633,14 @@
       captureState.lastEndTurnAt = now;
     }
 
-    function sttStreamURL({ role, sourceLabel }) {
+    function sttStreamURL({ role, sourceLabel, direction = "", language = "" }) {
       const scheme = location.protocol === "https:" ? "wss:" : "ws:";
       const params = new URLSearchParams({ role, source: sourceLabel });
       if (role === "mixed" && sellerSpeaker) {
         params.set("seller_speaker", sellerSpeaker);
       }
+      if (direction) params.set("direction", direction);
+      if (language) params.set("language", language);
       return `${scheme}//${location.host}/v1/sessions/${sessionId}/stt/live?${params}`;
     }
 
@@ -1241,6 +1656,8 @@
         mode,
         role: mode === "microphone" ? "seller" : "mixed",
         sourceLabel: mode === "microphone" ? "browser-microphone-test" : "browser-system-audio",
+        direction: "",
+        language: "",
         speechOpen: false,
         lastVoiceAt: 0,
         lastEndTurnAt: 0,
@@ -1282,6 +1699,9 @@
       $("captureStatus").textContent = text;
       $("capturePill").textContent = kind === "on" ? "вкл" : kind === "err" ? "ошибка" : "ожидание";
       $("capturePill").className = `status-pill ${kind}`;
+      $("studentCaptureStatus").textContent = text;
+      $("studentCapturePill").textContent = kind === "on" ? "вкл" : kind === "err" ? "ошибка" : "ожидание";
+      $("studentCapturePill").className = `status-pill ${kind}`;
     }
 
     function setMicStatus(kind, text) {
@@ -1354,6 +1774,7 @@
       fetch(`/v1/sessions/${sessionId}/audio/log`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         keepalive: true,
         body: JSON.stringify({
           mode: captureState.mode,
@@ -1405,8 +1826,21 @@
     $("newSession").onclick = () => {
       createSession().catch((error) => $("session").textContent = error.message);
     };
+    $("studentNewSession").onclick = () => {
+      createSession().catch((error) => $("studentSession").textContent = error.message);
+    };
+    $("logout").onclick = () => logout().catch((error) => showToast(error.message));
+    $("authLogin").onclick = () => submitAuth("login");
+    $("authRegister").onclick = () => submitAuth("register");
+    $("authPassword").onkeydown = (event) => {
+      if (event.key === "Enter") submitAuth("login");
+    };
+    $("authEmail").onkeydown = (event) => {
+      if (event.key === "Enter") $("authPassword").focus();
+    };
     $("bothToggle").onclick = startBothAudio;
     $("captureToggle").onclick = () => startCapture({ automatic: false });
+    $("studentCaptureToggle").onclick = startStudentCapture;
     $("micToggle").onclick = startMicTest;
     $("openReplyPip").onclick = () => openReplyPip().catch((error) => showToast(error.message));
     $("copyReply").onclick = copyReply;
@@ -1440,9 +1874,23 @@
       if (!text) return;
       postEvent({ type: "client.partial", text });
     };
+    $("studentDirection").onchange = () => updateStudentDirection().catch((error) => showToast(error.message));
+    $("studentSendOriginal").onclick = () => sendStudentOriginal().catch((error) => showToast(error.message));
+    $("studentHelp").onclick = () => requestStudentAnswer("button");
+    $("studentAsk").onclick = () => {
+      const text = $("studentQuestion").value.trim();
+      requestStudentAnswer("chat", text);
+      $("studentQuestion").value = "";
+    };
+    $("studentClear").onclick = () => {
+      $("studentQuestion").value = "";
+      $("studentAssistLog").innerHTML = `<div class="empty">Нажми «Помоги» или задай вопрос ниже.</div>`;
+    };
 
-    initSpeakerMap();
-    createSession().catch((error) => $("session").textContent = error.message);
+    boot().catch((error) => {
+      $("session").textContent = error.message;
+      renderAuth(true);
+    });
   </script>
 </body>
 </html>

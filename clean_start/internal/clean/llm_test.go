@@ -3,9 +3,11 @@ package clean
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -73,5 +75,44 @@ func TestSessionMemoryIgnoresDuplicateSellerEvents(t *testing.T) {
 
 	if mem.SellerDraft != "Версия" {
 		t.Fatalf("draft after duplicate delta = %q", mem.SellerDraft)
+	}
+}
+
+func TestScanSSEHandlesFinalEventWithoutBlankLine(t *testing.T) {
+	var got []streamEvent
+	err := scanSSE(strings.NewReader("data: {\"event\":\"delta\",\"text\":\"раз\"}\n"), func(event streamEvent) error {
+		got = append(got, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Event != "delta" || got[0].Text != "раз" {
+		t.Fatalf("events = %#v", got)
+	}
+}
+
+func TestScanSSEPropagatesHandlerError(t *testing.T) {
+	wantErr := errors.New("stop")
+	err := scanSSE(strings.NewReader("data: {\"event\":\"delta\",\"text\":\"раз\"}\n\n"), func(streamEvent) error {
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+}
+
+func TestScanSSECombinesMultilineData(t *testing.T) {
+	input := "data: {\"event\":\"delta\",\ndata: \"text\":\"раз\"}\n\n"
+	var got streamEvent
+	err := scanSSE(strings.NewReader(input), func(event streamEvent) error {
+		got = event
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Event != "delta" || got.Text != "раз" {
+		t.Fatalf("event = %#v", got)
 	}
 }

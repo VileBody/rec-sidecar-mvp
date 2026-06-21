@@ -622,6 +622,7 @@ class VertexClient:
     async def stream_text(
         self,
         *,
+        model: str | None = None,
         system_prompt: str,
         user_content: str,
         temperature: float,
@@ -637,7 +638,7 @@ class VertexClient:
         }
         async with self.client.stream(
             "POST",
-            self._method_url("streamGenerateContent"),
+            self._method_url_for_model("streamGenerateContent", model or self.settings.vertex_model),
             headers=await self._headers(),
             json=body,
         ) as response:

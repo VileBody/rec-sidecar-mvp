@@ -40,6 +40,12 @@ type liveSellerResponse struct {
 	Model    string `json:"model"`
 }
 
+type studentTranslateResponse struct {
+	Text     string `json:"text"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
 func NewLLMClient(cfg Config, logger *slog.Logger) *LLMClient {
 	return &LLMClient{
 		cfg: cfg,
@@ -310,22 +316,124 @@ func (c *LLMClient) GenerateClientReply(ctx context.Context, sessionID, contextT
 	return c.StreamSeller(ctx, sessionID, contextText, question, func(string) error { return nil })
 }
 
+func (c *LLMClient) StudentTranslate(ctx context.Context, sessionID, text, direction string) (string, string, string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", "fallback", "empty", nil
+	}
+	if c.cfg.LLMServiceURL == "" {
+		return fallbackStudentTranslation(text, direction), "fallback", "local", nil
+	}
+	body := map[string]any{
+		"run_id":    sessionID,
+		"text":      text,
+		"direction": direction,
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.LLMServiceURL+"/v1/student/translate", bytes.NewReader(raw))
+	if err != nil {
+		return "", "", "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.cfg.LLMServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fallbackStudentTranslation(text, direction), "fallback", "local-after-error", nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fallbackStudentTranslation(text, direction), "fallback", fmt.Sprintf("http-%d", resp.StatusCode), nil
+	}
+	var out studentTranslateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", "", "", err
+	}
+	return strings.TrimSpace(out.Text), strings.TrimSpace(out.Provider), strings.TrimSpace(out.Model), nil
+}
+
+func (c *LLMClient) StreamStudentAnswer(ctx context.Context, sessionID, contextText, question string, onDelta func(string) error) (string, string, error) {
+	if c.cfg.LLMServiceURL == "" {
+		text := fallbackStudentAnswer(contextText, question)
+		return text, "local", onDelta(text)
+	}
+	body := map[string]any{
+		"id":       time.Now().UnixNano(),
+		"run_id":   sessionID,
+		"context":  contextText,
+		"question": question,
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.LLMServiceURL+"/v1/student/answer/stream", bytes.NewReader(raw))
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.cfg.LLMServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		text := fallbackStudentAnswer(contextText, question)
+		_ = onDelta(text)
+		return text, "local-after-error", nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		text := fallbackStudentAnswer(contextText, question)
+		_ = onDelta(text)
+		return text, fmt.Sprintf("http-%d", resp.StatusCode), nil
+	}
+	var parts []string
+	model := ""
+	if err := scanSSE(resp.Body, func(event streamEvent) error {
+		switch event.Event {
+		case "model":
+			model = event.Model
+		case "delta":
+			if event.Text != "" {
+				parts = append(parts, event.Text)
+				return onDelta(event.Text)
+			}
+		case "error":
+			return errors.New(event.Message)
+		}
+		return nil
+	}); err != nil {
+		if len(parts) == 0 {
+			text := fallbackStudentAnswer(contextText, question)
+			_ = onDelta(text)
+			return text, "local-after-stream-error", nil
+		}
+		return strings.Join(parts, ""), model, nil
+	}
+	return strings.Join(parts, ""), model, nil
+}
+
 func scanSSE(reader io.Reader, handle func(streamEvent) error) error {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var dataLines []string
+	flush := func() error {
+		if len(dataLines) == 0 {
+			return nil
+		}
+		var event streamEvent
+		if err := json.Unmarshal([]byte(strings.Join(dataLines, "\n")), &event); err != nil {
+			return err
+		}
+		if err := handle(event); err != nil {
+			return err
+		}
+		dataLines = dataLines[:0]
+		return nil
+	}
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
-			if len(dataLines) > 0 {
-				var event streamEvent
-				if err := json.Unmarshal([]byte(strings.Join(dataLines, "\n")), &event); err != nil {
-					return err
-				}
-				if err := handle(event); err != nil {
-					return err
-				}
-				dataLines = dataLines[:0]
+			if err := flush(); err != nil {
+				return err
 			}
 			continue
 		}
@@ -333,7 +441,10 @@ func scanSSE(reader io.Reader, handle func(streamEvent) error) error {
 			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return flush()
 }
 
 func fallbackSeller(contextText string) string {
@@ -383,4 +494,21 @@ func fallbackClientReply(contextText string) string {
 		return "Сомневаюсь, что я реально дойду до внедрения, у меня уже было несколько форматов, где все заканчивалось конспектами."
 	}
 	return "Честно, пока звучит интересно, но я не понимаю, зачем мне тратить на это время именно сейчас."
+}
+
+func fallbackStudentTranslation(text, direction string) string {
+	if sourceLanguageForDirection(direction) == "ru" {
+		return "[translation unavailable] " + text
+	}
+	return "[перевод недоступен] " + text
+}
+
+func fallbackStudentAnswer(contextText, question string) string {
+	if strings.TrimSpace(question) != "" {
+		return "Пока LLM-сервис недоступен, но вопрос зафиксирован: " + strings.TrimSpace(question)
+	}
+	if strings.TrimSpace(contextText) != "" {
+		return "Пока LLM-сервис недоступен; проверь последний фрагмент транскрипта и перевод выше."
+	}
+	return "Пока нет контекста для ответа."
 }

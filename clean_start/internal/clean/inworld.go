@@ -183,6 +183,10 @@ func (c *InworldClient) TranscribePCM(ctx context.Context, pcm []byte) (string, 
 }
 
 func (c *InworldClient) ConnectSTT(ctx context.Context) (*InworldSTTStream, error) {
+	return c.ConnectSTTWithLanguage(ctx, "")
+}
+
+func (c *InworldClient) ConnectSTTWithLanguage(ctx context.Context, language string) (*InworldSTTStream, error) {
 	if !c.Configured() {
 		return nil, errors.New("missing INWORLD_API_KEY")
 	}
@@ -208,7 +212,10 @@ func (c *InworldClient) ConnectSTT(ctx context.Context) (*InworldSTTStream, erro
 		},
 	}
 	transcribeConfig := config["transcribe_config"].(map[string]any)
-	if language := strings.TrimSpace(c.cfg.InworldSTTLanguage); language != "" {
+	if language = strings.TrimSpace(language); language == "" {
+		language = strings.TrimSpace(c.cfg.InworldSTTLanguage)
+	}
+	if language != "" {
 		transcribeConfig["language"] = language
 	} else {
 		transcribeConfig["enableLanguageDetection"] = true

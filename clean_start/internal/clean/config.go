@@ -13,6 +13,12 @@ type Config struct {
 	HTTPAddr                  string
 	NATSURL                   string
 	SubjectPrefix             string
+	AuthEnabled               bool
+	DatabaseURL               string
+	JWTSecret                 string
+	JWTTTL                    time.Duration
+	AuthCookieName            string
+	AuthCookieSecure          bool
 	CoachEnabled              bool
 	LLMServiceURL             string
 	LLMServiceToken           string
@@ -53,6 +59,12 @@ func ConfigFromEnv() Config {
 		HTTPAddr:                  env("CLEAN_START_HTTP_ADDR", ":8110"),
 		NATSURL:                   env("NATS_URL", "nats://127.0.0.1:4222"),
 		SubjectPrefix:             strings.Trim(env("CLEAN_START_SUBJECT_PREFIX", "clean.session"), "."),
+		AuthEnabled:               envBool("CLEAN_START_AUTH_ENABLED", false),
+		DatabaseURL:               env("CLEAN_START_DATABASE_URL", env("DATABASE_URL", "")),
+		JWTSecret:                 env("CLEAN_START_JWT_SECRET", ""),
+		JWTTTL:                    time.Duration(envInt("CLEAN_START_JWT_TTL_HOURS", 24*14)) * time.Hour,
+		AuthCookieName:            env("CLEAN_START_AUTH_COOKIE_NAME", "clean_start_token"),
+		AuthCookieSecure:          envBool("CLEAN_START_AUTH_COOKIE_SECURE", false),
 		CoachEnabled:              envBool("CLEAN_START_COACH_ENABLED", true),
 		LLMServiceURL:             strings.TrimRight(env("COACH_LLM_SERVICE_URL", "http://127.0.0.1:8088"), "/"),
 		LLMServiceToken:           env("COACH_LLM_SERVICE_TOKEN", ""),

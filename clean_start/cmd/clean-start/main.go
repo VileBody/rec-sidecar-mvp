@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	roleFlag := flag.String("role", "", "gateway, seller-worker, assist-worker, stage-worker, scorecard-worker, test-agent, or all")
+	roleFlag := flag.String("role", "", "gateway, seller-worker, assist-worker, stage-worker, scorecard-worker, student-worker, test-agent, or all")
 	flag.Parse()
 
 	cfg := clean.ConfigFromEnv()
@@ -69,6 +69,8 @@ func main() {
 		} else {
 			runners = append(runners, clean.NewIdleRunner(cfg.Role, logger))
 		}
+	case "student-worker":
+		runners = append(runners, clean.NewStudentWorker(cfg, nc, llm, logger))
 	case "test-agent":
 		runners = append(runners, clean.NewTestAgentGateway(cfg, llm, inworld, logger))
 	case "all":
@@ -82,6 +84,7 @@ func main() {
 				clean.NewScorecardWorker(cfg, nc, logger),
 			)
 		}
+		runners = append(runners, clean.NewStudentWorker(cfg, nc, llm, logger))
 	default:
 		logger.Error("unknown role", "role", cfg.Role)
 		os.Exit(2)

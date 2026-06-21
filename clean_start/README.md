@@ -1,6 +1,6 @@
 # Clean Start
 
-Clean Start is a Go/NATS rewrite sandbox for the live sales-coach loop. It has no UI. The goal is to make the backend event model explicit before moving the browser experience onto it.
+Clean Start is the Go/NATS rewrite for the live sales-coach loop. It includes the browser coach UI, gateway API, workers, STT proxying, and the isolated roleplay test agent.
 
 ## Roles
 
@@ -11,6 +11,7 @@ One binary runs different roles:
 - `assist-worker`: manual "Помоги" stream with fast emotional opener + slow constructive step
 - `stage-worker`: listens to client partial/final events and publishes stage updates
 - `scorecard-worker`: listens to committed stages and publishes scorecard updates
+- `student-worker`: listens to student transcript events, translates them, and answers student chat/help
 - `test-agent`: isolated voice roleplay API; it does not write into `clean.session.*`
 - `all`: local smoke role that runs all components in one process
 
@@ -31,6 +32,8 @@ clean.session.sess-abc.assist.delta
 clean.session.sess-abc.stt.final
 clean.session.sess-abc.stage.committed
 clean.session.sess-abc.scorecard.update
+clean.session.sess-abc.student.translate.done
+clean.session.sess-abc.student.answer.done
 ```
 
 ## Local Smoke
@@ -39,16 +42,43 @@ clean.session.sess-abc.scorecard.update
 docker compose -f clean_start/docker-compose.yml up --build
 ```
 
+Local compose starts NATS, Postgres, and the all-in-one coach service on `http://127.0.0.1:8110`. Auth is enabled in compose by default:
+
+```text
+CLEAN_START_AUTH_ENABLED=true
+CLEAN_START_DATABASE_URL=postgres://clean_start:clean_start@postgres:5432/clean_start?sslmode=disable
+CLEAN_START_JWT_SECRET=dev-clean-start-secret-change-me
+```
+
+For one-off local runs without Docker, leave `CLEAN_START_AUTH_ENABLED=false` or provide your own Postgres URL and JWT secret.
+
+Create a user:
+
+```bash
+curl -i http://127.0.0.1:8110/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"seller@example.com","password":"password123"}'
+```
+
+Log in and keep the cookie:
+
+```bash
+curl -c /tmp/rec-coach.cookies http://127.0.0.1:8110/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"seller@example.com","password":"password123"}'
+```
+
 Create a session:
 
 ```bash
-curl -s http://127.0.0.1:8110/v1/sessions -X POST -d '{}' | jq
+curl -b /tmp/rec-coach.cookies -s http://127.0.0.1:8110/v1/sessions -X POST -d '{}' | jq
 ```
 
 Send a seller line:
 
 ```bash
 curl -s http://127.0.0.1:8110/v1/sessions/<session_id>/events \
+  -b /tmp/rec-coach.cookies \
   -H 'Content-Type: application/json' \
   -d '{"type":"seller.input","text":"Здравствуйте, давайте за пару минут поймем, есть ли смысл обсуждать участие."}'
 ```
@@ -57,10 +87,12 @@ Send client partial/final:
 
 ```bash
 curl -s http://127.0.0.1:8110/v1/sessions/<session_id>/events \
+  -b /tmp/rec-coach.cookies \
   -H 'Content-Type: application/json' \
   -d '{"type":"client.partial","text":"Сомневаюсь, что план будет рабочим"}'
 
 curl -s http://127.0.0.1:8110/v1/sessions/<session_id>/events \
+  -b /tmp/rec-coach.cookies \
   -H 'Content-Type: application/json' \
   -d '{"type":"client.final","text":"Сомневаюсь, что план будет рабочим, до внедрения я обычно не дохожу."}'
 ```
@@ -68,13 +100,14 @@ curl -s http://127.0.0.1:8110/v1/sessions/<session_id>/events \
 Stream session events:
 
 ```bash
-curl -N http://127.0.0.1:8110/v1/sessions/<session_id>/stream
+curl -b /tmp/rec-coach.cookies -N http://127.0.0.1:8110/v1/sessions/<session_id>/stream
 ```
 
 Request the manual "Помоги" stream:
 
 ```bash
 curl -s http://127.0.0.1:8110/v1/sessions/<session_id>/events \
+  -b /tmp/rec-coach.cookies \
   -H 'Content-Type: application/json' \
   -d '{"type":"assist.request","trigger":"button"}'
 ```
@@ -83,6 +116,7 @@ Post STT text events when a browser/system-audio client already has a transcript
 
 ```bash
 curl -s http://127.0.0.1:8110/v1/sessions/<session_id>/events \
+  -b /tmp/rec-coach.cookies \
   -H 'Content-Type: application/json' \
   -d '{"type":"stt.partial","role":"client","source":"system-audio","text":"Сомневаюсь, что план будет рабочим"}'
 ```
@@ -112,6 +146,21 @@ In Kubernetes the planned public NodePorts are:
 ```text
 coach gateway: http://<node-ip>:30916
 test agent:    http://<node-ip>:30917
+```
+
+`k8s/clean-start.yaml` enables auth for the gateway and adds `clean-start-postgres`. Create the required secrets out of band before applying the manifest:
+
+```bash
+PG_PASSWORD="$(openssl rand -hex 32)"
+
+kubectl -n rec-sidecar create secret generic clean-start-postgres \
+  --from-literal=POSTGRES_DB=clean_start \
+  --from-literal=POSTGRES_USER=clean_start \
+  --from-literal=POSTGRES_PASSWORD="$PG_PASSWORD"
+
+kubectl -n rec-sidecar create secret generic clean-start-auth \
+  --from-literal=CLEAN_START_DATABASE_URL="postgres://clean_start:${PG_PASSWORD}@clean-start-postgres.rec-sidecar.svc.cluster.local:5432/clean_start?sslmode=disable" \
+  --from-literal=CLEAN_START_JWT_SECRET="$(openssl rand -base64 48)"
 ```
 
 The test agent needs `INWORLD_API_KEY` for TTS/STT. Without it, `/healthz` still works but `/turn` returns a clear missing-key error.

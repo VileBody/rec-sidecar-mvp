@@ -34,6 +34,10 @@ func (c *SonioxClient) Configured() bool {
 }
 
 func (c *SonioxClient) ConnectSTT(ctx context.Context) (*SonioxSTTStream, error) {
+	return c.ConnectSTTWithLanguage(ctx, "")
+}
+
+func (c *SonioxClient) ConnectSTTWithLanguage(ctx context.Context, language string) (*SonioxSTTStream, error) {
 	if !c.Configured() {
 		return nil, errors.New("missing SONIOX_API_KEY")
 	}
@@ -57,7 +61,10 @@ func (c *SonioxClient) ConnectSTT(ctx context.Context) (*SonioxSTTStream, error)
 		"enable_language_identification": false,
 		"enable_endpoint_detection":      c.cfg.SonioxEndpointDetection,
 	}
-	if language := strings.TrimSpace(c.cfg.SonioxLanguage); language != "" {
+	if language = strings.TrimSpace(language); language == "" {
+		language = strings.TrimSpace(c.cfg.SonioxLanguage)
+	}
+	if language != "" {
 		config["language_hints"] = []string{language}
 		config["language_hints_strict"] = c.cfg.SonioxLanguageStrict
 	}

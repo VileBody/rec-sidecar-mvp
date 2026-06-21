@@ -94,6 +94,9 @@ func TestSpeakerRolesFromQueryMapsSellerAndClient(t *testing.T) {
 	if got := roleForSTTSpeaker("mixed", "2", roles); got != "seller" {
 		t.Fatalf("speaker 2 role = %q, want seller", got)
 	}
+	if got := roleForSTTSpeaker("mixed", "speaker_2", roles); got != "seller" {
+		t.Fatalf("normalized speaker_2 role = %q, want seller", got)
+	}
 	if got := roleForSTTSpeaker("mixed", "1", roles); got != "client" {
 		t.Fatalf("speaker 1 role = %q, want client", got)
 	}

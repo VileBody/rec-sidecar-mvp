@@ -10,28 +10,37 @@ import (
 )
 
 const (
-	EventSessionCreated  = "session.created"
-	EventSellerInput     = "seller.input"
-	EventClientPartial   = "client.partial"
-	EventClientFinal     = "client.final"
-	EventSellerRequest   = "seller.request"
-	EventSellerStarted   = "seller.started"
-	EventSellerDelta     = "seller.delta"
-	EventSellerDone      = "seller.done"
-	EventSellerCanceled  = "seller.canceled"
-	EventAssistRequest   = "assist.request"
-	EventAssistStarted   = "assist.started"
-	EventAssistFastDone  = "assist.fast.done"
-	EventAssistDelta     = "assist.delta"
-	EventAssistDone      = "assist.done"
-	EventAssistCanceled  = "assist.canceled"
-	EventSTTPartial      = "stt.partial"
-	EventSTTFinal        = "stt.final"
-	EventStageRequest    = "stage.request"
-	EventStageCandidate  = "stage.candidate"
-	EventStageCommitted  = "stage.committed"
-	EventScorecardUpdate = "scorecard.update"
-	EventError           = "error"
+	EventSessionCreated          = "session.created"
+	EventSellerInput             = "seller.input"
+	EventClientPartial           = "client.partial"
+	EventClientFinal             = "client.final"
+	EventSellerRequest           = "seller.request"
+	EventSellerStarted           = "seller.started"
+	EventSellerDelta             = "seller.delta"
+	EventSellerDone              = "seller.done"
+	EventSellerCanceled          = "seller.canceled"
+	EventAssistRequest           = "assist.request"
+	EventAssistStarted           = "assist.started"
+	EventAssistFastDone          = "assist.fast.done"
+	EventAssistDelta             = "assist.delta"
+	EventAssistDone              = "assist.done"
+	EventAssistCanceled          = "assist.canceled"
+	EventStudentInput            = "student.input"
+	EventStudentDirection        = "student.direction"
+	EventStudentTranslateStarted = "student.translate.started"
+	EventStudentTranslateDone    = "student.translate.done"
+	EventStudentAnswerRequest    = "student.answer.request"
+	EventStudentAnswerStarted    = "student.answer.started"
+	EventStudentAnswerDelta      = "student.answer.delta"
+	EventStudentAnswerDone       = "student.answer.done"
+	EventStudentAnswerCanceled   = "student.answer.canceled"
+	EventSTTPartial              = "stt.partial"
+	EventSTTFinal                = "stt.final"
+	EventStageRequest            = "stage.request"
+	EventStageCandidate          = "stage.candidate"
+	EventStageCommitted          = "stage.committed"
+	EventScorecardUpdate         = "scorecard.update"
+	EventError                   = "error"
 )
 
 type Event struct {
@@ -54,6 +63,8 @@ type SpeechData struct {
 	Source    string `json:"source,omitempty"`
 	Speaker   string `json:"speaker,omitempty"`
 	SegmentID string `json:"segment_id,omitempty"`
+	Direction string `json:"direction,omitempty"`
+	Language  string `json:"language,omitempty"`
 }
 
 type SellerRequestData struct {
@@ -64,6 +75,52 @@ type SellerRequestData struct {
 type AssistRequestData struct {
 	Trigger string `json:"trigger"`
 	Text    string `json:"text,omitempty"`
+}
+
+type StudentInputData struct {
+	Text      string `json:"text"`
+	Direction string `json:"direction,omitempty"`
+}
+
+type StudentDirectionData struct {
+	Direction string `json:"direction"`
+}
+
+type StudentTranslateStartedData struct {
+	GenerationID  string `json:"generation_id"`
+	SourceEventID string `json:"source_event_id"`
+	Direction     string `json:"direction"`
+}
+
+type StudentTranslateDoneData struct {
+	GenerationID  string `json:"generation_id"`
+	SourceEventID string `json:"source_event_id"`
+	SourceText    string `json:"source_text"`
+	Text          string `json:"text"`
+	Direction     string `json:"direction"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+}
+
+type StudentAnswerRequestData struct {
+	Trigger string `json:"trigger"`
+	Text    string `json:"text,omitempty"`
+}
+
+type StudentAnswerStartedData struct {
+	GenerationID string `json:"generation_id"`
+	Trigger      string `json:"trigger"`
+}
+
+type StudentAnswerDeltaData struct {
+	GenerationID string `json:"generation_id"`
+	Delta        string `json:"delta"`
+}
+
+type StudentAnswerDoneData struct {
+	GenerationID string `json:"generation_id"`
+	Text         string `json:"text"`
+	Model        string `json:"model,omitempty"`
 }
 
 type SellerStartedData struct {
@@ -149,6 +206,14 @@ func NewEvent(sessionID, typ, source string, data any) Event {
 
 func Subject(prefix, sessionID, typ string) string {
 	return strings.Trim(prefix, ".") + "." + sessionID + "." + typ
+}
+
+func SubjectWildcard(prefix string) string {
+	return strings.Trim(prefix, ".") + ".*.>"
+}
+
+func SubjectTypeWildcard(prefix, typ string) string {
+	return strings.Trim(prefix, ".") + ".*." + typ
 }
 
 func ParseSubject(prefix, subject string) (sessionID string, typ string, ok bool) {

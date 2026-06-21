@@ -6,6 +6,22 @@ services:
       - "4222:4222"
       - "8222:8222"
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${CLEAN_START_POSTGRES_DB:-clean_start}
+      POSTGRES_USER: ${CLEAN_START_POSTGRES_USER:-clean_start}
+      POSTGRES_PASSWORD: ${CLEAN_START_POSTGRES_PASSWORD:-clean_start}
+    ports:
+      - "${CLEAN_START_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - clean-start-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   clean-start:
     build:
       context: ..
@@ -16,6 +32,10 @@ services:
     environment:
       CLEAN_START_HTTP_ADDR: ":8110"
       CLEAN_START_ROLE: all
+      CLEAN_START_AUTH_ENABLED: ${CLEAN_START_AUTH_ENABLED:-true}
+      CLEAN_START_DATABASE_URL: ${CLEAN_START_DATABASE_URL:-postgres://clean_start:clean_start@postgres:5432/clean_start?sslmode=disable}
+      CLEAN_START_JWT_SECRET: ${CLEAN_START_JWT_SECRET:-dev-clean-start-secret-change-me}
+      CLEAN_START_AUTH_COOKIE_SECURE: ${CLEAN_START_AUTH_COOKIE_SECURE:-false}
       CLEAN_START_COACH_ENABLED: ${CLEAN_START_COACH_ENABLED:-false}
       CLEAN_START_STT_PROVIDER: ${CLEAN_START_STT_PROVIDER:-auto}
       CLEAN_START_STAGE_PARTIAL_INTERVAL_MS: ${CLEAN_START_STAGE_PARTIAL_INTERVAL_MS:-2200}
@@ -29,7 +49,10 @@ services:
       SONIOX_LANGUAGE: ${SONIOX_LANGUAGE:-ru}
       INWORLD_API_KEY: ${INWORLD_API_KEY:-}
     depends_on:
-      - nats
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   test-agent:
     build:
@@ -48,4 +71,8 @@ services:
       INWORLD_TTS_SELLER_VOICE: ${INWORLD_TTS_SELLER_VOICE:-Elena}
       INWORLD_TTS_CLIENT_VOICE: ${INWORLD_TTS_CLIENT_VOICE:-Arkady}
     depends_on:
-      - nats
+      nats:
+        condition: service_started
+
+volumes:
+  clean-start-postgres-data:

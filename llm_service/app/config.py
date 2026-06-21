@@ -10,6 +10,8 @@ DEFAULT_CEREBRAS_MODEL = "zai-glm-4.7"
 DEFAULT_CEREBRAS_STAGE_MODEL = DEFAULT_CEREBRAS_MODEL
 DEFAULT_HELP_OPENER_PRIMARY_MODEL = "zai-glm-4.7"
 DEFAULT_HELP_OPENER_SECONDARY_MODEL = "gpt-oss-120b"
+DEFAULT_STUDENT_TRANSLATION_MODEL = "gpt-oss-120b"
+DEFAULT_STUDENT_ANSWER_MODEL = "gemini-3.5-flash"
 DEFAULT_VERTEX_MODEL = "gemini-3.5-flash"
 DEFAULT_VERTEX_STAGE_MODEL = "gemini-3.5-flash"
 DEFAULT_VERTEX_SCORECARD_MODEL = DEFAULT_VERTEX_MODEL
@@ -97,6 +99,8 @@ class Settings:
     cerebras_stage_model: str
     help_opener_primary_model: str
     help_opener_secondary_model: str
+    student_translation_model: str
+    student_answer_model: str
     cerebras_reasoning_effort: str
     cerebras_prompt_cache_key: bool
 
@@ -174,6 +178,14 @@ class Settings:
                 env_var("CEREBRAS_HELP_OPENER_SECONDARY_MODEL")
                 or env_var("CEREBRAS_HELP_OPENER_FALLBACK_MODEL")
                 or DEFAULT_HELP_OPENER_SECONDARY_MODEL
+            ),
+            student_translation_model=(
+                env_var("STUDENT_TRANSLATION_MODEL") or DEFAULT_STUDENT_TRANSLATION_MODEL
+            ),
+            student_answer_model=(
+                env_var("STUDENT_ANSWER_MODEL")
+                or env_var("VERTEX_GEMINI_MODEL")
+                or DEFAULT_STUDENT_ANSWER_MODEL
             ),
             cerebras_reasoning_effort=(
                 env_var("CEREBRAS_REASONING_EFFORT") or DEFAULT_REASONING_EFFORT

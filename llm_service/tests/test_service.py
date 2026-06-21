@@ -37,6 +37,7 @@ from llm_service.app.prompts import (
 )
 from llm_service.app.providers import (
     CerebrasClient,
+    cerebras_stage_response_format,
     parse_bos_eos_text,
     parse_json_suggestion,
     pop_vertex_stream_value,
@@ -51,7 +52,13 @@ from llm_service.app.scorecard import (
     safe_parse_scorecard,
     scorecard_system_prompt,
 )
-from llm_service.app.schemas import HelpRequest, LiveRequest, StageRequest
+from llm_service.app.schemas import (
+    HelpRequest,
+    LiveRequest,
+    StageRequest,
+    StudentAnswerRequest,
+    StudentTranslateRequest,
+)
 from llm_service.app.stage_assets import (
     KNOWN_STAGES,
     STAGE_AGENDA_BY_TAG,
@@ -81,6 +88,8 @@ def make_settings(**overrides):
         "cerebras_stage_model": "zai-glm-4.7",
         "help_opener_primary_model": "primary-model",
         "help_opener_secondary_model": "secondary-model",
+        "student_translation_model": "gpt-oss-120b",
+        "student_answer_model": "gemini-3.5-flash",
         "cerebras_reasoning_effort": "none",
         "cerebras_prompt_cache_key": True,
         "vertex_project": None,
@@ -148,6 +157,12 @@ def test_stage_agenda_assets_cover_detector_tags():
         "S3.4b",
         "S3.5",
     }
+
+
+def test_cerebras_stage_schema_matches_known_stages():
+    schema = cerebras_stage_response_format()["json_schema"]["schema"]
+    stage_enum = schema["properties"]["stage"]["enum"]
+    assert tuple(stage_enum) == KNOWN_STAGES
     assert STAGE_AGENDA_BY_TAG["S3.4a"].agenda.startswith("выяснить")
     assert STAGE_AGENDA_BY_TAG["S3.5"].step.endswith("следующего контакта.")
 
@@ -1637,6 +1652,82 @@ async def test_help_constructive_stream_sends_temperature_one():
         assert "--- Fixed stage -> agenda mapping ---" in user_text
         assert "S3.4a — Возражение: уточняющий вопрос" in user_text
         assert "Строго опирайся на текущий stage" in user_text
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_student_translate_uses_gpt_oss_without_sales_prompt():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "Привет, как дела?"}}]},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(make_settings(), client)
+
+        response = await orchestrator.student_translate(
+            StudentTranslateRequest(run_id="run", text="Hi, how are you?", direction="en-ru")
+        )
+
+        assert response.text == "Привет, как дела?"
+        assert response.provider == "cerebras"
+        assert response.model == "gpt-oss-120b"
+        assert calls[0]["model"] == "gpt-oss-120b"
+        assert "Direction: English -> Russian" in calls[0]["messages"][1]["content"]
+        assert "sales coach" not in calls[0]["messages"][0]["content"].lower()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_student_answer_stream_uses_gemini_single_answer_prompt():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            text='[{"candidates":[{"content":{"parts":[{"text":"Это значит, что встречу перенесли."}]}}]}]',
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                cerebras_api_key=None,
+                vertex_project="project",
+                vertex_access_token="token",
+            ),
+            client,
+        )
+
+        frames = [
+            json.loads(frame.decode("utf-8").removeprefix("data:").strip())
+            async for frame in orchestrator.student_answer_stream(
+                StudentAnswerRequest(
+                    id=1,
+                    run_id="run",
+                    context="Original: meeting was postponed",
+                    question="Что это значит?",
+                )
+            )
+        ]
+
+        assert frames == [
+            {"event": "model", "model": "gemini-3.5-flash", "provider": "vertex"},
+            {"event": "delta", "text": "Это значит, что встречу перенесли."},
+            {"event": "done"},
+        ]
+        assert calls[0]["generationConfig"]["temperature"] == 0.35
+        assert "учебный помощник" in calls[0]["systemInstruction"]["parts"][0]["text"]
+        assert "sales" not in calls[0]["systemInstruction"]["parts"][0]["text"].lower()
     finally:
         await client.aclose()
 

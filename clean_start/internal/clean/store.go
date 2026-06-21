@@ -2,6 +2,7 @@ package clean
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 )
@@ -32,6 +33,29 @@ type AssistState struct {
 	SlowModel    string `json:"slow_model,omitempty"`
 }
 
+type StudentTranslationItem struct {
+	ID            string    `json:"id"`
+	SourceEventID string    `json:"source_event_id"`
+	SourceText    string    `json:"source_text"`
+	Text          string    `json:"text"`
+	Direction     string    `json:"direction"`
+	Provider      string    `json:"provider,omitempty"`
+	Model         string    `json:"model,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type StudentState struct {
+	Direction               string                   `json:"direction"`
+	Originals               []TranscriptItem         `json:"originals"`
+	Translations            []StudentTranslationItem `json:"translations"`
+	TranslationStreaming    bool                     `json:"translation_streaming"`
+	TranslationGenerationID string                   `json:"translation_generation_id,omitempty"`
+	AnswerText              string                   `json:"answer_text"`
+	AnswerStreaming         bool                     `json:"answer_streaming"`
+	AnswerGenerationID      string                   `json:"answer_generation_id,omitempty"`
+	AnswerModel             string                   `json:"answer_model,omitempty"`
+}
+
 type SessionState struct {
 	SessionID          string           `json:"session_id"`
 	CreatedAt          time.Time        `json:"created_at"`
@@ -43,6 +67,7 @@ type SessionState struct {
 	SellerStreaming    bool             `json:"seller_streaming"`
 	SellerGenerationID string           `json:"seller_generation_id"`
 	Assist             AssistState      `json:"assist"`
+	Student            StudentState     `json:"student"`
 	StageCandidate     *StageData       `json:"stage_candidate,omitempty"`
 	StageCommitted     *StageData       `json:"stage_committed,omitempty"`
 	Scorecard          *ScorecardData   `json:"scorecard,omitempty"`
@@ -92,6 +117,9 @@ func (s *Store) Apply(event Event) SessionState {
 
 	switch event.Type {
 	case EventSessionCreated:
+		if state.Student.Direction == "" {
+			state.Student.Direction = "en-ru"
+		}
 	case EventSellerInput:
 		if data, err := DecodeData[TextData](event); err == nil && data.Text != "" {
 			state.Messages = append(state.Messages, Message{Role: "seller", Text: data.Text, CreatedAt: event.CreatedAt})
@@ -112,9 +140,13 @@ func (s *Store) Apply(event Event) SessionState {
 			if data.Role == "client" {
 				state.ClientPartial = data.Text
 			}
-			state.Transcript = appendTranscript(state.Transcript, TranscriptItem{
+			item := TranscriptItem{
 				ID: event.ID, Role: data.Role, Text: data.Text, Source: data.Source, Speaker: data.Speaker, SegmentID: data.SegmentID, Final: false, CreatedAt: event.CreatedAt,
-			})
+			}
+			state.Transcript = appendTranscript(state.Transcript, item)
+			if data.Role == "student_original" {
+				state.Student.Originals = appendTranscript(state.Student.Originals, item)
+			}
 		}
 	case EventSTTFinal:
 		if data, err := DecodeData[SpeechData](event); err == nil {
@@ -126,9 +158,13 @@ func (s *Store) Apply(event Event) SessionState {
 			} else if data.Role == "seller" && data.Text != "" {
 				state.Messages = append(state.Messages, Message{Role: "seller", Text: data.Text, CreatedAt: event.CreatedAt})
 			}
-			state.Transcript = appendTranscript(state.Transcript, TranscriptItem{
+			item := TranscriptItem{
 				ID: event.ID, Role: data.Role, Text: data.Text, Source: data.Source, Speaker: data.Speaker, SegmentID: data.SegmentID, Final: true, CreatedAt: event.CreatedAt,
-			})
+			}
+			state.Transcript = appendTranscript(state.Transcript, item)
+			if data.Role == "student_original" {
+				state.Student.Originals = appendTranscript(state.Student.Originals, item)
+			}
 		}
 	case EventSellerStarted:
 		if data, err := DecodeData[SellerStartedData](event); err == nil {
@@ -173,6 +209,58 @@ func (s *Store) Apply(event Event) SessionState {
 		}
 	case EventAssistCanceled:
 		state.Assist.Streaming = false
+	case EventStudentDirection:
+		if data, err := DecodeData[StudentDirectionData](event); err == nil && data.Direction != "" {
+			state.Student.Direction = data.Direction
+		}
+	case EventStudentInput:
+		if data, err := DecodeData[StudentInputData](event); err == nil && data.Text != "" {
+			if data.Direction != "" {
+				state.Student.Direction = data.Direction
+			}
+			state.Student.Originals = appendTranscript(state.Student.Originals, TranscriptItem{
+				ID: event.ID, Role: "student_original", Text: data.Text, Source: "manual", Final: true, CreatedAt: event.CreatedAt,
+			})
+		}
+	case EventStudentTranslateStarted:
+		if data, err := DecodeData[StudentTranslateStartedData](event); err == nil {
+			state.Student.TranslationStreaming = true
+			state.Student.TranslationGenerationID = data.GenerationID
+			if data.Direction != "" {
+				state.Student.Direction = data.Direction
+			}
+		}
+	case EventStudentTranslateDone:
+		if data, err := DecodeData[StudentTranslateDoneData](event); err == nil {
+			state.Student.TranslationStreaming = false
+			state.Student.TranslationGenerationID = data.GenerationID
+			if data.Direction != "" {
+				state.Student.Direction = data.Direction
+			}
+			state.Student.Translations = appendStudentTranslation(state.Student.Translations, StudentTranslationItem{
+				ID: data.GenerationID, SourceEventID: data.SourceEventID, SourceText: data.SourceText, Text: data.Text, Direction: data.Direction, Provider: data.Provider, Model: data.Model, CreatedAt: event.CreatedAt,
+			})
+		}
+	case EventStudentAnswerStarted:
+		if data, err := DecodeData[StudentAnswerStartedData](event); err == nil {
+			state.Student.AnswerText = ""
+			state.Student.AnswerStreaming = true
+			state.Student.AnswerGenerationID = data.GenerationID
+			state.Student.AnswerModel = ""
+		}
+	case EventStudentAnswerDelta:
+		if data, err := DecodeData[StudentAnswerDeltaData](event); err == nil && data.GenerationID == state.Student.AnswerGenerationID {
+			state.Student.AnswerText += data.Delta
+			state.Student.AnswerStreaming = true
+		}
+	case EventStudentAnswerDone:
+		if data, err := DecodeData[StudentAnswerDoneData](event); err == nil && data.GenerationID == state.Student.AnswerGenerationID {
+			state.Student.AnswerText = data.Text
+			state.Student.AnswerModel = data.Model
+			state.Student.AnswerStreaming = false
+		}
+	case EventStudentAnswerCanceled:
+		state.Student.AnswerStreaming = false
 	case EventStageCandidate:
 		if data, err := DecodeData[StageData](event); err == nil {
 			state.StageCandidate = &data
@@ -198,6 +286,19 @@ func (s *Store) Apply(event Event) SessionState {
 		}
 	}
 	return cloneState(*state)
+}
+
+func appendStudentTranslation(items []StudentTranslationItem, item StudentTranslationItem) []StudentTranslationItem {
+	if strings.TrimSpace(item.Text) == "" {
+		return items
+	}
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].SourceEventID == item.SourceEventID && item.SourceEventID != "" {
+			items[i] = item
+			return items
+		}
+	}
+	return append(items, item)
 }
 
 func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptItem {
@@ -261,13 +362,16 @@ func (s *Store) Subscribe(sessionID string) (<-chan Event, func()) {
 	s.listeners[sessionID][ch] = struct{}{}
 	s.mu.Unlock()
 
+	var once sync.Once
 	cancel := func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if listeners := s.listeners[sessionID]; listeners != nil {
-			delete(listeners, ch)
-		}
-		close(ch)
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if listeners := s.listeners[sessionID]; listeners != nil {
+				delete(listeners, ch)
+			}
+			close(ch)
+		})
 	}
 	return ch, cancel
 }
