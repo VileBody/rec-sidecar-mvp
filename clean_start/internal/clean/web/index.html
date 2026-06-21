@@ -706,6 +706,7 @@
         <div class="header-actions">
           <span id="studentAuthStatus" class="user-chip">проверяю доступ...</span>
           <button id="studentNewSession" class="ghost">Новый</button>
+          <button id="studentLogout" class="ghost">Выйти</button>
         </div>
       </header>
 
@@ -837,6 +838,7 @@
       $("authStatus").textContent = isDevUser ? "dev mode" : (currentUser?.email || "не авторизован");
       $("studentAuthStatus").textContent = isDevUser ? "dev mode" : (currentUser?.email || "не авторизован");
       $("logout").hidden = locked || isDevUser;
+      $("studentLogout").hidden = locked || isDevUser;
       $("newSession").disabled = locked;
       $("studentNewSession").disabled = locked;
       $("salesApp").hidden = !locked && isStudentUser();
@@ -1830,6 +1832,7 @@
       createSession().catch((error) => $("studentSession").textContent = error.message);
     };
     $("logout").onclick = () => logout().catch((error) => showToast(error.message));
+    $("studentLogout").onclick = () => logout().catch((error) => showToast(error.message));
     $("authLogin").onclick = () => submitAuth("login");
     $("authRegister").onclick = () => submitAuth("register");
     $("authPassword").onkeydown = (event) => {
