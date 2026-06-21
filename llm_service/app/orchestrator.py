@@ -20,6 +20,8 @@ from .prompts import (
     SALES_COACH_LIVE_VALIDATOR_SYSTEM_PROMPT,
     SALES_COACH_STRUCTURED_SYSTEM_PROMPT,
     SALES_COACH_SYSTEM_PROMPT,
+    STUDENT_ANSWER_SYSTEM_PROMPT,
+    STUDENT_TRANSLATION_SYSTEM_PROMPT,
 )
 from .providers import (
     CerebrasClient,
@@ -38,6 +40,9 @@ from .schemas import (
     OpenerResponse,
     StageAgendaResponse,
     StageRequest,
+    StudentAnswerRequest,
+    StudentTranslateRequest,
+    StudentTranslateResponse,
 )
 from .scorecard import (
     fallback_scorecard,
@@ -93,7 +98,8 @@ class LlmOrchestrator:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None):
         self.settings = settings
         self.client = client or httpx.AsyncClient(
-            timeout=settings.timeout_secs,
+            timeout=httpx.Timeout(settings.timeout_secs, pool=2.0),
+            limits=httpx.Limits(max_connections=500, max_keepalive_connections=100),
             proxy=settings.outbound_proxy,
         )
         self._owns_client = client is None
@@ -243,6 +249,64 @@ class LlmOrchestrator:
             else:
                 yield sse_event({"event": "error", "message": str(exc)})
 
+    async def student_translate(
+        self, request: StudentTranslateRequest
+    ) -> StudentTranslateResponse:
+        if not self.cerebras.configured():
+            raise ProviderError("cerebras", "Cerebras is not configured for student translation")
+        source, target = ("English", "Russian")
+        if request.direction == "ru-en":
+            source, target = ("Russian", "English")
+        user_content = (
+            f"Direction: {source} -> {target}\n\n"
+            f"Text:\n{request.text.strip()}\n"
+        )
+        text = await self.cerebras.text(
+            model=self.settings.student_translation_model,
+            system_prompt=STUDENT_TRANSLATION_SYSTEM_PROMPT,
+            user_content=user_content,
+            temperature=0.0,
+            prompt_cache_key=f"rec-sidecar-student-translate-v1-{request.run_id}",
+            max_tokens=1200,
+        )
+        return StudentTranslateResponse(
+            text=text.strip(),
+            provider="cerebras",
+            model=self.settings.student_translation_model,
+        )
+
+    async def student_answer_stream(
+        self, request: StudentAnswerRequest
+    ) -> AsyncIterator[bytes]:
+        if not self.vertex.configured():
+            yield sse_event({"event": "error", "message": "vertex: missing Vertex auth"})
+            return
+        question = (request.question or "").strip()
+        user_content = request.context
+        if question:
+            user_content += f"\n\n--- Question ---\n{question}\n"
+        else:
+            user_content += "\n\n--- Task ---\nПомоги понять последний фрагмент или ответить на него.\n"
+        try:
+            yield sse_event(
+                {
+                    "event": "model",
+                    "model": self.settings.student_answer_model,
+                    "provider": "vertex",
+                }
+            )
+            async for delta in self.vertex.stream_text(
+                model=self.settings.student_answer_model,
+                system_prompt=STUDENT_ANSWER_SYSTEM_PROMPT,
+                user_content=user_content,
+                temperature=0.35,
+                thinking_level=self.settings.vertex_thinking_level,
+            ):
+                yield sse_event({"event": "delta", "text": delta})
+            yield sse_event({"event": "done"})
+        except ProviderError as exc:
+            yield sse_event({"event": "error", "message": str(exc)})
+
     async def stage_agenda(self, request: StageRequest) -> StageAgendaResponse | None:
         stage_started_at = time.monotonic()
         user_content = (
@@ -287,7 +351,9 @@ class LlmOrchestrator:
                 )
                 stage, confidence = parse_stage_detection(text)
                 stage = self._clamp_detected_stage(request, stage, model)
-                if self._stage_unchanged(request, stage, provider="cerebras", model=model):
+                if self._stage_unchanged(
+                    request, stage, provider="cerebras", model=model
+                ) and not request.include_scorecard:
                     return None
                 return await self._stage_response(
                     request=request,
@@ -319,7 +385,9 @@ class LlmOrchestrator:
                 )
                 stage, confidence = parse_stage_detection(text)
                 stage = self._clamp_detected_stage(request, stage, model)
-                if self._stage_unchanged(request, stage, provider="vertex", model=model):
+                if self._stage_unchanged(
+                    request, stage, provider="vertex", model=model
+                ) and not request.include_scorecard:
                     return None
                 return await self._stage_response(
                     request=request,
@@ -655,7 +723,7 @@ class LlmOrchestrator:
         except ProviderError as exc:
             if exc.is_structured_output_error:
                 suggestion = await self._cerebras_live_unstructured(request)
-            elif exc.is_rate_limit and self._auto_provider() and self.vertex.configured():
+            elif self._auto_provider() and self.vertex.configured():
                 suggestion = await self._vertex_live(request)
                 return ("vertex", self.settings.vertex_model, suggestion)
             else:
@@ -717,7 +785,7 @@ class LlmOrchestrator:
             confidence,
             detect_elapsed_ms,
         )
-        scorecard = await self._stage_scorecard(request, agenda)
+        scorecard = await self._stage_scorecard(request, agenda) if request.include_scorecard else None
         response_elapsed_ms = int((time.monotonic() - response_started_at) * 1000)
         total_elapsed_ms = (
             detect_elapsed_ms + response_elapsed_ms
@@ -725,11 +793,12 @@ class LlmOrchestrator:
             else response_elapsed_ms
         )
         logger.info(
-            "stage_response run_id=%s stage=%s total_elapsed_ms=%s post_detect_elapsed_ms=%s",
+            "stage_response run_id=%s stage=%s total_elapsed_ms=%s post_detect_elapsed_ms=%s include_scorecard=%s",
             request.run_id,
             stage,
             total_elapsed_ms,
             response_elapsed_ms,
+            request.include_scorecard,
         )
         return StageAgendaResponse(
             stage=agenda.stage,

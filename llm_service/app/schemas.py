@@ -48,10 +48,30 @@ class HelpRequest(StrictModel):
     context: str
 
 
+class StudentTranslateRequest(StrictModel):
+    run_id: str
+    text: str
+    direction: Literal["en-ru", "ru-en"] = "en-ru"
+
+
+class StudentTranslateResponse(BaseModel):
+    text: str
+    provider: str
+    model: str
+
+
+class StudentAnswerRequest(StrictModel):
+    id: int
+    run_id: str
+    context: str
+    question: str | None = None
+
+
 class StageRequest(StrictModel):
     run_id: str
     context: str
     current_stage: str | None = None
+    include_scorecard: bool = True
 
 
 class StageScoreEvidence(BaseModel):

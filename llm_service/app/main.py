@@ -20,6 +20,9 @@ from .schemas import (
     OpenerResponse,
     StageAgendaResponse,
     StageRequest,
+    StudentAnswerRequest,
+    StudentTranslateRequest,
+    StudentTranslateResponse,
 )
 
 
@@ -125,6 +128,27 @@ async def help_opener_stream(request: HelpRequest) -> StreamingResponse:
 async def help_constructive_stream(request: HelpRequest) -> StreamingResponse:
     return StreamingResponse(
         orchestrator.help_constructive_stream(request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.post(
+    "/v1/student/translate",
+    response_model=StudentTranslateResponse,
+    dependencies=[Depends(require_service_token)],
+)
+async def student_translate(request: StudentTranslateRequest) -> StudentTranslateResponse:
+    try:
+        return await orchestrator.student_translate(request)
+    except ProviderError as exc:
+        raise HTTPException(status_code=provider_status(exc), detail=str(exc)) from exc
+
+
+@app.post("/v1/student/answer/stream", dependencies=[Depends(require_service_token)])
+async def student_answer_stream(request: StudentAnswerRequest) -> StreamingResponse:
+    return StreamingResponse(
+        orchestrator.student_answer_stream(request),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
