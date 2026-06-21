@@ -107,6 +107,37 @@ func TestStoreApplyStudentTranslationAndAnswer(t *testing.T) {
 	}
 }
 
+func TestStoreApplyStudentOriginalFinalReplacesEquivalentPartial(t *testing.T) {
+	store := NewStore()
+	sessionID := "sess-student-stt"
+	store.Apply(NewEvent(sessionID, EventSessionCreated, "test", map[string]any{}))
+	store.Apply(NewEvent(sessionID, EventSTTPartial, "test", SpeechData{
+		Role:      "student_original",
+		Text:      "А где твои вещи, Моко?",
+		Source:    "student-system-audio",
+		Speaker:   "unknown",
+		SegmentID: "0000-000-unknown",
+		Direction: StudentDirectionRuEn,
+		Language:  "ru",
+	}))
+	state := store.Apply(NewEvent(sessionID, EventSTTFinal, "test", SpeechData{
+		Role:      "student_original",
+		Text:      "А где твои вещи, Моко?",
+		Source:    "student-system-audio",
+		Speaker:   "unknown",
+		SegmentID: "0001-000-unknown",
+		Direction: StudentDirectionRuEn,
+		Language:  "ru",
+	}))
+
+	if len(state.Student.Originals) != 1 || !state.Student.Originals[0].Final {
+		t.Fatalf("student final should replace equivalent partial: %#v", state.Student.Originals)
+	}
+	if len(state.Transcript) != 1 || !state.Transcript[0].Final {
+		t.Fatalf("transcript final should replace equivalent partial: %#v", state.Transcript)
+	}
+}
+
 func TestStoreCloneSafety(t *testing.T) {
 	store := NewStore()
 	sessionID := "sess-clone"

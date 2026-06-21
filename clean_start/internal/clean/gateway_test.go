@@ -183,6 +183,40 @@ func TestAppendTranscriptAllowsRetroactiveFinalCorrection(t *testing.T) {
 	}
 }
 
+func TestAppendTranscriptReplacesSameTextFinalWithChangedSegmentID(t *testing.T) {
+	now := time.Now().UTC()
+	items := []TranscriptItem{}
+	items = appendTranscript(items, TranscriptItem{
+		ID:        "partial-1",
+		Role:      "student_original",
+		Speaker:   "unknown",
+		Source:    "student-system-audio",
+		SegmentID: "0000-000-unknown",
+		Text:      "А где твои вещи, Моко?",
+		CreatedAt: now,
+	})
+	items = appendTranscript(items, TranscriptItem{
+		ID:        "final-1",
+		Role:      "student_original",
+		Speaker:   "unknown",
+		Source:    "student-system-audio",
+		SegmentID: "0001-000-unknown",
+		Text:      "А где твои вещи, Моко?",
+		Final:     true,
+		CreatedAt: now.Add(2 * time.Second),
+	})
+
+	if len(items) != 1 {
+		t.Fatalf("same text final should replace partial, got %#v", items)
+	}
+	if items[0].ID != "partial-1" || !items[0].Final || items[0].SegmentID != "0001-000-unknown" {
+		t.Fatalf("final should preserve bubble identity and update content: %#v", items[0])
+	}
+	if !items[0].CreatedAt.Equal(now) {
+		t.Fatalf("created_at should stay stable: %#v", items[0])
+	}
+}
+
 func TestAppendTranscriptKeepsDiarizedSegmentsFromSameSpeakerSeparate(t *testing.T) {
 	now := time.Now().UTC()
 	items := []TranscriptItem{}

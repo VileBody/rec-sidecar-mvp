@@ -309,16 +309,18 @@ func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptI
 		return items
 	}
 	for i := len(items) - 1; i >= 0; i-- {
-		if !sameTranscriptStream(items[i], item) {
-			continue
-		}
-		if !items[i].Final || item.Final {
+		if sameTranscriptStream(items[i], item) && (!items[i].Final || item.Final) {
 			item.ID = stableTranscriptID(items[i], item)
 			item.CreatedAt = stableTranscriptCreatedAt(items[i], item)
 			items[i] = item
 			return items
 		}
-		break
+		if shouldReplaceEquivalentPartial(items[i], item) {
+			item.ID = stableTranscriptID(items[i], item)
+			item.CreatedAt = stableTranscriptCreatedAt(items[i], item)
+			items[i] = item
+			return items
+		}
 	}
 	items = append(items, item)
 	if len(items) > 200 {
@@ -327,16 +329,47 @@ func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptI
 	return items
 }
 
-func sameTranscriptStream(left, right TranscriptItem) bool {
-	if left.SegmentID != "" || right.SegmentID != "" {
-		return left.Role == right.Role &&
-			left.Speaker == right.Speaker &&
-			left.Source == right.Source &&
-			left.SegmentID == right.SegmentID
+func shouldReplaceEquivalentPartial(previous, next TranscriptItem) bool {
+	if previous.Final || !next.Final {
+		return false
 	}
+	if !sameTranscriptSpeakerSource(previous, next) {
+		return false
+	}
+	if !equivalentTranscriptText(previous.Text, next.Text) {
+		return false
+	}
+	if previous.CreatedAt.IsZero() || next.CreatedAt.IsZero() {
+		return true
+	}
+	delta := next.CreatedAt.Sub(previous.CreatedAt)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= 20*time.Second
+}
+
+func sameTranscriptSpeakerSource(left, right TranscriptItem) bool {
 	return left.Role == right.Role &&
 		left.Speaker == right.Speaker &&
 		left.Source == right.Source
+}
+
+func sameTranscriptStream(left, right TranscriptItem) bool {
+	if left.SegmentID != "" || right.SegmentID != "" {
+		return sameTranscriptSpeakerSource(left, right) &&
+			left.SegmentID == right.SegmentID
+	}
+	return sameTranscriptSpeakerSource(left, right)
+}
+
+func equivalentTranscriptText(left, right string) bool {
+	return normalizeTranscriptText(left) == normalizeTranscriptText(right)
+}
+
+func normalizeTranscriptText(text string) string {
+	text = strings.ToLower(strings.Join(strings.Fields(text), " "))
+	return strings.Trim(text, " \t\r\n.!?,:;…")
 }
 
 func stableTranscriptID(previous, next TranscriptItem) string {
