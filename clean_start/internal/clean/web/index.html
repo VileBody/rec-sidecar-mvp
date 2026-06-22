@@ -804,6 +804,21 @@
     let sellerSpeaker = localStorage.getItem(SPEAKER_STORAGE_KEY) || "";
     let replyPipWindow = null;
 
+    function sessionStorageKey() {
+      const identity = currentUser?.id || currentUser?.email || "dev";
+      const role = currentUser?.role || "sales";
+      return `rec-coach-session:${identity}:${role}`;
+    }
+
+    function rememberSession(id) {
+      if (!id) return;
+      localStorage.setItem(sessionStorageKey(), id);
+    }
+
+    function forgetSession() {
+      localStorage.removeItem(sessionStorageKey());
+    }
+
     function isStudentUser() {
       return currentUser?.role === "student";
     }
@@ -811,7 +826,7 @@
     async function boot() {
       initSpeakerMap();
       const ok = await loadMe();
-      if (ok) await createSession();
+      if (ok) await restoreSessionOrCreate();
     }
 
     async function loadMe() {
@@ -866,7 +881,7 @@
         currentUser = data.user || null;
         renderAuth(false);
         showToast(mode === "register" ? "Аккаунт создан" : "Вошли");
-        await createSession();
+        await restoreSessionOrCreate();
       } catch (error) {
         $("authError").textContent = error.message;
       } finally {
@@ -878,8 +893,8 @@
     async function logout() {
       stopCapture("system");
       stopCapture("microphone");
-      if (events) events.close();
-      if (pollTimer) clearInterval(pollTimer);
+      stopSessionLive();
+      forgetSession();
       await fetch("/v1/auth/logout", {
         method: "POST",
         credentials: "same-origin",
@@ -899,9 +914,88 @@
       return data.error || `HTTP ${res.status}`;
     }
 
-    async function createSession() {
+    function stopSessionLive() {
       if (events) events.close();
+      events = null;
       if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+    }
+
+    function applySession(data) {
+      stopSessionLive();
+      sessionId = data.session_id;
+      $("session").textContent = sessionId;
+      $("studentSession").textContent = sessionId;
+      state = data.state;
+      rememberSession(sessionId);
+      connectStream();
+      startStatePolling();
+      render();
+    }
+
+    async function restoreSessionOrCreate() {
+      const stored = localStorage.getItem(sessionStorageKey());
+      if (stored && await resumeSession(stored)) {
+        return;
+      }
+      if (await resumeLatestSession()) {
+        return;
+      }
+      await createSession();
+    }
+
+    async function resumeSession(id) {
+      if (!id) return false;
+      const res = await fetch(`/v1/sessions/${encodeURIComponent(id)}`, {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (res.status === 401) {
+        currentUser = null;
+        sessionId = "";
+        state = null;
+        renderAuth(true);
+        $("session").textContent = "нужно войти";
+        $("studentSession").textContent = "нужно войти";
+        return true;
+      }
+      if (res.status === 403 || res.status === 404) {
+        forgetSession();
+        return false;
+      }
+      if (!res.ok) {
+        throw new Error(await responseError(res));
+      }
+      applySession({ session_id: id, state: await res.json() });
+      return true;
+    }
+
+    async function resumeLatestSession() {
+      const res = await fetch("/v1/sessions/latest", {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (res.status === 401) {
+        currentUser = null;
+        sessionId = "";
+        state = null;
+        renderAuth(true);
+        $("session").textContent = "нужно войти";
+        $("studentSession").textContent = "нужно войти";
+        return true;
+      }
+      if (res.status === 404) {
+        return false;
+      }
+      if (!res.ok) {
+        throw new Error(await responseError(res));
+      }
+      applySession(await res.json());
+      return true;
+    }
+
+    async function createSession() {
+      stopSessionLive();
       state = null;
       render();
       const res = await fetch("/v1/sessions", {
@@ -920,13 +1014,7 @@
         throw new Error(await responseError(res));
       }
       const data = await res.json();
-      sessionId = data.session_id;
-      $("session").textContent = sessionId;
-      $("studentSession").textContent = sessionId;
-      state = data.state;
-      connectStream();
-      startStatePolling();
-      render();
+      applySession(data);
     }
 
     function connectStream() {

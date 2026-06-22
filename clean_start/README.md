@@ -74,6 +74,12 @@ Create a session:
 curl -b /tmp/rec-coach.cookies -s http://127.0.0.1:8110/v1/sessions -X POST -d '{}' | jq
 ```
 
+Resume the latest session for the current user:
+
+```bash
+curl -b /tmp/rec-coach.cookies -s http://127.0.0.1:8110/v1/sessions/latest | jq
+```
+
 Send a seller line:
 
 ```bash
@@ -161,6 +167,19 @@ kubectl -n rec-sidecar create secret generic clean-start-postgres \
 kubectl -n rec-sidecar create secret generic clean-start-auth \
   --from-literal=CLEAN_START_DATABASE_URL="postgres://clean_start:${PG_PASSWORD}@clean-start-postgres.rec-sidecar.svc.cluster.local:5432/clean_start?sslmode=disable" \
   --from-literal=CLEAN_START_JWT_SECRET="$(openssl rand -base64 48)"
+```
+
+Captured browser/system audio can be uploaded as WAV files to an S3-compatible bucket. This is optional; if the secret is absent, STT works normally and no audio is stored.
+
+```bash
+kubectl -n rec-sidecar create secret generic clean-start-audio-s3 \
+  --from-literal=CLEAN_START_AUDIO_S3_ENDPOINT="https://s3.twcstorage.ru" \
+  --from-literal=CLEAN_START_AUDIO_S3_REGION="ru-1" \
+  --from-literal=CLEAN_START_AUDIO_S3_BUCKET="<bucket-name>" \
+  --from-literal=CLEAN_START_AUDIO_S3_ACCESS_KEY="<access-key>" \
+  --from-literal=CLEAN_START_AUDIO_S3_SECRET_KEY="<secret-key>" \
+  --from-literal=CLEAN_START_AUDIO_S3_PREFIX="rec-audio" \
+  --from-literal=CLEAN_START_AUDIO_S3_PATH_STYLE="true"
 ```
 
 The test agent needs `INWORLD_API_KEY` for TTS/STT. Without it, `/healthz` still works but `/turn` returns a clear missing-key error.

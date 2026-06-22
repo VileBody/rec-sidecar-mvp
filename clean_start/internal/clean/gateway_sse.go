@@ -13,7 +13,10 @@ func (g *Gateway) streamSession(w http.ResponseWriter, r *http.Request) {
 	if _, ok := g.requireSessionOwner(w, r, sessionID); !ok {
 		return
 	}
-	if _, ok := g.store.Get(sessionID); !ok {
+	if _, ok, err := g.hydrateSession(r.Context(), sessionID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	} else if !ok {
 		writeError(w, http.StatusNotFound, fmt.Errorf("session %s not found", sessionID))
 		return
 	}

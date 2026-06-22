@@ -51,6 +51,13 @@ type Config struct {
 	SonioxEndpointDetection   bool
 	SonioxEndpointSensitivity float64
 	SonioxMaxEndpointDelayMS  int
+	AudioS3Endpoint           string
+	AudioS3Region             string
+	AudioS3Bucket             string
+	AudioS3AccessKey          string
+	AudioS3SecretKey          string
+	AudioS3Prefix             string
+	AudioS3PathStyle          bool
 }
 
 func ConfigFromEnv() Config {
@@ -97,6 +104,13 @@ func ConfigFromEnv() Config {
 		SonioxEndpointDetection:   envBool("SONIOX_ENDPOINT_DETECTION", false),
 		SonioxEndpointSensitivity: envFloat("SONIOX_ENDPOINT_SENSITIVITY", 0),
 		SonioxMaxEndpointDelayMS:  envInt("SONIOX_MAX_ENDPOINT_DELAY_MS", 2000),
+		AudioS3Endpoint:           strings.TrimRight(env("CLEAN_START_AUDIO_S3_ENDPOINT", ""), "/"),
+		AudioS3Region:             env("CLEAN_START_AUDIO_S3_REGION", "ru-1"),
+		AudioS3Bucket:             env("CLEAN_START_AUDIO_S3_BUCKET", ""),
+		AudioS3AccessKey:          env("CLEAN_START_AUDIO_S3_ACCESS_KEY", ""),
+		AudioS3SecretKey:          env("CLEAN_START_AUDIO_S3_SECRET_KEY", ""),
+		AudioS3Prefix:             strings.Trim(env("CLEAN_START_AUDIO_S3_PREFIX", "rec-audio"), "/"),
+		AudioS3PathStyle:          envBool("CLEAN_START_AUDIO_S3_PATH_STYLE", true),
 	}
 }
 

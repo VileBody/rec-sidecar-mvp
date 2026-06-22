@@ -58,15 +58,16 @@ func (g *Gateway) healthz(w http.ResponseWriter, _ *http.Request) {
 		natsURL = g.nc.ConnectedUrl()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                 true,
-		"role":               g.cfg.Role,
-		"nats_url":           natsURL,
-		"auth_enabled":       g.cfg.AuthEnabled,
-		"coach_enabled":      g.cfg.CoachEnabled,
-		"stt_provider":       sttProvider,
-		"stt_configured":     sttConfigured,
-		"soniox_configured":  g.soniox != nil && g.soniox.Configured(),
-		"inworld_configured": g.inworld != nil && g.inworld.Configured(),
+		"ok":                  true,
+		"role":                g.cfg.Role,
+		"nats_url":            natsURL,
+		"auth_enabled":        g.cfg.AuthEnabled,
+		"coach_enabled":       g.cfg.CoachEnabled,
+		"stt_provider":        sttProvider,
+		"stt_configured":      sttConfigured,
+		"soniox_configured":   g.soniox != nil && g.soniox.Configured(),
+		"inworld_configured":  g.inworld != nil && g.inworld.Configured(),
+		"audio_s3_configured": g.audioSink != nil && g.audioSink.Configured(),
 	})
 }
 
@@ -111,7 +112,11 @@ func (g *Gateway) getSession(w http.ResponseWriter, r *http.Request) {
 	if _, ok := g.requireSessionOwner(w, r, sessionID); !ok {
 		return
 	}
-	state, ok := g.store.Get(sessionID)
+	state, ok, err := g.hydrateSession(r.Context(), sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if !ok {
 		writeError(w, http.StatusNotFound, fmt.Errorf("session %s not found", sessionID))
 		return
@@ -119,12 +124,45 @@ func (g *Gateway) getSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, state)
 }
 
+func (g *Gateway) latestSession(w http.ResponseWriter, r *http.Request) {
+	user, ok := g.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !g.authRequired() {
+		writeError(w, http.StatusNotFound, errors.New("latest session is available only when auth is enabled"))
+		return
+	}
+	sessionID, err := g.authStore.LatestAppSession(r.Context(), user.ID)
+	if err != nil {
+		if errors.Is(err, ErrAuthNotFound) {
+			writeError(w, http.StatusNotFound, errors.New("no previous session"))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	state, ok, err := g.hydrateSession(r.Context(), sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("session %s not found", sessionID))
+		return
+	}
+	writeJSON(w, http.StatusOK, CreateSessionResponse{SessionID: sessionID, State: state})
+}
+
 func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
 	if _, ok := g.requireSessionOwner(w, r, sessionID); !ok {
 		return
 	}
-	if _, ok := g.store.Get(sessionID); !ok {
+	if _, ok, err := g.hydrateSession(r.Context(), sessionID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	} else if !ok {
 		writeError(w, http.StatusNotFound, fmt.Errorf("session %s not found", sessionID))
 		return
 	}
@@ -145,7 +183,7 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 	case EventSellerRequest:
 		if !g.cfg.CoachEnabled {
 			g.logger.Info("coach request ignored", "session_id", sessionID, "type", req.Type, "reason", "coach_disabled")
-			state, _ := g.store.Get(sessionID)
+			state, _, _ := g.hydrateSession(r.Context(), sessionID)
 			writeJSON(w, http.StatusAccepted, state)
 			return
 		}
@@ -157,7 +195,7 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 	case EventAssistRequest:
 		if !g.cfg.CoachEnabled {
 			g.logger.Info("coach request ignored", "session_id", sessionID, "type", req.Type, "reason", "coach_disabled")
-			state, _ := g.store.Get(sessionID)
+			state, _, _ := g.hydrateSession(r.Context(), sessionID)
 			writeJSON(w, http.StatusAccepted, state)
 			return
 		}
@@ -208,7 +246,7 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	state, _ := g.store.Get(sessionID)
+	state, _, _ := g.hydrateSession(r.Context(), sessionID)
 	writeJSON(w, http.StatusAccepted, state)
 }
 

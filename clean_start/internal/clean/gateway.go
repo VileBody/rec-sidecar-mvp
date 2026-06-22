@@ -23,6 +23,7 @@ type Gateway struct {
 	logger    *slog.Logger
 	store     *Store
 	authStore AuthStore
+	audioSink *AudioSink
 	tokens    TokenManager
 	server    *http.Server
 	sub       *nats.Subscription
@@ -37,6 +38,10 @@ func NewGateway(cfg Config, nc *nats.Conn, inworld *InworldClient, logger *slog.
 		soniox:  NewSonioxClient(cfg),
 		logger:  logger.With("component", "gateway"),
 		store:   NewStore(),
+		audioSink: NewAudioSink(
+			cfg,
+			logger.With("component", "audio-s3"),
+		),
 		tokens:  NewTokenManager(cfg.JWTSecret),
 		publish: PublishEvent,
 	}
@@ -58,6 +63,9 @@ func (g *Gateway) Run(ctx context.Context) error {
 				event.SessionID = sessionID
 			}
 		}
+		if err := g.persistEvent(context.Background(), event); err != nil {
+			g.logger.Warn("persist event failed", "session_id", event.SessionID, "event_id", event.ID, "type", event.Type, "error", err)
+		}
 		g.store.Apply(event)
 	})
 	if err != nil {
@@ -73,6 +81,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /v1/auth/me", g.me)
 	mux.HandleFunc("POST /v1/auth/logout", g.logout)
 	mux.HandleFunc("POST /v1/sessions", g.createSession)
+	mux.HandleFunc("GET /v1/sessions/latest", g.latestSession)
 	mux.HandleFunc("GET /v1/sessions/{session_id}", g.getSession)
 	mux.HandleFunc("POST /v1/sessions/{session_id}/events", g.postEvent)
 	mux.HandleFunc("POST /v1/sessions/{session_id}/audio/log", g.logBrowserAudio)
@@ -115,12 +124,43 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 }
 
 func (g *Gateway) emit(event Event) error {
+	if err := g.persistEvent(context.Background(), event); err != nil {
+		return err
+	}
 	g.store.Apply(event)
 	publish := g.publish
 	if publish == nil {
 		publish = PublishEvent
 	}
 	return publish(g.nc, g.cfg, event)
+}
+
+func (g *Gateway) persistEvent(ctx context.Context, event Event) error {
+	if g.authStore == nil || event.ID == "" || event.SessionID == "" {
+		return nil
+	}
+	return g.authStore.SaveAppEvent(ctx, event)
+}
+
+func (g *Gateway) hydrateSession(ctx context.Context, sessionID string) (SessionState, bool, error) {
+	if state, ok := g.store.Get(sessionID); ok {
+		return state, true, nil
+	}
+	if g.authStore == nil {
+		return SessionState{}, false, nil
+	}
+	events, err := g.authStore.AppEvents(ctx, sessionID)
+	if err != nil {
+		return SessionState{}, false, err
+	}
+	if len(events) == 0 {
+		return SessionState{}, false, nil
+	}
+	for _, event := range events {
+		g.store.Apply(event)
+	}
+	state, ok := g.store.Get(sessionID)
+	return state, ok, nil
 }
 
 func (g *Gateway) ensureAuth(ctx context.Context) error {

@@ -53,6 +53,16 @@ func (s *PostgresAuthStore) EnsureSchema(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS app_sessions_user_id_idx ON app_sessions(user_id)`,
+		`CREATE TABLE IF NOT EXISTS app_events (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL REFERENCES app_sessions(id) ON DELETE CASCADE,
+			type TEXT NOT NULL,
+			source TEXT NOT NULL,
+			generation_id TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL,
+			data JSONB NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS app_events_session_created_idx ON app_events(session_id, created_at, id)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -141,6 +151,62 @@ func (s *PostgresAuthStore) AppSessionOwner(ctx context.Context, sessionID strin
 		return "", err
 	}
 	return userID, nil
+}
+
+func (s *PostgresAuthStore) LatestAppSession(ctx context.Context, userID string) (string, error) {
+	var sessionID string
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM app_sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`, userID).Scan(&sessionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrAuthNotFound
+		}
+		return "", err
+	}
+	return sessionID, nil
+}
+
+func (s *PostgresAuthStore) SaveAppEvent(ctx context.Context, event Event) error {
+	var data any
+	if len(event.Data) > 0 {
+		data = string(event.Data)
+	}
+	_, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO app_events (id, session_id, type, source, generation_id, created_at, data)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 ON CONFLICT (id) DO NOTHING`,
+		event.ID,
+		event.SessionID,
+		event.Type,
+		event.Source,
+		event.GenerationID,
+		event.CreatedAt,
+		data,
+	)
+	return err
+}
+
+func (s *PostgresAuthStore) AppEvents(ctx context.Context, sessionID string) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, type, source, generation_id, created_at, data FROM app_events WHERE session_id = $1 ORDER BY created_at, id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []Event
+	for rows.Next() {
+		var event Event
+		var data sql.NullString
+		if err := rows.Scan(&event.ID, &event.SessionID, &event.Type, &event.Source, &event.GenerationID, &event.CreatedAt, &data); err != nil {
+			return nil, err
+		}
+		if data.Valid && data.String != "" {
+			event.Data = append([]byte(nil), data.String...)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
 }
 
 func (s *PostgresAuthStore) Close() error {

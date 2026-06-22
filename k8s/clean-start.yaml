@@ -62,6 +62,9 @@ spec:
 # Required external secrets:
 # - clean-start-postgres: POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
 # - clean-start-auth: CLEAN_START_DATABASE_URL, CLEAN_START_JWT_SECRET
+# Optional external secrets:
+# - clean-start-audio-s3: CLEAN_START_AUDIO_S3_ENDPOINT, CLEAN_START_AUDIO_S3_REGION,
+#   CLEAN_START_AUDIO_S3_BUCKET, CLEAN_START_AUDIO_S3_ACCESS_KEY, CLEAN_START_AUDIO_S3_SECRET_KEY
 #
 # Keep these out of git. See clean_start/README.md for kubectl commands.
 apiVersion: v1
@@ -185,6 +188,9 @@ spec:
                 name: llm-helper-env
             - secretRef:
                 name: clean-start-auth
+            - secretRef:
+                name: clean-start-audio-s3
+                optional: true
           env:
             - name: CLEAN_START_HTTP_ADDR
               value: ":8110"

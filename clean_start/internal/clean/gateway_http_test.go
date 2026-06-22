@@ -249,6 +249,7 @@ func TestGatewayWebIncludesAuthControls(t *testing.T) {
 		`/v1/auth/me`,
 		`/v1/auth/login`,
 		`/v1/auth/register`,
+		`/v1/sessions/latest`,
 		`id="logout"`,
 		`id="studentApp"`,
 		`id="studentLogout"`,

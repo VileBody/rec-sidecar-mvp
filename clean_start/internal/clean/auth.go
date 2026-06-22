@@ -48,6 +48,9 @@ type AuthStore interface {
 	RevokeAuthSession(ctx context.Context, sessionID string) error
 	CreateAppSession(ctx context.Context, sessionID, userID string) error
 	AppSessionOwner(ctx context.Context, sessionID string) (string, error)
+	LatestAppSession(ctx context.Context, userID string) (string, error)
+	SaveAppEvent(ctx context.Context, event Event) error
+	AppEvents(ctx context.Context, sessionID string) ([]Event, error)
 	Close() error
 }
 
@@ -254,6 +257,8 @@ type memoryAuthStore struct {
 	usersByEmail map[string]string
 	authSessions map[string]AuthSession
 	appSessions  map[string]string
+	appCreatedAt map[string]time.Time
+	appEvents    map[string][]Event
 }
 
 func NewMemoryAuthStore() AuthStore {
@@ -262,6 +267,8 @@ func NewMemoryAuthStore() AuthStore {
 		usersByEmail: make(map[string]string),
 		authSessions: make(map[string]AuthSession),
 		appSessions:  make(map[string]string),
+		appCreatedAt: make(map[string]time.Time),
+		appEvents:    make(map[string][]Event),
 	}
 }
 
@@ -333,6 +340,7 @@ func (s *memoryAuthStore) CreateAppSession(_ context.Context, sessionID, userID 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.appSessions[sessionID] = userID
+	s.appCreatedAt[sessionID] = time.Now().UTC()
 	return nil
 }
 
@@ -344,6 +352,46 @@ func (s *memoryAuthStore) AppSessionOwner(_ context.Context, sessionID string) (
 		return "", ErrAuthNotFound
 	}
 	return userID, nil
+}
+
+func (s *memoryAuthStore) LatestAppSession(_ context.Context, userID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var latestID string
+	var latestTime time.Time
+	for sessionID, ownerID := range s.appSessions {
+		if ownerID != userID {
+			continue
+		}
+		createdAt := s.appCreatedAt[sessionID]
+		if latestID == "" || createdAt.After(latestTime) {
+			latestID = sessionID
+			latestTime = createdAt
+		}
+	}
+	if latestID == "" {
+		return "", ErrAuthNotFound
+	}
+	return latestID, nil
+}
+
+func (s *memoryAuthStore) SaveAppEvent(_ context.Context, event Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.appEvents[event.SessionID] {
+		if existing.ID == event.ID {
+			return nil
+		}
+	}
+	s.appEvents[event.SessionID] = append(s.appEvents[event.SessionID], event)
+	return nil
+}
+
+func (s *memoryAuthStore) AppEvents(_ context.Context, sessionID string) ([]Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := append([]Event(nil), s.appEvents[sessionID]...)
+	return events, nil
 }
 
 func (s *memoryAuthStore) Close() error { return nil }

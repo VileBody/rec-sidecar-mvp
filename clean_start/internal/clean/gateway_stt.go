@@ -67,6 +67,9 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 	if language == "" && direction != "" {
 		language = sourceLanguageForDirection(direction)
 	}
+	if g.audioSink != nil {
+		g.audioSink.RecordPCMAsync(sessionID, role, source, raw)
+	}
 	started := time.Now()
 	stream, provider, err := g.connectSTTWithLanguage(r.Context(), language)
 	if err != nil {
@@ -151,6 +154,22 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer stream.Close()
+	recorder := (*AudioRecorder)(nil)
+	if g.audioSink != nil {
+		recorder = g.audioSink.Start(sessionID, role, source)
+		defer func() {
+			if recorder == nil {
+				return
+			}
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				if err := recorder.Close(ctx); err != nil {
+					g.logger.Warn("audio recording upload failed", "session_id", sessionID, "role", role, "source", source, "error", err)
+				}
+			}()
+		}()
+	}
 
 	var browserWriteMu sync.Mutex
 	writeBrowserJSON := func(value any) error {
@@ -269,6 +288,11 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(raw) == 0 {
 				continue
+			}
+			if recorder != nil {
+				if err := recorder.WritePCM(raw); err != nil {
+					g.logger.Warn("audio recording write failed", "session_id", sessionID, "role", role, "source", source, "error", err)
+				}
 			}
 			audioStats.audioChunks.Add(1)
 			audioStats.audioBytes.Add(int64(len(raw)))

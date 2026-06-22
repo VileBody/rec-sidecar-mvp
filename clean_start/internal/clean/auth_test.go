@@ -177,3 +177,42 @@ func TestAuthRequiredForSessionCreation(t *testing.T) {
 		t.Fatalf("unauth create status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestLatestSessionHydratesPersistedEvents(t *testing.T) {
+	g := newAuthTestGateway()
+	user := registerTestUser(t, g, "persist@example.com")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"auto_opener":false}`))
+	req.Header.Set("Authorization", "Bearer "+user.Token)
+	rec := httptest.NewRecorder()
+	g.createSession(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create session status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	session := authJSON[CreateSessionResponse](t, rec)
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+session.SessionID+"/events", strings.NewReader(`{"type":"seller.input","text":"Здравствуйте"}`))
+	req.SetPathValue("session_id", session.SessionID)
+	req.Header.Set("Authorization", "Bearer "+user.Token)
+	rec = httptest.NewRecorder()
+	g.postEvent(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("post event status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	g.store = NewStore()
+	req = httptest.NewRequest(http.MethodGet, "/v1/sessions/latest", nil)
+	req.Header.Set("Authorization", "Bearer "+user.Token)
+	rec = httptest.NewRecorder()
+	g.latestSession(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("latest session status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	latest := authJSON[CreateSessionResponse](t, rec)
+	if latest.SessionID != session.SessionID {
+		t.Fatalf("latest session id = %q, want %q", latest.SessionID, session.SessionID)
+	}
+	if len(latest.State.Messages) != 1 || latest.State.Messages[0].Text != "Здравствуйте" {
+		t.Fatalf("hydrated messages = %#v", latest.State.Messages)
+	}
+}
