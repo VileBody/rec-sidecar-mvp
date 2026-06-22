@@ -21,6 +21,7 @@ from .prompts import (
     SALES_COACH_STRUCTURED_SYSTEM_PROMPT,
     SALES_COACH_SYSTEM_PROMPT,
     STUDENT_ANSWER_SYSTEM_PROMPT,
+    STUDENT_HELP_SYSTEM_PROMPT,
     STUDENT_TRANSLATION_SYSTEM_PROMPT,
 )
 from .providers import (
@@ -339,10 +340,12 @@ class LlmOrchestrator:
             return
         question = (request.question or "").strip()
         user_content = request.context
+        system_prompt = STUDENT_ANSWER_SYSTEM_PROMPT
         if question:
             user_content += f"\n\n--- Question ---\n{question}\n"
         else:
-            user_content += "\n\n--- Task ---\nПомоги понять последний фрагмент или ответить на него.\n"
+            system_prompt = STUDENT_HELP_SYSTEM_PROMPT
+            user_content += "\n\n--- Task ---\nКнопка Помоги: объясни последний фрагмент в строгом формате TL;DR + 1-2 предметных примера.\n"
         try:
             yield sse_event(
                 {
@@ -353,7 +356,7 @@ class LlmOrchestrator:
             )
             async for delta in self.vertex.stream_text(
                 model=self.settings.student_answer_model,
-                system_prompt=STUDENT_ANSWER_SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 user_content=user_content,
                 temperature=0.35,
                 thinking_level=self.settings.vertex_thinking_level,

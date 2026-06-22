@@ -44,10 +44,21 @@ type StudentTranslationItem struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+type StudentAnswerItem struct {
+	ID        string    `json:"id"`
+	Role      string    `json:"role"`
+	Text      string    `json:"text"`
+	Trigger   string    `json:"trigger,omitempty"`
+	Model     string    `json:"model,omitempty"`
+	Streaming bool      `json:"streaming,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type StudentState struct {
 	Direction               string                   `json:"direction"`
 	Originals               []TranscriptItem         `json:"originals"`
 	Translations            []StudentTranslationItem `json:"translations"`
+	AnswerItems             []StudentAnswerItem      `json:"answer_items"`
 	TranslationStreaming    bool                     `json:"translation_streaming"`
 	TranslationGenerationID string                   `json:"translation_generation_id,omitempty"`
 	AnswerText              string                   `json:"answer_text"`
@@ -235,26 +246,46 @@ func (s *Store) Apply(event Event) SessionState {
 				ID: data.GenerationID, SourceEventID: data.SourceEventID, SourceText: data.SourceText, Text: data.Text, Direction: data.Direction, Provider: data.Provider, Model: data.Model, CreatedAt: event.CreatedAt,
 			})
 		}
+	case EventStudentAnswerRequest:
+		if data, err := DecodeData[StudentAnswerRequestData](event); err == nil {
+			state.Student.AnswerItems = appendStudentAnswerItem(state.Student.AnswerItems, StudentAnswerItem{
+				ID:        event.ID,
+				Role:      "user",
+				Text:      studentAnswerRequestText(data),
+				Trigger:   data.Trigger,
+				CreatedAt: event.CreatedAt,
+			})
+		}
 	case EventStudentAnswerStarted:
 		if data, err := DecodeData[StudentAnswerStartedData](event); err == nil {
 			state.Student.AnswerText = ""
 			state.Student.AnswerStreaming = true
 			state.Student.AnswerGenerationID = data.GenerationID
 			state.Student.AnswerModel = ""
+			state.Student.AnswerItems = appendStudentAnswerItem(state.Student.AnswerItems, StudentAnswerItem{
+				ID:        data.GenerationID,
+				Role:      "assistant",
+				Trigger:   data.Trigger,
+				Streaming: true,
+				CreatedAt: event.CreatedAt,
+			})
 		}
 	case EventStudentAnswerDelta:
 		if data, err := DecodeData[StudentAnswerDeltaData](event); err == nil && data.GenerationID == state.Student.AnswerGenerationID {
 			state.Student.AnswerText += data.Delta
 			state.Student.AnswerStreaming = true
+			state.Student.AnswerItems = appendStudentAnswerDelta(state.Student.AnswerItems, data.GenerationID, data.Delta)
 		}
 	case EventStudentAnswerDone:
 		if data, err := DecodeData[StudentAnswerDoneData](event); err == nil && data.GenerationID == state.Student.AnswerGenerationID {
 			state.Student.AnswerText = data.Text
 			state.Student.AnswerModel = data.Model
 			state.Student.AnswerStreaming = false
+			state.Student.AnswerItems = finishStudentAnswerItem(state.Student.AnswerItems, data.GenerationID, data.Text, data.Model)
 		}
 	case EventStudentAnswerCanceled:
 		state.Student.AnswerStreaming = false
+		state.Student.AnswerItems = cancelStudentAnswerItem(state.Student.AnswerItems, state.Student.AnswerGenerationID)
 	case EventStageCandidate:
 		if data, err := DecodeData[StageData](event); err == nil {
 			state.StageCandidate = &data
@@ -293,6 +324,65 @@ func appendStudentTranslation(items []StudentTranslationItem, item StudentTransl
 		}
 	}
 	return append(items, item)
+}
+
+func studentAnswerRequestText(data StudentAnswerRequestData) string {
+	text := strings.TrimSpace(data.Text)
+	if text != "" {
+		return text
+	}
+	return "Помоги по последнему фрагменту"
+}
+
+func appendStudentAnswerItem(items []StudentAnswerItem, item StudentAnswerItem) []StudentAnswerItem {
+	item.Text = strings.TrimSpace(item.Text)
+	if item.Role == "" {
+		item.Role = "assistant"
+	}
+	items = append(items, item)
+	if len(items) > 80 {
+		items = items[len(items)-80:]
+	}
+	return items
+}
+
+func appendStudentAnswerDelta(items []StudentAnswerItem, generationID, delta string) []StudentAnswerItem {
+	if delta == "" {
+		return items
+	}
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].ID == generationID {
+			items[i].Text += delta
+			items[i].Streaming = true
+			return items
+		}
+	}
+	return appendStudentAnswerItem(items, StudentAnswerItem{ID: generationID, Role: "assistant", Text: delta, Streaming: true, CreatedAt: time.Now().UTC()})
+}
+
+func finishStudentAnswerItem(items []StudentAnswerItem, generationID, text, model string) []StudentAnswerItem {
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].ID == generationID {
+			items[i].Text = strings.TrimSpace(text)
+			items[i].Model = model
+			items[i].Streaming = false
+			return items
+		}
+	}
+	return appendStudentAnswerItem(items, StudentAnswerItem{ID: generationID, Role: "assistant", Text: text, Model: model, CreatedAt: time.Now().UTC()})
+}
+
+func cancelStudentAnswerItem(items []StudentAnswerItem, generationID string) []StudentAnswerItem {
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].ID == generationID {
+			if strings.TrimSpace(items[i].Text) == "" {
+				return append(items[:i], items[i+1:]...)
+			}
+			items[i].Streaming = false
+			return items
+		}
+	}
+	return items
 }
 
 func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptItem {

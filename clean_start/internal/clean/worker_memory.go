@@ -16,6 +16,7 @@ type sessionMemory struct {
 	StudentDirection    string
 	StudentOriginals    []Message
 	StudentTranslations []Message
+	StudentAnswers      []Message
 }
 
 func (m *sessionMemory) contextBlock() string {
@@ -71,6 +72,20 @@ func (m *sessionMemory) studentContextBlock() string {
 	}
 	for _, msg := range m.StudentTranslations {
 		b.WriteString("- ")
+		b.WriteString(msg.Text)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n--- Help/chat history ---\n")
+	if len(m.StudentAnswers) == 0 {
+		b.WriteString("(empty)\n")
+	}
+	for _, msg := range m.StudentAnswers {
+		role := "Assistant"
+		if msg.Role == "user" {
+			role = "User"
+		}
+		b.WriteString(role)
+		b.WriteString(": ")
 		b.WriteString(msg.Text)
 		b.WriteString("\n")
 	}
@@ -149,6 +164,14 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 		if data, err := DecodeData[StudentTranslateDoneData](event); err == nil && data.Text != "" {
 			mem.StudentTranslations = append(mem.StudentTranslations, Message{Role: "translation", Text: data.Text, CreatedAt: event.CreatedAt})
 		}
+	case EventStudentAnswerRequest:
+		if data, err := DecodeData[StudentAnswerRequestData](event); err == nil {
+			mem.StudentAnswers = append(mem.StudentAnswers, Message{Role: "user", Text: studentAnswerRequestText(data), CreatedAt: event.CreatedAt})
+		}
+	case EventStudentAnswerDone:
+		if data, err := DecodeData[StudentAnswerDoneData](event); err == nil && data.Text != "" {
+			mem.StudentAnswers = append(mem.StudentAnswers, Message{Role: "assistant", Text: data.Text, CreatedAt: event.CreatedAt})
+		}
 	case EventStageCandidate, EventStageCommitted:
 		if data, err := DecodeData[StageData](event); err == nil && data.Stage != "" {
 			mem.CurrentStage = data.Stage
@@ -178,5 +201,6 @@ func cloneSessionMemory(mem *sessionMemory) *sessionMemory {
 	copy.Messages = append([]Message(nil), mem.Messages...)
 	copy.StudentOriginals = append([]Message(nil), mem.StudentOriginals...)
 	copy.StudentTranslations = append([]Message(nil), mem.StudentTranslations...)
+	copy.StudentAnswers = append([]Message(nil), mem.StudentAnswers...)
 	return &copy
 }

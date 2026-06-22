@@ -873,7 +873,10 @@ function renderStudent() {
     ? translations.slice(-80).map((item) => studentItemHTML(item.text, `${targetLanguageForDirection(item.direction || direction).toUpperCase()} · ${formatTime(item.created_at)} · ${escapeHtml(item.model || "gpt-oss-120b")}`)).join("")
     : `<div class="empty">Перевод появится после первой финальной фразы.</div>`;
 
-  if (student.answer_text) {
+  const answerItems = Array.isArray(student.answer_items) ? student.answer_items : [];
+  if (answerItems.length) {
+    $("studentAssistLog").innerHTML = answerItems.slice(-40).map(studentAnswerBubbleHTML).join("");
+  } else if (student.answer_text) {
     $("studentAssistLog").innerHTML = `<div class="assist-msg">${escapeHtml(student.answer_text)}</div>`;
   } else if (student.answer_streaming) {
     $("studentAssistLog").innerHTML = `<div class="assist-msg">Думаю...</div>`;
@@ -884,6 +887,23 @@ function renderStudent() {
 
 function studentItemHTML(text, meta) {
   return `<div class="student-item"><div class="meta">${escapeHtml(meta)}</div>${escapeHtml(text)}</div>`;
+}
+
+function studentAnswerBubbleHTML(item) {
+  const role = item.role === "user" ? "user" : "assistant";
+  const label = role === "user"
+    ? (item.trigger === "button" ? "Помоги" : "Вопрос")
+    : "Ответ";
+  const metaBits = [label, formatTime(item.created_at)];
+  if (item.model) metaBits.push(item.model);
+  if (item.streaming) metaBits.push("пишет");
+  const text = item.text || (item.streaming ? "Думаю..." : "");
+  return `
+    <div class="student-answer-bubble ${role}">
+      <div class="meta">${metaBits.map(escapeHtml).join(" · ")}</div>
+      ${escapeHtml(text)}
+    </div>
+  `;
 }
 
 function sourceLanguageForDirection(direction) {
@@ -1580,7 +1600,6 @@ $("studentAsk").onclick = () => {
 };
 $("studentClear").onclick = () => {
   $("studentQuestion").value = "";
-  $("studentAssistLog").innerHTML = `<div class="empty">Нажми «Помоги» или задай вопрос ниже.</div>`;
 };
 for (const tab of document.querySelectorAll("[data-admin-type]")) {
   tab.onclick = () => selectAdminUserType(tab.dataset.adminType);

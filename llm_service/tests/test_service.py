@@ -1794,7 +1794,54 @@ async def test_student_answer_stream_uses_gemini_single_answer_prompt():
         ]
         assert calls[0]["generationConfig"]["temperature"] == 0.35
         assert "учебный помощник" in calls[0]["systemInstruction"]["parts"][0]["text"]
+        assert "TL;DR:" not in calls[0]["systemInstruction"]["parts"][0]["text"]
         assert "sales" not in calls[0]["systemInstruction"]["parts"][0]["text"].lower()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_student_help_button_uses_strict_tldr_examples_prompt():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            text='[{"candidates":[{"content":{"parts":[{"text":"TL;DR: GIL ограничивает одновременное выполнение Python-кода в потоках.\\nПример 1: Рассмотрим CPU-задачу, где два потока считают хэш большого массива; из-за GIL они не выполняют Python-байткод параллельно."}]}}]}]',
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                cerebras_api_key=None,
+                vertex_project="project",
+                vertex_access_token="token",
+            ),
+            client,
+        )
+
+        frames = [
+            json.loads(frame.decode("utf-8").removeprefix("data:").strip())
+            async for frame in orchestrator.student_answer_stream(
+                StudentAnswerRequest(
+                    id=1,
+                    run_id="run",
+                    context="Original: What is the GIL?",
+                    question="",
+                )
+            )
+        ]
+
+        assert frames[1]["text"].startswith("TL;DR:")
+        system_prompt = calls[0]["systemInstruction"]["parts"][0]["text"]
+        user_text = calls[0]["contents"][0]["parts"][0]["text"]
+        assert 'кнопки "Помоги"' in system_prompt
+        assert "TL;DR:" in system_prompt
+        assert "Пример 1:" in system_prompt
+        assert "Не используй метафоры" in system_prompt
+        assert "Кнопка Помоги" in user_text
     finally:
         await client.aclose()
 

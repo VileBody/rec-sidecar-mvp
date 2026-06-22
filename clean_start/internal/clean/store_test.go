@@ -99,11 +99,21 @@ func TestStoreApplyStudentTranslationAndAnswer(t *testing.T) {
 		t.Fatalf("student translations = %#v", state.Student.Translations)
 	}
 
+	store.Apply(NewEvent(sessionID, EventStudentAnswerRequest, "test", StudentAnswerRequestData{Trigger: "button"}))
 	store.Apply(NewEvent(sessionID, EventStudentAnswerStarted, "test", StudentAnswerStartedData{GenerationID: "stu-1", Trigger: "button"}))
 	store.Apply(NewEvent(sessionID, EventStudentAnswerDelta, "test", StudentAnswerDeltaData{GenerationID: "stu-1", Delta: "Это вопрос"}))
 	state = store.Apply(NewEvent(sessionID, EventStudentAnswerDone, "test", StudentAnswerDoneData{GenerationID: "stu-1", Text: "Это вопрос о событии.", Model: "gemini-3.5-flash"}))
 	if state.Student.AnswerStreaming || state.Student.AnswerText != "Это вопрос о событии." || state.Student.AnswerModel != "gemini-3.5-flash" {
 		t.Fatalf("student answer = %#v", state.Student)
+	}
+	if len(state.Student.AnswerItems) != 2 {
+		t.Fatalf("student answer history length = %d, want 2: %#v", len(state.Student.AnswerItems), state.Student.AnswerItems)
+	}
+	if state.Student.AnswerItems[0].Role != "user" || state.Student.AnswerItems[0].Text != "Помоги по последнему фрагменту" {
+		t.Fatalf("student help request bubble = %#v", state.Student.AnswerItems[0])
+	}
+	if state.Student.AnswerItems[1].Role != "assistant" || state.Student.AnswerItems[1].Text != "Это вопрос о событии." || state.Student.AnswerItems[1].Streaming {
+		t.Fatalf("student answer bubble = %#v", state.Student.AnswerItems[1])
 	}
 }
 
