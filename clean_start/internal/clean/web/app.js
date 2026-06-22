@@ -10,6 +10,7 @@ let captureStates = {
 };
 const SPEAKER_STORAGE_KEY = "rec-coach-seller-speaker";
 let sellerSpeaker = localStorage.getItem(SPEAKER_STORAGE_KEY) || "";
+let pendingStudentDirection = "";
 let replyPipWindow = null;
 const ADMIN_USER_TYPES = ["sales", "student"];
 let adminState = {
@@ -852,7 +853,11 @@ function renderStudent() {
     return;
   }
   const student = state?.student || {};
-  const direction = student.direction || $("studentDirection")?.value || "en-ru";
+  const serverDirection = student.direction || "en-ru";
+  if (pendingStudentDirection && pendingStudentDirection === serverDirection) {
+    pendingStudentDirection = "";
+  }
+  const direction = pendingStudentDirection || serverDirection || $("studentDirection")?.value || "en-ru";
   if ($("studentDirection").value !== direction) $("studentDirection").value = direction;
   $("studentDirectionStatus").textContent = direction === "ru-en" ? "RU -> EN" : "EN -> RU";
   $("studentTranslationMeta").textContent = student.translation_streaming ? "перевожу..." : "gpt-oss-120b";
@@ -994,8 +999,18 @@ async function requestStudentAnswer(trigger, text = "") {
 
 async function updateStudentDirection() {
   const direction = $("studentDirection").value || "en-ru";
+  pendingStudentDirection = direction;
+  applyStudentDirectionToCapture(direction);
+  renderStudent();
   await postEvent({ type: "student.direction", direction });
   reconnectCaptureSTT("system", "student_direction_changed");
+}
+
+function applyStudentDirectionToCapture(direction) {
+  const captureState = captureStates.system;
+  if (!captureState?.active || captureState.role !== "student_original") return;
+  captureState.direction = direction;
+  captureState.language = sourceLanguageForDirection(direction);
 }
 
 async function sendStudentOriginal() {
