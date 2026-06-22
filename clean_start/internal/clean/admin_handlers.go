@@ -1,12 +1,38 @@
 package clean
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
+
+type AdminSessionSummary struct {
+	SessionID       string    `json:"session_id"`
+	UserID          string    `json:"user_id"`
+	UserEmail       string    `json:"user_email"`
+	UserRole        string    `json:"user_role"`
+	CreatedAt       time.Time `json:"created_at"`
+	LastEventAt     time.Time `json:"last_event_at"`
+	DurationSeconds int64     `json:"duration_seconds"`
+	EventCount      int64     `json:"event_count"`
+	TranscriptCount int64     `json:"transcript_count"`
+}
+
+type AdminSessionListResponse struct {
+	Items []AdminSessionSummary `json:"items"`
+}
+
+type AdminSessionDetailResponse struct {
+	Summary    AdminSessionSummary `json:"summary"`
+	State      SessionState        `json:"state"`
+	Transcript []TranscriptItem    `json:"transcript"`
+	Events     []Event             `json:"events"`
+}
 
 type AdminPromptItem struct {
 	ID        string `json:"id"`
@@ -77,6 +103,59 @@ func (g *Gateway) listAdminPrompts(w http.ResponseWriter, r *http.Request) {
 		items = append(items, adminPromptItem(config))
 	}
 	writeJSON(w, http.StatusOK, AdminPromptListResponse{Items: items})
+}
+
+func (g *Gateway) listAdminSessions(w http.ResponseWriter, r *http.Request) {
+	if _, ok := g.requireAdmin(w, r); !ok {
+		return
+	}
+	limit := 200
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("limit must be a positive integer"))
+			return
+		}
+		limit = parsed
+	}
+	items, err := g.authStore.ListAppSessionSummaries(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, AdminSessionListResponse{Items: items})
+}
+
+func (g *Gateway) getAdminSession(w http.ResponseWriter, r *http.Request) {
+	if _, ok := g.requireAdmin(w, r); !ok {
+		return
+	}
+	sessionID := strings.TrimSpace(r.PathValue("session_id"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
+		return
+	}
+	summary, err := g.authStore.AppSessionSummary(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, ErrAuthNotFound) {
+			writeError(w, http.StatusNotFound, errors.New("session not found"))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	events, err := g.authStore.AppEvents(r.Context(), sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	state := stateFromEvents(sessionID, events)
+	writeJSON(w, http.StatusOK, AdminSessionDetailResponse{
+		Summary:    summary,
+		State:      state,
+		Transcript: state.Transcript,
+		Events:     events,
+	})
 }
 
 func (g *Gateway) upsertAdminPrompt(w http.ResponseWriter, r *http.Request) {
@@ -256,4 +335,106 @@ func adminPromptItem(config PromptConfig) AdminPromptItem {
 		UpdatedAt: config.UpdatedAt.Format(time.RFC3339Nano),
 		UpdatedBy: config.UpdatedBy,
 	}
+}
+
+func stateFromEvents(sessionID string, events []Event) SessionState {
+	store := NewStore()
+	for _, event := range events {
+		if event.SessionID == "" {
+			event.SessionID = sessionID
+		}
+		store.Apply(event)
+	}
+	state, ok := store.Get(sessionID)
+	if ok {
+		return state
+	}
+	return SessionState{SessionID: sessionID}
+}
+
+func sortAdminSessionSummaries(items []AdminSessionSummary) {
+	sort.Slice(items, func(i, j int) bool {
+		left := items[i].LastEventAt
+		right := items[j].LastEventAt
+		if left.Equal(right) {
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		}
+		return left.After(right)
+	})
+}
+
+func durationSeconds(start, end time.Time) int64 {
+	if start.IsZero() || end.IsZero() || end.Before(start) {
+		return 0
+	}
+	return int64(end.Sub(start).Seconds())
+}
+
+func isTranscriptLikeEvent(eventType string) bool {
+	switch eventType {
+	case EventSTTFinal, EventSellerInput, EventClientFinal, EventStudentInput:
+		return true
+	default:
+		return false
+	}
+}
+
+func appSessionSummaryQuery(where string) string {
+	limitParam := "$1"
+	if strings.TrimSpace(where) != "" {
+		limitParam = "$2"
+	}
+	return `
+		WITH event_stats AS (
+			SELECT
+				session_id,
+				MAX(created_at) AS last_event_at,
+				COUNT(*) AS event_count,
+				COUNT(*) FILTER (
+					WHERE type IN ('` + EventSTTFinal + `', '` + EventSellerInput + `', '` + EventClientFinal + `', '` + EventStudentInput + `')
+				) AS transcript_count
+			FROM app_events
+			GROUP BY session_id
+		)
+		SELECT
+			s.id,
+			s.user_id,
+			u.email,
+			u.role,
+			s.created_at,
+			COALESCE(es.last_event_at, s.created_at) AS last_event_at,
+			EXTRACT(EPOCH FROM (COALESCE(es.last_event_at, s.created_at) - s.created_at))::BIGINT AS duration_seconds,
+			COALESCE(es.event_count, 0)::BIGINT AS event_count,
+			COALESCE(es.transcript_count, 0)::BIGINT AS transcript_count
+		FROM app_sessions s
+		JOIN users u ON u.id = s.user_id
+		LEFT JOIN event_stats es ON es.session_id = s.id
+		` + where + `
+		ORDER BY COALESCE(es.last_event_at, s.created_at) DESC, s.created_at DESC
+		LIMIT ` + limitParam
+}
+
+type adminSessionSummaryScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAdminSessionSummary(scanner adminSessionSummaryScanner) (AdminSessionSummary, error) {
+	var summary AdminSessionSummary
+	if err := scanner.Scan(
+		&summary.SessionID,
+		&summary.UserID,
+		&summary.UserEmail,
+		&summary.UserRole,
+		&summary.CreatedAt,
+		&summary.LastEventAt,
+		&summary.DurationSeconds,
+		&summary.EventCount,
+		&summary.TranscriptCount,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return AdminSessionSummary{}, ErrAuthNotFound
+		}
+		return AdminSessionSummary{}, err
+	}
+	return summary, nil
 }

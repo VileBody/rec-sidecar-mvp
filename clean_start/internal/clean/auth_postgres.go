@@ -223,6 +223,33 @@ func (s *PostgresAuthStore) AppEvents(ctx context.Context, sessionID string) ([]
 	return events, nil
 }
 
+func (s *PostgresAuthStore) ListAppSessionSummaries(ctx context.Context, limit int) ([]AdminSessionSummary, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx, appSessionSummaryQuery(``), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var summaries []AdminSessionSummary
+	for rows.Next() {
+		summary, err := scanAdminSessionSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return summaries, nil
+}
+
+func (s *PostgresAuthStore) AppSessionSummary(ctx context.Context, sessionID string) (AdminSessionSummary, error) {
+	return scanAdminSessionSummary(s.db.QueryRowContext(ctx, appSessionSummaryQuery(`WHERE s.id = $1`), sessionID, 1))
+}
+
 func (s *PostgresAuthStore) Close() error {
 	return s.db.Close()
 }

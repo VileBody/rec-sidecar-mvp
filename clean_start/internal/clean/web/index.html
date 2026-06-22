@@ -249,16 +249,49 @@
     <header class="card header-card admin-header">
       <div>
         <h1 class="title">REC Admin</h1>
-        <div class="sub">prompts / playbooks</div>
+        <div class="sub">calls / prompts / playbooks</div>
       </div>
       <div class="header-actions">
+        <div class="admin-mode-tabs" role="tablist" aria-label="Admin section">
+          <button id="adminSessionsTab" class="active" type="button">Созвоны</button>
+          <button id="adminPromptsTab" type="button">Prompts</button>
+        </div>
         <span id="adminAuthStatus" class="user-chip">проверяю доступ...</span>
         <button id="adminRefreshPrompts" class="ghost">Обновить</button>
         <button id="adminLogout" class="ghost">Выйти</button>
       </div>
     </header>
 
-    <section class="admin-grid">
+    <section id="adminSessionsView" class="admin-sessions-grid">
+      <section class="card section admin-sessions-card">
+        <div class="admin-editor-head">
+          <p class="eyebrow">созвоны</p>
+          <span id="adminSessionsStatus" class="status-pill warn">загрузка</span>
+        </div>
+        <div id="adminSessionsList" class="admin-session-table">
+          <div class="empty">Загружаю сессии...</div>
+        </div>
+      </section>
+
+      <section class="card section admin-session-detail-card">
+        <div class="admin-editor-head">
+          <div>
+            <p class="eyebrow">детали</p>
+            <div id="adminSessionTitle" class="admin-session-title">Выберите созвон</div>
+          </div>
+          <span id="adminSessionMeta" class="status-pill">eventlog</span>
+        </div>
+        <div class="admin-detail-tabs" role="tablist" aria-label="Session details">
+          <button class="active" data-admin-detail-tab="transcript" type="button">Транскрипт</button>
+          <button data-admin-detail-tab="events" type="button">Eventlog</button>
+        </div>
+        <div id="adminSessionDetail" class="admin-session-detail">
+          <div class="empty">Транскрипт и события появятся здесь.</div>
+        </div>
+      </section>
+    </section>
+
+    <section id="adminPromptsView" class="admin-grid" hidden>
       <aside class="card section admin-list-card">
         <div class="admin-tabs" role="tablist" aria-label="User type">
           <button class="active" data-admin-type="sales" role="tab" aria-selected="true">sales</button>

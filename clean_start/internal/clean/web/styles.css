@@ -100,12 +100,25 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
 
 .admin-app[hidden] { display: none; }
 
-.admin-grid {
+.admin-grid,
+.admin-sessions-grid {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(280px, .36fr) minmax(0, 1fr);
   gap: 16px;
+}
+
+.admin-grid {
+  grid-template-columns: minmax(280px, .36fr) minmax(0, 1fr);
+}
+
+.admin-sessions-grid {
+  grid-template-columns: minmax(520px, .8fr) minmax(420px, .55fr);
+}
+
+.admin-grid[hidden],
+.admin-sessions-grid[hidden] {
+  display: none;
 }
 
 .column {
@@ -184,6 +197,24 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 14px;
+}
+
+.admin-mode-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.admin-mode-tabs button {
+  min-width: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: var(--paper-soft);
+}
+
+.admin-mode-tabs button.active {
+  border-color: #bfd1f8;
+  background: var(--blue-soft);
+  color: var(--blue);
 }
 
 .admin-tabs {
@@ -331,6 +362,151 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   color: var(--muted);
   font-size: 14px;
   font-weight: 700;
+}
+
+.admin-sessions-card,
+.admin-session-detail-card {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 13px;
+}
+
+.admin-session-detail-card {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.admin-session-table {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper-soft);
+}
+
+.admin-session-row {
+  width: 100%;
+  min-width: 720px;
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) 100px 128px 86px 78px 92px;
+  gap: 12px;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 12px 14px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.admin-session-row:last-child {
+  border-bottom: 0;
+}
+
+.admin-session-row:hover,
+.admin-session-row.active {
+  background: #f4f7ff;
+}
+
+.admin-session-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.admin-session-cell.primary {
+  display: grid;
+  gap: 3px;
+}
+
+.admin-session-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+  font-weight: 850;
+}
+
+.admin-session-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.admin-session-head {
+  color: var(--muted);
+  background: #fff;
+  cursor: default;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.admin-session-title {
+  margin-top: 5px;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 850;
+}
+
+.admin-detail-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.admin-detail-tabs button {
+  min-width: 0;
+  border-radius: 12px;
+  background: var(--paper-soft);
+}
+
+.admin-detail-tabs button.active {
+  border-color: #bfd1f8;
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.admin-session-detail {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 2px;
+}
+
+.admin-event-item,
+.admin-transcript-item {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 11px 12px;
+  background: var(--paper-soft);
+}
+
+.admin-event-item pre {
+  margin: 8px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #495163;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.admin-detail-meta {
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .08em;
+  text-transform: uppercase;
 }
 
 .eyebrow {
@@ -827,6 +1003,9 @@ body.auth-locked .admin-app {
   .admin-app {
     grid-template-columns: 1fr;
   }
+  .admin-sessions-grid {
+    grid-template-columns: 1fr;
+  }
   .assist-col { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto minmax(300px, auto); }
   .assist-col > header { grid-column: 1 / -1; }
   .column { min-height: 520px; }
@@ -840,6 +1019,15 @@ body.auth-locked .admin-app {
   }
   .admin-grid {
     grid-template-columns: 1fr;
+  }
+  .admin-sessions-grid {
+    grid-template-columns: 1fr;
+  }
+  .admin-mode-tabs {
+    width: 100%;
+  }
+  .admin-mode-tabs button {
+    flex: 1 1 0;
   }
   .assist-col { grid-template-columns: 1fr; }
   .assist-col > header { grid-column: auto; }

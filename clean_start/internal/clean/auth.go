@@ -52,6 +52,8 @@ type AuthStore interface {
 	LatestAppSession(ctx context.Context, userID string) (string, error)
 	SaveAppEvent(ctx context.Context, event Event) error
 	AppEvents(ctx context.Context, sessionID string) ([]Event, error)
+	ListAppSessionSummaries(ctx context.Context, limit int) ([]AdminSessionSummary, error)
+	AppSessionSummary(ctx context.Context, sessionID string) (AdminSessionSummary, error)
 	ListPromptConfigs(ctx context.Context, filter PromptConfigFilter) ([]PromptConfig, error)
 	PromptConfig(ctx context.Context, userType, kind, key string) (PromptConfig, error)
 	UpsertPromptConfig(ctx context.Context, config PromptConfig) (PromptConfig, error)
@@ -411,6 +413,61 @@ func (s *memoryAuthStore) AppEvents(_ context.Context, sessionID string) ([]Even
 	defer s.mu.Unlock()
 	events := append([]Event(nil), s.appEvents[sessionID]...)
 	return events, nil
+}
+
+func (s *memoryAuthStore) ListAppSessionSummaries(_ context.Context, limit int) ([]AdminSessionSummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	summaries := make([]AdminSessionSummary, 0, len(s.appSessions))
+	for sessionID := range s.appSessions {
+		summaries = append(summaries, s.appSessionSummaryLocked(sessionID))
+	}
+	sortAdminSessionSummaries(summaries)
+	if len(summaries) > limit {
+		summaries = summaries[:limit]
+	}
+	return summaries, nil
+}
+
+func (s *memoryAuthStore) AppSessionSummary(_ context.Context, sessionID string) (AdminSessionSummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.appSessions[sessionID]; !ok {
+		return AdminSessionSummary{}, ErrAuthNotFound
+	}
+	return s.appSessionSummaryLocked(sessionID), nil
+}
+
+func (s *memoryAuthStore) appSessionSummaryLocked(sessionID string) AdminSessionSummary {
+	userID := s.appSessions[sessionID]
+	user := s.usersByID[userID]
+	createdAt := s.appCreatedAt[sessionID]
+	lastEventAt := createdAt
+	eventCount := int64(0)
+	transcriptCount := int64(0)
+	for _, event := range s.appEvents[sessionID] {
+		eventCount++
+		if event.CreatedAt.After(lastEventAt) {
+			lastEventAt = event.CreatedAt
+		}
+		if isTranscriptLikeEvent(event.Type) {
+			transcriptCount++
+		}
+	}
+	return AdminSessionSummary{
+		SessionID:       sessionID,
+		UserID:          userID,
+		UserEmail:       user.Email,
+		UserRole:        normalizeUserRoleOrDefault(user.Role),
+		CreatedAt:       createdAt,
+		LastEventAt:     lastEventAt,
+		DurationSeconds: durationSeconds(createdAt, lastEventAt),
+		EventCount:      eventCount,
+		TranscriptCount: transcriptCount,
+	}
 }
 
 func (s *memoryAuthStore) Close() error { return nil }

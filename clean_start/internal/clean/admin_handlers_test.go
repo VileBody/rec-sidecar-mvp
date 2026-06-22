@@ -198,6 +198,69 @@ func TestAdminPromptsUIContract(t *testing.T) {
 	}
 }
 
+func TestAdminSessionsListAndDetail(t *testing.T) {
+	g := newAuthTestGateway()
+	sales := registerTestUser(t, g, "admin-session-sales@example.com")
+	admin := issueTestAuthUser(t, g, "admin-session-admin@example.com", UserRoleAdmin)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"auto_opener":false}`))
+	req.Header.Set("Authorization", "Bearer "+sales.Token)
+	rec := httptest.NewRecorder()
+	g.createSession(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create session status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	session := authJSON[CreateSessionResponse](t, rec)
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+session.SessionID+"/events", strings.NewReader(`{"type":"stt.final","role":"student_original","text":"Привет, что происходит?","source":"test","speaker":"1"}`))
+	req.SetPathValue("session_id", session.SessionID)
+	req.Header.Set("Authorization", "Bearer "+sales.Token)
+	rec = httptest.NewRecorder()
+	g.postEvent(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("post stt status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/admin/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+sales.Token)
+	rec = httptest.NewRecorder()
+	g.listAdminSessions(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("sales list sessions status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/admin/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+admin.Token)
+	rec = httptest.NewRecorder()
+	g.listAdminSessions(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin list sessions status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	listed := authJSON[AdminSessionListResponse](t, rec)
+	if len(listed.Items) != 1 {
+		t.Fatalf("sessions len = %d, want 1: %#v", len(listed.Items), listed.Items)
+	}
+	if listed.Items[0].SessionID != session.SessionID || listed.Items[0].UserEmail != sales.User.Email || listed.Items[0].TranscriptCount != 1 || listed.Items[0].EventCount < 2 {
+		t.Fatalf("unexpected session summary: %#v", listed.Items[0])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/admin/sessions/"+session.SessionID, nil)
+	req.SetPathValue("session_id", session.SessionID)
+	req.Header.Set("Authorization", "Bearer "+admin.Token)
+	rec = httptest.NewRecorder()
+	g.getAdminSession(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin detail status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	detail := authJSON[AdminSessionDetailResponse](t, rec)
+	if detail.Summary.SessionID != session.SessionID || len(detail.Events) < 2 {
+		t.Fatalf("unexpected detail summary/events: %#v", detail)
+	}
+	if len(detail.Transcript) != 1 || detail.Transcript[0].Text != "Привет, что происходит?" {
+		t.Fatalf("unexpected transcript: %#v", detail.Transcript)
+	}
+}
+
 func TestAdminPromptConfigMissingReturnsNotFound(t *testing.T) {
 	g := newAuthTestGateway()
 	admin := issueTestAuthUser(t, g, "admin-missing@example.com", UserRoleAdmin)

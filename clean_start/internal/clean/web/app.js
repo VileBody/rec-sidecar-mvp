@@ -15,11 +15,20 @@ let studentAnswerLanguage = {};
 let replyPipWindow = null;
 const ADMIN_USER_TYPES = ["sales", "student"];
 let adminState = {
+  mode: "sessions",
   userType: "sales",
   items: [],
   selectedId: "",
   draftTitle: "",
   draftContent: "",
+  sessions: [],
+  sessionsLoading: false,
+  sessionsError: "",
+  selectedSessionId: "",
+  sessionDetail: null,
+  sessionDetailLoading: false,
+  sessionDetailError: "",
+  detailTab: "transcript",
   loading: false,
   saving: false,
   dirty: false,
@@ -137,8 +146,9 @@ async function enterCurrentApp() {
     stopSessionLive();
     sessionId = "";
     state = null;
+    adminState.mode = "sessions";
     renderAdmin();
-    await loadAdminPrompts();
+    await loadAdminSessions();
     return;
   }
   await restoreSessionOrCreate();
@@ -332,6 +342,20 @@ function render() {
 
 function renderAdmin() {
   if (!$("adminApp")) return;
+  const sessionsMode = adminState.mode === "sessions";
+  $("adminSessionsTab").classList.toggle("active", sessionsMode);
+  $("adminPromptsTab").classList.toggle("active", !sessionsMode);
+  $("adminSessionsView").hidden = !sessionsMode;
+  $("adminPromptsView").hidden = sessionsMode;
+  $("adminRefreshPrompts").textContent = sessionsMode ? "Обновить" : "Обновить";
+  if (sessionsMode) {
+    renderAdminSessions();
+    return;
+  }
+  renderAdminPrompts();
+}
+
+function renderAdminPrompts() {
   const list = $("adminPromptList");
   const tabs = document.querySelectorAll("[data-admin-type]");
   for (const tab of tabs) {
@@ -382,6 +406,124 @@ function renderAdmin() {
     : "Обновление еще не приходило";
   $("adminEditorNote").textContent = adminEditorNote(selected);
   renderAdminStatusOnly();
+}
+
+function renderAdminSessions() {
+  const list = $("adminSessionsList");
+  $("adminSessionsStatus").textContent = adminState.sessionsLoading
+    ? "загрузка"
+    : adminState.sessionsError
+      ? "ошибка"
+      : `${adminState.sessions.length} созв.`;
+  $("adminSessionsStatus").className = `status-pill ${adminState.sessionsError ? "err" : adminState.sessionsLoading ? "warn" : "on"}`;
+  $("adminRefreshPrompts").disabled = adminState.sessionsLoading || !isAdminUser();
+
+  if (adminState.sessionsLoading && !adminState.sessions.length) {
+    list.innerHTML = `<div class="empty">Загружаю сессии...</div>`;
+  } else if (adminState.sessionsError) {
+    list.innerHTML = `<div class="empty">Не удалось загрузить созвоны: ${escapeHtml(adminState.sessionsError)}</div>`;
+  } else if (!adminState.sessions.length) {
+    list.innerHTML = `<div class="empty">Пока нет созвонов. Как только пользователи начнут сессии, они появятся здесь.</div>`;
+  } else {
+    list.innerHTML = `
+      <div class="admin-session-row admin-session-head">
+        <div>Пользователь</div>
+        <div>Роль</div>
+        <div>Старт</div>
+        <div>Длительн.</div>
+        <div>Реплики</div>
+        <div>Events</div>
+      </div>
+      ${adminState.sessions.map(adminSessionRowHTML).join("")}
+    `;
+    for (const button of list.querySelectorAll("[data-admin-session]")) {
+      button.onclick = () => selectAdminSession(button.dataset.adminSession);
+    }
+  }
+  renderAdminSessionDetail();
+}
+
+function adminSessionRowHTML(item) {
+  const active = item.session_id === adminState.selectedSessionId ? " active" : "";
+  return `
+    <button class="admin-session-row${active}" data-admin-session="${escapeHtml(item.session_id || "")}">
+      <div class="admin-session-cell primary">
+        <span class="admin-session-email">${escapeHtml(item.user_email || "unknown")}</span>
+        <span class="admin-session-id">${escapeHtml(item.session_id || "")}</span>
+      </div>
+      <div class="admin-session-cell">${escapeHtml(item.user_role || "")}</div>
+      <div class="admin-session-cell">${escapeHtml(formatDateTime(item.created_at))}</div>
+      <div class="admin-session-cell">${escapeHtml(formatDuration(item.duration_seconds || 0))}</div>
+      <div class="admin-session-cell">${escapeHtml(String(item.transcript_count || 0))}</div>
+      <div class="admin-session-cell">${escapeHtml(String(item.event_count || 0))}</div>
+    </button>
+  `;
+}
+
+function renderAdminSessionDetail() {
+  const detail = adminState.sessionDetail;
+  const selected = adminState.sessions.find((item) => item.session_id === adminState.selectedSessionId);
+  $("adminSessionTitle").textContent = selected
+    ? `${selected.user_email || "unknown"} · ${selected.session_id || ""}`
+    : "Выберите созвон";
+  $("adminSessionMeta").textContent = selected
+    ? `${formatDuration(selected.duration_seconds || 0)} · ${selected.event_count || 0} events`
+    : "eventlog";
+  for (const tab of document.querySelectorAll("[data-admin-detail-tab]")) {
+    const active = tab.dataset.adminDetailTab === adminState.detailTab;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  const box = $("adminSessionDetail");
+  if (adminState.sessionDetailLoading) {
+    box.innerHTML = `<div class="empty">Загружаю детали созвона...</div>`;
+    return;
+  }
+  if (adminState.sessionDetailError) {
+    box.innerHTML = `<div class="empty">Не удалось загрузить детали: ${escapeHtml(adminState.sessionDetailError)}</div>`;
+    return;
+  }
+  if (!selected) {
+    box.innerHTML = `<div class="empty">Выберите созвон слева.</div>`;
+    return;
+  }
+  if (!detail) {
+    box.innerHTML = `<div class="empty">Детали еще не загружены.</div>`;
+    return;
+  }
+  if (adminState.detailTab === "events") {
+    const eventsList = Array.isArray(detail.events) ? detail.events : [];
+    box.innerHTML = eventsList.length
+      ? eventsList.slice(-300).map(adminEventHTML).join("")
+      : `<div class="empty">Eventlog пуст.</div>`;
+    return;
+  }
+  const transcript = Array.isArray(detail.transcript) ? detail.transcript : [];
+  box.innerHTML = transcript.length
+    ? transcript.slice(-300).map(adminTranscriptHTML).join("")
+    : `<div class="empty">Транскрипт пуст. Можно переключиться на Eventlog и проверить сырые события.</div>`;
+}
+
+function adminTranscriptHTML(item) {
+  const finalLabel = item.final ? "final" : "partial";
+  const speaker = item.speaker ? ` · ${item.speaker}` : "";
+  return `
+    <div class="admin-transcript-item">
+      <div class="admin-detail-meta">${escapeHtml(roleLabel(item.role || ""))}${escapeHtml(speaker)} · ${escapeHtml(formatTime(item.created_at))} · ${escapeHtml(finalLabel)}</div>
+      <div>${escapeHtml(item.text || "")}</div>
+    </div>
+  `;
+}
+
+function adminEventHTML(event) {
+  const payload = event.data ? JSON.stringify(event.data, null, 2) : "";
+  return `
+    <div class="admin-event-item">
+      <div class="admin-detail-meta">${escapeHtml(event.type || "")} · ${escapeHtml(event.source || "")} · ${escapeHtml(formatTime(event.created_at))}</div>
+      <div>${escapeHtml(event.id || "")}</div>
+      ${payload ? `<pre>${escapeHtml(payload)}</pre>` : ""}
+    </div>
+  `;
 }
 
 function renderAdminStatusOnly() {
@@ -499,6 +641,95 @@ async function loadAdminPrompts() {
   } finally {
     adminState.loading = false;
     renderAdmin();
+  }
+}
+
+async function loadAdminSessions() {
+  adminState.sessionsLoading = true;
+  adminState.sessionsError = "";
+  adminState.sessionDetailError = "";
+  renderAdmin();
+  try {
+    const res = await fetch("/v1/admin/sessions?limit=200", {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (res.status === 401) {
+      currentUser = null;
+      renderAuth(true);
+      return;
+    }
+    if (res.status === 403) {
+      adminState.sessions = [];
+      adminState.sessionsError = "нет admin-доступа";
+      return;
+    }
+    if (!res.ok) {
+      throw new Error(await responseError(res));
+    }
+    const data = await res.json();
+    adminState.sessions = Array.isArray(data.items) ? data.items : [];
+    const hasSelection = adminState.sessions.some((item) => item.session_id === adminState.selectedSessionId);
+    if (!hasSelection) {
+      adminState.selectedSessionId = adminState.sessions[0]?.session_id || "";
+      adminState.sessionDetail = null;
+    }
+  } catch (error) {
+    adminState.sessionsError = error.message;
+  } finally {
+    adminState.sessionsLoading = false;
+    renderAdmin();
+  }
+  if (adminState.selectedSessionId && !adminState.sessionDetail) {
+    await loadAdminSessionDetail(adminState.selectedSessionId);
+  }
+}
+
+async function selectAdminSession(sessionID) {
+  if (!sessionID || sessionID === adminState.selectedSessionId) return;
+  adminState.selectedSessionId = sessionID;
+  adminState.sessionDetail = null;
+  adminState.sessionDetailError = "";
+  renderAdmin();
+  await loadAdminSessionDetail(sessionID);
+}
+
+async function loadAdminSessionDetail(sessionID) {
+  adminState.sessionDetailLoading = true;
+  adminState.sessionDetailError = "";
+  renderAdmin();
+  try {
+    const res = await fetch(`/v1/admin/sessions/${encodeURIComponent(sessionID)}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (res.status === 401) {
+      currentUser = null;
+      renderAuth(true);
+      return;
+    }
+    if (!res.ok) {
+      throw new Error(await responseError(res));
+    }
+    adminState.sessionDetail = await res.json();
+  } catch (error) {
+    adminState.sessionDetailError = error.message;
+  } finally {
+    adminState.sessionDetailLoading = false;
+    renderAdmin();
+  }
+}
+
+async function selectAdminMode(mode) {
+  if (!["sessions", "prompts"].includes(mode) || adminState.mode === mode) return;
+  if (adminState.dirty && !confirm("Оставить несохраненные изменения?")) return;
+  adminState.mode = mode;
+  renderAdmin();
+  if (mode === "sessions" && !adminState.sessions.length && !adminState.sessionsLoading) {
+    await loadAdminSessions();
+  }
+  if (mode === "prompts" && !adminState.items.length && !adminState.loading) {
+    await loadAdminPrompts();
   }
 }
 
@@ -794,6 +1025,17 @@ function formatDateTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatDuration(value) {
+  const seconds = Math.max(0, Number(value || 0));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = seconds % 60;
+  if (minutes < 60) return restSeconds ? `${minutes}m ${restSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
 }
 
 function renderReply() {
@@ -1708,7 +1950,18 @@ $("studentClear").onclick = () => {
 for (const tab of document.querySelectorAll("[data-admin-type]")) {
   tab.onclick = () => selectAdminUserType(tab.dataset.adminType);
 }
-$("adminRefreshPrompts").onclick = () => loadAdminPrompts().catch((error) => showToast(error.message));
+$("adminSessionsTab").onclick = () => selectAdminMode("sessions").catch((error) => showToast(error.message));
+$("adminPromptsTab").onclick = () => selectAdminMode("prompts").catch((error) => showToast(error.message));
+for (const tab of document.querySelectorAll("[data-admin-detail-tab]")) {
+  tab.onclick = () => {
+    adminState.detailTab = tab.dataset.adminDetailTab || "transcript";
+    renderAdmin();
+  };
+}
+$("adminRefreshPrompts").onclick = () => {
+  const loader = adminState.mode === "sessions" ? loadAdminSessions : loadAdminPrompts;
+  loader().catch((error) => showToast(error.message));
+};
 $("adminNewPrompt").onclick = () => createAdminPromptDraft("prompt");
 $("adminNewPlaybook").onclick = () => createAdminPromptDraft("playbook");
 $("adminPromptTitle").oninput = markAdminDirty;

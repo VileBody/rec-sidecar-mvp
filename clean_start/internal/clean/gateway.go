@@ -81,6 +81,8 @@ func (g *Gateway) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /v1/auth/login", g.login)
 	mux.HandleFunc("GET /v1/auth/me", g.me)
 	mux.HandleFunc("POST /v1/auth/logout", g.logout)
+	mux.HandleFunc("GET /v1/admin/sessions", g.listAdminSessions)
+	mux.HandleFunc("GET /v1/admin/sessions/{session_id}", g.getAdminSession)
 	mux.HandleFunc("GET /v1/admin/prompts", g.listAdminPrompts)
 	mux.HandleFunc("PUT /v1/admin/prompts/{prompt_id}", g.upsertAdminPrompt)
 	mux.HandleFunc("GET /v1/admin/prompt-configs", g.listPromptConfigs)
