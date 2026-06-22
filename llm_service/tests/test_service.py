@@ -1714,6 +1714,46 @@ async def test_student_translate_uses_gpt_oss_without_sales_prompt():
 
 
 @pytest.mark.anyio
+async def test_student_translate_falls_back_to_vertex_when_cerebras_fails():
+    urls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        if "cerebras.test" in str(request.url):
+            return httpx.Response(403, text="cloudflare blocked")
+        return httpx.Response(
+            200,
+            text='[{"candidates":[{"content":{"parts":[{"text":"Что такое асинхронность?"}]}}]}]',
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                vertex_project="project",
+                vertex_access_token="token",
+            ),
+            client,
+        )
+
+        response = await orchestrator.student_translate(
+            StudentTranslateRequest(
+                run_id="run",
+                text="What is async?",
+                direction="en-ru",
+            )
+        )
+
+        assert response.text == "Что такое асинхронность?"
+        assert response.provider == "vertex"
+        assert response.model == "gemini-3.5-flash"
+        assert any("cerebras.test" in url for url in urls)
+        assert any("streamGenerateContent" in url for url in urls)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_student_answer_stream_uses_gemini_single_answer_prompt():
     calls = []
 

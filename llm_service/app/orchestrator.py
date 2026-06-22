@@ -278,8 +278,6 @@ class LlmOrchestrator:
     async def student_translate(
         self, request: StudentTranslateRequest
     ) -> StudentTranslateResponse:
-        if not self.cerebras.configured():
-            raise ProviderError("cerebras", "Cerebras is not configured for student translation")
         source, target = ("English", "Russian")
         if request.direction == "ru-en":
             source, target = ("Russian", "English")
@@ -287,18 +285,50 @@ class LlmOrchestrator:
             f"Direction: {source} -> {target}\n\n"
             f"Text:\n{request.text.strip()}\n"
         )
-        text = await self.cerebras.text(
-            model=self.settings.student_translation_model,
+        if self.cerebras.configured():
+            try:
+                text = await self.cerebras.text(
+                    model=self.settings.student_translation_model,
+                    system_prompt=STUDENT_TRANSLATION_SYSTEM_PROMPT,
+                    user_content=user_content,
+                    temperature=0.0,
+                    prompt_cache_key=f"rec-sidecar-student-translate-v1-{request.run_id}",
+                    max_tokens=1200,
+                )
+                return StudentTranslateResponse(
+                    text=text.strip(),
+                    provider="cerebras",
+                    model=self.settings.student_translation_model,
+                )
+            except ProviderError as exc:
+                logger.warning(
+                    "student_translate_cerebras_fallback run_id=%s status=%s error=%s",
+                    request.run_id,
+                    exc.status_code,
+                    str(exc)[:240],
+                )
+                if not self.vertex.configured():
+                    raise
+
+        if not self.vertex.configured():
+            raise ProviderError("student_translation", "no configured translation provider")
+
+        parts: list[str] = []
+        async for delta in self.vertex.stream_text(
+            model=self.settings.student_answer_model,
             system_prompt=STUDENT_TRANSLATION_SYSTEM_PROMPT,
             user_content=user_content,
             temperature=0.0,
-            prompt_cache_key=f"rec-sidecar-student-translate-v1-{request.run_id}",
-            max_tokens=1200,
-        )
+            thinking_level=self.settings.vertex_thinking_level,
+        ):
+            parts.append(delta)
+        text = "".join(parts).strip()
+        if not text:
+            raise ProviderError("vertex", "empty student translation response")
         return StudentTranslateResponse(
-            text=text.strip(),
-            provider="cerebras",
-            model=self.settings.student_translation_model,
+            text=text,
+            provider="vertex",
+            model=self.settings.student_answer_model,
         )
 
     async def student_answer_stream(
