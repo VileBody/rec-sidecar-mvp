@@ -1793,9 +1793,12 @@ async def test_student_answer_stream_uses_gemini_single_answer_prompt():
             {"event": "done"},
         ]
         assert calls[0]["generationConfig"]["temperature"] == 0.35
-        assert "учебный помощник" in calls[0]["systemInstruction"]["parts"][0]["text"]
-        assert "TL;DR:" not in calls[0]["systemInstruction"]["parts"][0]["text"]
-        assert "sales" not in calls[0]["systemInstruction"]["parts"][0]["text"].lower()
+        system_prompt = calls[0]["systemInstruction"]["parts"][0]["text"]
+        assert "учебный помощник" in system_prompt
+        assert "Всегда отвечай по-русски" in system_prompt
+        assert "английскую версию сделает отдельный фоновый перевод" in system_prompt
+        assert "TL;DR:" not in system_prompt
+        assert "sales" not in system_prompt.lower()
     finally:
         await client.aclose()
 
@@ -1841,6 +1844,8 @@ async def test_student_help_button_uses_strict_tldr_examples_prompt():
         assert "TL;DR:" in system_prompt
         assert "Пример 1:" in system_prompt
         assert "Не используй метафоры" in system_prompt
+        assert "Всегда пиши по-русски" in system_prompt
+        assert "английскую версию сделает отдельный фоновый перевод" in system_prompt
         assert "Кнопка Помоги" in user_text
     finally:
         await client.aclose()

@@ -115,6 +115,24 @@ func TestStoreApplyStudentTranslationAndAnswer(t *testing.T) {
 	if state.Student.AnswerItems[1].Role != "assistant" || state.Student.AnswerItems[1].Text != "Это вопрос о событии." || state.Student.AnswerItems[1].Streaming {
 		t.Fatalf("student answer bubble = %#v", state.Student.AnswerItems[1])
 	}
+
+	state = store.Apply(NewEvent(sessionID, EventStudentAnswerTranslateStarted, "test", StudentAnswerTranslateStartedData{
+		GenerationID: "stu-1",
+		Direction:    StudentDirectionRuEn,
+	}))
+	if !state.Student.AnswerItems[1].TranslationStreaming || state.Student.AnswerItems[1].TranslationDirection != StudentDirectionRuEn {
+		t.Fatalf("student answer translation should start on assistant bubble: %#v", state.Student.AnswerItems[1])
+	}
+	state = store.Apply(NewEvent(sessionID, EventStudentAnswerTranslateDone, "test", StudentAnswerTranslateDoneData{
+		GenerationID: "stu-1",
+		Text:         "This is a question about the event.",
+		Direction:    StudentDirectionRuEn,
+		Provider:     "cerebras",
+		Model:        "gpt-oss-120b",
+	}))
+	if state.Student.AnswerItems[1].TranslationStreaming || state.Student.AnswerItems[1].TranslationText != "This is a question about the event." {
+		t.Fatalf("student answer translation should finish on assistant bubble: %#v", state.Student.AnswerItems[1])
+	}
 }
 
 func TestStoreStudentDirectionDoesNotRewindFromOldTranslation(t *testing.T) {

@@ -45,13 +45,18 @@ type StudentTranslationItem struct {
 }
 
 type StudentAnswerItem struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Text      string    `json:"text"`
-	Trigger   string    `json:"trigger,omitempty"`
-	Model     string    `json:"model,omitempty"`
-	Streaming bool      `json:"streaming,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                   string    `json:"id"`
+	Role                 string    `json:"role"`
+	Text                 string    `json:"text"`
+	Trigger              string    `json:"trigger,omitempty"`
+	Model                string    `json:"model,omitempty"`
+	Streaming            bool      `json:"streaming,omitempty"`
+	TranslationText      string    `json:"translation_text,omitempty"`
+	TranslationDirection string    `json:"translation_direction,omitempty"`
+	TranslationProvider  string    `json:"translation_provider,omitempty"`
+	TranslationModel     string    `json:"translation_model,omitempty"`
+	TranslationStreaming bool      `json:"translation_streaming,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
 }
 
 type StudentState struct {
@@ -286,6 +291,14 @@ func (s *Store) Apply(event Event) SessionState {
 	case EventStudentAnswerCanceled:
 		state.Student.AnswerStreaming = false
 		state.Student.AnswerItems = cancelStudentAnswerItem(state.Student.AnswerItems, state.Student.AnswerGenerationID)
+	case EventStudentAnswerTranslateStarted:
+		if data, err := DecodeData[StudentAnswerTranslateStartedData](event); err == nil {
+			state.Student.AnswerItems = startStudentAnswerTranslation(state.Student.AnswerItems, data.GenerationID, data.Direction)
+		}
+	case EventStudentAnswerTranslateDone:
+		if data, err := DecodeData[StudentAnswerTranslateDoneData](event); err == nil {
+			state.Student.AnswerItems = finishStudentAnswerTranslation(state.Student.AnswerItems, data.GenerationID, data.Text, data.Direction, data.Provider, data.Model)
+		}
 	case EventStageCandidate:
 		if data, err := DecodeData[StageData](event); err == nil {
 			state.StageCandidate = &data
@@ -379,6 +392,32 @@ func cancelStudentAnswerItem(items []StudentAnswerItem, generationID string) []S
 				return append(items[:i], items[i+1:]...)
 			}
 			items[i].Streaming = false
+			return items
+		}
+	}
+	return items
+}
+
+func startStudentAnswerTranslation(items []StudentAnswerItem, generationID, direction string) []StudentAnswerItem {
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].ID == generationID {
+			items[i].TranslationDirection = direction
+			items[i].TranslationStreaming = true
+			return items
+		}
+	}
+	return items
+}
+
+func finishStudentAnswerTranslation(items []StudentAnswerItem, generationID, text, direction, provider, model string) []StudentAnswerItem {
+	text = strings.TrimSpace(text)
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].ID == generationID {
+			items[i].TranslationText = text
+			items[i].TranslationDirection = direction
+			items[i].TranslationProvider = provider
+			items[i].TranslationModel = model
+			items[i].TranslationStreaming = false
 			return items
 		}
 	}

@@ -11,6 +11,7 @@ let captureStates = {
 const SPEAKER_STORAGE_KEY = "rec-coach-seller-speaker";
 let sellerSpeaker = localStorage.getItem(SPEAKER_STORAGE_KEY) || "";
 let pendingStudentDirection = "";
+let studentAnswerLanguage = {};
 let replyPipWindow = null;
 const ADMIN_USER_TYPES = ["sales", "student"];
 let adminState = {
@@ -883,6 +884,7 @@ function renderStudent() {
   } else {
     $("studentAssistLog").innerHTML = `<div class="empty">Нажми «Помоги» или задай вопрос ниже.</div>`;
   }
+  bindStudentAnswerLanguageSwitches();
 }
 
 function studentItemHTML(text, meta) {
@@ -894,19 +896,68 @@ function studentAnswerBubbleHTML(item) {
   const label = role === "user"
     ? (item.trigger === "button" ? "Помоги" : "Вопрос")
     : "Ответ";
+  const languages = studentAnswerLanguages(item);
+  const translationReady = Boolean(item.translation_text);
+  const showTranslation = role === "assistant" && translationReady && studentAnswerLanguage[item.id] === "translation";
+  const visibleLanguage = showTranslation ? languages.translation : languages.original;
   const metaBits = [label, formatTime(item.created_at)];
   if (item.model) metaBits.push(item.model);
+  if (role === "assistant") metaBits.push(visibleLanguage);
   if (item.streaming) metaBits.push("пишет");
-  const text = item.text || (item.streaming ? "Думаю..." : "");
+  if (item.translation_streaming && role === "assistant") metaBits.push(`${languages.translation} готовится`);
+  const text = showTranslation
+    ? item.translation_text
+    : (item.text || (item.streaming ? "Думаю..." : ""));
+  const switchButton = role === "assistant"
+    ? studentAnswerSwitchButton(item, showTranslation, translationReady, languages)
+    : "";
   const body = role === "assistant"
     ? `<div class="rich-text">${renderRichText(text)}</div>`
     : `<div class="plain-text">${escapeHtml(text)}</div>`;
   return `
     <div class="student-answer-bubble ${role}">
-      <div class="meta">${metaBits.map(escapeHtml).join(" · ")}</div>
+      <div class="student-answer-head">
+        <div class="meta">${metaBits.map(escapeHtml).join(" · ")}</div>
+        ${switchButton}
+      </div>
       ${body}
     </div>
   `;
+}
+
+function studentAnswerLanguages(item) {
+  return item.translation_direction === "en-ru"
+    ? { original: "EN", translation: "RU" }
+    : { original: "RU", translation: "EN" };
+}
+
+function studentAnswerSwitchButton(item, showTranslation, translationReady, languages) {
+  const waiting = item.translation_streaming && !translationReady;
+  const nextLanguage = showTranslation ? languages.original : languages.translation;
+  const label = waiting ? `${languages.translation}...` : nextLanguage;
+  const title = waiting
+    ? `Перевод на ${languages.translation} готовится`
+    : `Показать ${nextLanguage}`;
+  return `
+    <button
+      type="button"
+      class="answer-switch"
+      data-student-answer-switch="${escapeHtml(item.id || "")}"
+      ${translationReady ? "" : "disabled"}
+      title="${escapeHtml(title)}"
+    >${escapeHtml(label)}</button>
+  `;
+}
+
+function bindStudentAnswerLanguageSwitches() {
+  for (const button of document.querySelectorAll("[data-student-answer-switch]")) {
+    button.onclick = () => {
+      const id = button.dataset.studentAnswerSwitch;
+      if (!id) return;
+      studentAnswerLanguage[id] = studentAnswerLanguage[id] === "translation" ? "original" : "translation";
+      renderStudent();
+    };
+  }
 }
 
 function sourceLanguageForDirection(direction) {

@@ -643,13 +643,46 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   align-self: flex-start;
 }
 
-.student-answer-bubble .meta {
+.student-answer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 6px;
+}
+
+.student-answer-bubble .meta {
+  min-width: 0;
   color: var(--muted);
   font-size: 11px;
   font-weight: 850;
   letter-spacing: .1em;
   text-transform: uppercase;
+}
+
+.answer-switch {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 9px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .06em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.answer-switch:hover:not(:disabled) {
+  border-color: #9bb8ef;
+  background: #eef4ff;
+}
+
+.answer-switch:disabled {
+  cursor: default;
+  opacity: .55;
 }
 
 .plain-text {

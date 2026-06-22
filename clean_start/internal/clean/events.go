@@ -10,37 +10,39 @@ import (
 )
 
 const (
-	EventSessionCreated          = "session.created"
-	EventSellerInput             = "seller.input"
-	EventClientPartial           = "client.partial"
-	EventClientFinal             = "client.final"
-	EventSellerRequest           = "seller.request"
-	EventSellerStarted           = "seller.started"
-	EventSellerDelta             = "seller.delta"
-	EventSellerDone              = "seller.done"
-	EventSellerCanceled          = "seller.canceled"
-	EventAssistRequest           = "assist.request"
-	EventAssistStarted           = "assist.started"
-	EventAssistFastDone          = "assist.fast.done"
-	EventAssistDelta             = "assist.delta"
-	EventAssistDone              = "assist.done"
-	EventAssistCanceled          = "assist.canceled"
-	EventStudentInput            = "student.input"
-	EventStudentDirection        = "student.direction"
-	EventStudentTranslateStarted = "student.translate.started"
-	EventStudentTranslateDone    = "student.translate.done"
-	EventStudentAnswerRequest    = "student.answer.request"
-	EventStudentAnswerStarted    = "student.answer.started"
-	EventStudentAnswerDelta      = "student.answer.delta"
-	EventStudentAnswerDone       = "student.answer.done"
-	EventStudentAnswerCanceled   = "student.answer.canceled"
-	EventSTTPartial              = "stt.partial"
-	EventSTTFinal                = "stt.final"
-	EventStageRequest            = "stage.request"
-	EventStageCandidate          = "stage.candidate"
-	EventStageCommitted          = "stage.committed"
-	EventScorecardUpdate         = "scorecard.update"
-	EventError                   = "error"
+	EventSessionCreated                = "session.created"
+	EventSellerInput                   = "seller.input"
+	EventClientPartial                 = "client.partial"
+	EventClientFinal                   = "client.final"
+	EventSellerRequest                 = "seller.request"
+	EventSellerStarted                 = "seller.started"
+	EventSellerDelta                   = "seller.delta"
+	EventSellerDone                    = "seller.done"
+	EventSellerCanceled                = "seller.canceled"
+	EventAssistRequest                 = "assist.request"
+	EventAssistStarted                 = "assist.started"
+	EventAssistFastDone                = "assist.fast.done"
+	EventAssistDelta                   = "assist.delta"
+	EventAssistDone                    = "assist.done"
+	EventAssistCanceled                = "assist.canceled"
+	EventStudentInput                  = "student.input"
+	EventStudentDirection              = "student.direction"
+	EventStudentTranslateStarted       = "student.translate.started"
+	EventStudentTranslateDone          = "student.translate.done"
+	EventStudentAnswerRequest          = "student.answer.request"
+	EventStudentAnswerStarted          = "student.answer.started"
+	EventStudentAnswerDelta            = "student.answer.delta"
+	EventStudentAnswerDone             = "student.answer.done"
+	EventStudentAnswerCanceled         = "student.answer.canceled"
+	EventStudentAnswerTranslateStarted = "student.answer.translate.started"
+	EventStudentAnswerTranslateDone    = "student.answer.translate.done"
+	EventSTTPartial                    = "stt.partial"
+	EventSTTFinal                      = "stt.final"
+	EventStageRequest                  = "stage.request"
+	EventStageCandidate                = "stage.candidate"
+	EventStageCommitted                = "stage.committed"
+	EventScorecardUpdate               = "scorecard.update"
+	EventError                         = "error"
 )
 
 type Event struct {
@@ -121,6 +123,19 @@ type StudentAnswerDoneData struct {
 	GenerationID string `json:"generation_id"`
 	Text         string `json:"text"`
 	Model        string `json:"model,omitempty"`
+}
+
+type StudentAnswerTranslateStartedData struct {
+	GenerationID string `json:"generation_id"`
+	Direction    string `json:"direction"`
+}
+
+type StudentAnswerTranslateDoneData struct {
+	GenerationID string `json:"generation_id"`
+	Text         string `json:"text"`
+	Direction    string `json:"direction"`
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
 }
 
 type SellerStartedData struct {

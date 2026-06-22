@@ -166,5 +166,36 @@ func (w *StudentWorker) startAnswer(parent context.Context, sessionID string, me
 			Text:         answer,
 			Model:        model,
 		}))
+		w.startAnswerTranslation(parent, sessionID, generationID, answer)
+	}()
+}
+
+func (w *StudentWorker) startAnswerTranslation(parent context.Context, sessionID, generationID, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	direction := StudentDirectionRuEn
+	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerTranslateStarted, "student-worker", StudentAnswerTranslateStartedData{
+		GenerationID: generationID,
+		Direction:    direction,
+	}))
+	go func() {
+		started := time.Now()
+		ctx, cancel := context.WithTimeout(parent, w.cfg.LLMTimeout)
+		defer cancel()
+		translated, provider, model, err := w.llm.StudentTranslate(ctx, sessionID, text, direction)
+		if err != nil {
+			w.logger.Warn("student answer translation failed", "session_id", sessionID, "generation_id", generationID, "error", err)
+			return
+		}
+		w.logger.Info("student answer translation done", "session_id", sessionID, "generation_id", generationID, "direction", direction, "provider", provider, "model", model, "elapsed_ms", time.Since(started).Milliseconds())
+		_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerTranslateDone, "student-worker", StudentAnswerTranslateDoneData{
+			GenerationID: generationID,
+			Text:         translated,
+			Direction:    direction,
+			Provider:     provider,
+			Model:        model,
+		}))
 	}()
 }
