@@ -131,9 +131,6 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 				mem.Messages = append(mem.Messages, Message{Role: "client", Text: data.Text, CreatedAt: event.CreatedAt})
 				mem.ClientPartial = ""
 			case "student_original":
-				if data.Direction != "" {
-					mem.StudentDirection = data.Direction
-				}
 				mem.StudentOriginals = append(mem.StudentOriginals, Message{Role: "student_original", Text: data.Text, CreatedAt: event.CreatedAt})
 			}
 		}
@@ -150,9 +147,6 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 		}
 	case EventStudentTranslateDone:
 		if data, err := DecodeData[StudentTranslateDoneData](event); err == nil && data.Text != "" {
-			if data.Direction != "" {
-				mem.StudentDirection = data.Direction
-			}
 			mem.StudentTranslations = append(mem.StudentTranslations, Message{Role: "translation", Text: data.Text, CreatedAt: event.CreatedAt})
 		}
 	case EventStageCandidate, EventStageCommitted:

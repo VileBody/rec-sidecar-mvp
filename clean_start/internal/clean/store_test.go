@@ -107,6 +107,34 @@ func TestStoreApplyStudentTranslationAndAnswer(t *testing.T) {
 	}
 }
 
+func TestStoreStudentDirectionDoesNotRewindFromOldTranslation(t *testing.T) {
+	store := NewStore()
+	sessionID := "sess-student-direction"
+	store.Apply(NewEvent(sessionID, EventSessionCreated, "test", map[string]any{}))
+	store.Apply(NewEvent(sessionID, EventStudentDirection, "test", StudentDirectionData{Direction: StudentDirectionEnRu}))
+	state := store.Apply(NewEvent(sessionID, EventStudentDirection, "test", StudentDirectionData{Direction: StudentDirectionRuEn}))
+	if state.Student.Direction != StudentDirectionRuEn {
+		t.Fatalf("direction before old translation = %q", state.Student.Direction)
+	}
+
+	state = store.Apply(NewEvent(sessionID, EventStudentTranslateDone, "test", StudentTranslateDoneData{
+		GenerationID:  "trn-old",
+		SourceEventID: "src-old",
+		SourceText:    "Where are you?",
+		Text:          "Где ты?",
+		Direction:     StudentDirectionEnRu,
+		Provider:      "cerebras",
+		Model:         "gpt-oss-120b",
+	}))
+
+	if state.Student.Direction != StudentDirectionRuEn {
+		t.Fatalf("old translation rewound direction to %q", state.Student.Direction)
+	}
+	if len(state.Student.Translations) != 1 || state.Student.Translations[0].Direction != StudentDirectionEnRu {
+		t.Fatalf("translation item should keep its own direction: %#v", state.Student.Translations)
+	}
+}
+
 func TestStoreApplyStudentOriginalFinalReplacesEquivalentPartial(t *testing.T) {
 	store := NewStore()
 	sessionID := "sess-student-stt"

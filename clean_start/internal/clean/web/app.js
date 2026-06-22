@@ -1003,7 +1003,6 @@ async function updateStudentDirection() {
   applyStudentDirectionToCapture(direction);
   renderStudent();
   await postEvent({ type: "student.direction", direction });
-  reconnectCaptureSTT("system", "student_direction_changed");
 }
 
 function applyStudentDirectionToCapture(direction) {

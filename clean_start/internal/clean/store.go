@@ -226,17 +226,11 @@ func (s *Store) Apply(event Event) SessionState {
 		if data, err := DecodeData[StudentTranslateStartedData](event); err == nil {
 			state.Student.TranslationStreaming = true
 			state.Student.TranslationGenerationID = data.GenerationID
-			if data.Direction != "" {
-				state.Student.Direction = data.Direction
-			}
 		}
 	case EventStudentTranslateDone:
 		if data, err := DecodeData[StudentTranslateDoneData](event); err == nil {
 			state.Student.TranslationStreaming = false
 			state.Student.TranslationGenerationID = data.GenerationID
-			if data.Direction != "" {
-				state.Student.Direction = data.Direction
-			}
 			state.Student.Translations = appendStudentTranslation(state.Student.Translations, StudentTranslationItem{
 				ID: data.GenerationID, SourceEventID: data.SourceEventID, SourceText: data.SourceText, Text: data.Text, Direction: data.Direction, Provider: data.Provider, Model: data.Model, CreatedAt: event.CreatedAt,
 			})

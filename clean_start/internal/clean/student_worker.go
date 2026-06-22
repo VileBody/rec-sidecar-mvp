@@ -45,11 +45,11 @@ func (w *StudentWorker) Run(ctx context.Context) error {
 		switch event.Type {
 		case EventStudentInput:
 			data, _ := DecodeData[StudentInputData](event)
-			w.startTranslation(ctx, event.SessionID, event.ID, data.Text, data.Direction)
+			w.startTranslation(ctx, event.SessionID, event.ID, data.Text, effectiveStudentDirection(data.Direction, mem))
 		case EventSTTFinal:
 			data, _ := DecodeData[SpeechData](event)
 			if data.Role == "student_original" {
-				w.startTranslation(ctx, event.SessionID, event.ID, data.Text, data.Direction)
+				w.startTranslation(ctx, event.SessionID, event.ID, data.Text, effectiveStudentDirection("", mem))
 			}
 		case EventStudentAnswerRequest:
 			data, _ := DecodeData[StudentAnswerRequestData](event)
@@ -75,6 +75,18 @@ func (w *StudentWorker) Shutdown(context.Context) error {
 		cancel()
 	}
 	return nil
+}
+
+func effectiveStudentDirection(eventDirection string, mem *sessionMemory) string {
+	for _, direction := range []string{eventDirection, mem.StudentDirection, StudentDirectionEnRu} {
+		if strings.TrimSpace(direction) == "" {
+			continue
+		}
+		if normalized, err := normalizeStudentDirection(direction); err == nil {
+			return normalized
+		}
+	}
+	return StudentDirectionEnRu
 }
 
 func (w *StudentWorker) startTranslation(parent context.Context, sessionID, sourceEventID, text, direction string) {
