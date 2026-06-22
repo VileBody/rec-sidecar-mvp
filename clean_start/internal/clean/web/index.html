@@ -219,25 +219,27 @@
         <button id="studentHelp" class="primary">Помоги</button>
       </header>
 
-      <section class="card section">
-        <p class="eyebrow">ответ</p>
-        <div class="chat">
-          <div id="studentAssistLog" class="chat-log">
-            <div class="empty">Нажми «Помоги» или задай вопрос ниже.</div>
-          </div>
-          <textarea id="studentQuestion" rows="4" placeholder="Спроси по переписке или переводу"></textarea>
-          <div class="action-row">
-            <button id="studentAsk" class="blue">Спросить</button>
-            <button id="studentClear" class="ghost">Очистить</button>
+      <section class="card section student-assist-section">
+        <div class="student-assist-chat">
+          <p class="eyebrow">ответ</p>
+          <div class="chat student-chat">
+            <div id="studentAssistLog" class="chat-log">
+              <div class="empty">Нажми «Помоги» или задай вопрос ниже.</div>
+            </div>
+            <textarea id="studentQuestion" rows="4" placeholder="Спроси по переписке или переводу"></textarea>
+            <div class="action-row">
+              <button id="studentAsk" class="blue">Спросить</button>
+              <button id="studentClear" class="ghost">Очистить</button>
+            </div>
           </div>
         </div>
-      </section>
 
-      <section class="card section">
-        <p class="eyebrow">ручной ввод</p>
-        <textarea id="studentManualText" rows="5" placeholder="Вставь фразу на исходном языке"></textarea>
-        <div class="action-row manual-controls">
-          <button id="studentSendOriginal" class="ghost">Добавить и перевести</button>
+        <div class="student-manual-block">
+          <p class="eyebrow">ручной ввод</p>
+          <textarea id="studentManualText" rows="5" placeholder="Вставь фразу на исходном языке"></textarea>
+          <div class="action-row manual-controls">
+            <button id="studentSendOriginal" class="ghost">Добавить и перевести</button>
+          </div>
         </div>
       </section>
     </section>

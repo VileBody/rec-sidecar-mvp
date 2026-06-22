@@ -898,10 +898,13 @@ function studentAnswerBubbleHTML(item) {
   if (item.model) metaBits.push(item.model);
   if (item.streaming) metaBits.push("пишет");
   const text = item.text || (item.streaming ? "Думаю..." : "");
+  const body = role === "assistant"
+    ? `<div class="rich-text">${renderRichText(text)}</div>`
+    : `<div class="plain-text">${escapeHtml(text)}</div>`;
   return `
     <div class="student-answer-bubble ${role}">
       <div class="meta">${metaBits.map(escapeHtml).join(" · ")}</div>
-      ${escapeHtml(text)}
+      ${body}
     </div>
   `;
 }
@@ -1535,6 +1538,56 @@ function escapeHtml(value) {
     '"': "&quot;",
     "'": "&#039;",
   }[ch]));
+}
+
+function renderRichText(value) {
+  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let list = "";
+  const closeList = () => {
+    if (!list) return;
+    html.push(`</${list}>`);
+    list = "";
+  };
+  const openList = (type) => {
+    if (list === type) return;
+    closeList();
+    list = type;
+    html.push(`<${type}>`);
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      continue;
+    }
+    const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      openList("ul");
+      html.push(`<li>${renderInlineMarkdown(bullet[1])}</li>`);
+      continue;
+    }
+    const numbered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (numbered) {
+      openList("ol");
+      html.push(`<li>${renderInlineMarkdown(numbered[1])}</li>`);
+      continue;
+    }
+    closeList();
+    html.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
+  }
+  closeList();
+  return html.join("") || "";
+}
+
+function renderInlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/_([^_]+)_/g, "<em>$1</em>");
 }
 
 $("newSession").onclick = () => {

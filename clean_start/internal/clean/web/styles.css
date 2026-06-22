@@ -540,7 +540,12 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
 }
 
 .student-app {
-  grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr) minmax(320px, .78fr);
+  grid-template-columns: minmax(320px, .88fr) minmax(420px, 1fr) minmax(340px, .78fr);
+  column-gap: 12px;
+}
+
+.student-app .assist-col {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .student-pane {
@@ -555,6 +560,33 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   flex-direction: column;
   gap: 12px;
   min-height: 100%;
+}
+
+.student-assist-section {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 14px;
+}
+
+.student-assist-chat,
+.student-chat {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.student-chat {
+  flex: 1 1 auto;
+}
+
+.student-app #studentAssistLog {
+  flex: 1 1 auto;
+  max-height: none;
+}
+
+.student-manual-block {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
 }
 
 .student-item {
@@ -598,7 +630,6 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   background: var(--paper-soft);
   line-height: 1.38;
   font-size: 15px;
-  white-space: pre-wrap;
   word-break: break-word;
 }
 
@@ -619,6 +650,38 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   font-weight: 850;
   letter-spacing: .1em;
   text-transform: uppercase;
+}
+
+.plain-text {
+  white-space: pre-wrap;
+}
+
+.rich-text {
+  display: grid;
+  gap: 8px;
+}
+
+.rich-text p {
+  margin: 0;
+}
+
+.rich-text ul,
+.rich-text ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.rich-text li + li {
+  margin-top: 5px;
+}
+
+.rich-text code {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1px 5px;
+  background: #eef1f6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: .92em;
 }
 
 .manual-controls {
