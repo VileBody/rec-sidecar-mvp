@@ -12,7 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-//go:embed web/index.html
+//go:embed web/index.html web/styles.css web/app.js
 var gatewayWeb embed.FS
 
 type Gateway struct {
@@ -75,6 +75,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", g.index)
+	mux.HandleFunc("GET /static/{asset}", g.staticAsset)
 	mux.HandleFunc("GET /healthz", g.healthz)
 	mux.HandleFunc("POST /v1/auth/register", g.register)
 	mux.HandleFunc("POST /v1/auth/login", g.login)

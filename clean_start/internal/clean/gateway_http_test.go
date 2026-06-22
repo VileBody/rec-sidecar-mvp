@@ -239,12 +239,18 @@ func TestWriteSSE(t *testing.T) {
 }
 
 func TestGatewayWebIncludesAuthControls(t *testing.T) {
-	raw, err := gatewayWeb.ReadFile("web/index.html")
+	indexRaw, err := gatewayWeb.ReadFile("web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
-	html := string(raw)
+	appRaw, err := gatewayWeb.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(indexRaw) + "\n" + string(appRaw)
 	for _, want := range []string{
+		`/static/styles.css`,
+		`/static/app.js`,
 		`id="authPanel"`,
 		`/v1/auth/me`,
 		`/v1/auth/login`,
@@ -260,5 +266,42 @@ func TestGatewayWebIncludesAuthControls(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("index.html missing %q", want)
 		}
+	}
+}
+
+func TestGatewayStaticAssets(t *testing.T) {
+	g := newHTTPTestGateway(Config{})
+	for _, tc := range []struct {
+		path        string
+		asset       string
+		contentType string
+		contains    string
+	}{
+		{path: "/static/styles.css", asset: "styles.css", contentType: "text/css; charset=utf-8", contains: ".app"},
+		{path: "/static/app.js", asset: "app.js", contentType: "text/javascript; charset=utf-8", contains: "function render"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req.SetPathValue("asset", tc.asset)
+		rec := httptest.NewRecorder()
+
+		g.staticAsset(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != tc.contentType {
+			t.Fatalf("%s content-type = %q", tc.path, got)
+		}
+		if !strings.Contains(rec.Body.String(), tc.contains) {
+			t.Fatalf("%s missing %q", tc.path, tc.contains)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/static/nope.txt", nil)
+	req.SetPathValue("asset", "nope.txt")
+	rec := httptest.NewRecorder()
+	g.staticAsset(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown asset status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }

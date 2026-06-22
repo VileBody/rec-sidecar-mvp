@@ -51,6 +51,28 @@ func (g *Gateway) index(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(raw)
 }
 
+func (g *Gateway) staticAsset(w http.ResponseWriter, r *http.Request) {
+	asset := strings.TrimSpace(r.PathValue("asset"))
+	var contentType string
+	switch asset {
+	case "styles.css":
+		contentType = "text/css; charset=utf-8"
+	case "app.js":
+		contentType = "text/javascript; charset=utf-8"
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	raw, err := gatewayWeb.ReadFile("web/" + asset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(raw)
+}
+
 func (g *Gateway) healthz(w http.ResponseWriter, _ *http.Request) {
 	sttProvider, sttConfigured := g.sttStatus()
 	natsURL := ""
