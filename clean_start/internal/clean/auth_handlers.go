@@ -26,7 +26,7 @@ func (g *Gateway) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	role, err := normalizeUserRole(req.Role)
+	role, err := normalizePublicRegistrationRole(req.Role)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

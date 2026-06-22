@@ -11,10 +11,27 @@ let captureStates = {
 const SPEAKER_STORAGE_KEY = "rec-coach-seller-speaker";
 let sellerSpeaker = localStorage.getItem(SPEAKER_STORAGE_KEY) || "";
 let replyPipWindow = null;
+const ADMIN_USER_TYPES = ["sales", "student"];
+let adminState = {
+  userType: "sales",
+  items: [],
+  selectedId: "",
+  draftTitle: "",
+  draftContent: "",
+  loading: false,
+  saving: false,
+  dirty: false,
+  noAccess: false,
+  error: "",
+  saveError: "",
+  status: "загрузка",
+  statusKind: "warn",
+  newSeq: 0,
+};
 
 function sessionStorageKey() {
   const identity = currentUser?.id || currentUser?.email || "dev";
-  const role = currentUser?.role || "sales";
+  const role = currentRole();
   return `rec-coach-session:${identity}:${role}`;
 }
 
@@ -28,13 +45,21 @@ function forgetSession() {
 }
 
 function isStudentUser() {
-  return currentUser?.role === "student";
+  return currentRole() === "student";
+}
+
+function isAdminUser() {
+  return currentRole() === "admin";
+}
+
+function currentRole() {
+  return currentUser?.role || currentUser?.user_type || "sales";
 }
 
 async function boot() {
   initSpeakerMap();
   const ok = await loadMe();
-  if (ok) await restoreSessionOrCreate();
+  if (ok) await enterCurrentApp();
 }
 
 async function loadMe() {
@@ -56,16 +81,21 @@ async function loadMe() {
 
 function renderAuth(locked) {
   const isDevUser = currentUser?.id === "dev";
+  const label = isDevUser ? "dev mode" : (currentUser?.email || "не авторизован");
   document.body.classList.toggle("auth-locked", locked);
   $("authPanel").hidden = !locked;
-  $("authStatus").textContent = isDevUser ? "dev mode" : (currentUser?.email || "не авторизован");
-  $("studentAuthStatus").textContent = isDevUser ? "dev mode" : (currentUser?.email || "не авторизован");
+  $("authStatus").textContent = label;
+  $("studentAuthStatus").textContent = label;
+  $("adminAuthStatus").textContent = label;
   $("logout").hidden = locked || isDevUser;
   $("studentLogout").hidden = locked || isDevUser;
+  $("adminLogout").hidden = locked || isDevUser;
   $("newSession").disabled = locked;
   $("studentNewSession").disabled = locked;
-  $("salesApp").hidden = !locked && isStudentUser();
+  $("adminRefreshPrompts").disabled = locked || !isAdminUser();
+  $("salesApp").hidden = !locked && (isStudentUser() || isAdminUser());
   $("studentApp").hidden = locked || !isStudentUser();
+  $("adminApp").hidden = locked || !isAdminUser();
 }
 
 async function submitAuth(mode) {
@@ -89,13 +119,27 @@ async function submitAuth(mode) {
     currentUser = data.user || null;
     renderAuth(false);
     showToast(mode === "register" ? "Аккаунт создан" : "Вошли");
-    await restoreSessionOrCreate();
+    await enterCurrentApp();
   } catch (error) {
     $("authError").textContent = error.message;
   } finally {
     $("authLogin").disabled = false;
     $("authRegister").disabled = false;
   }
+}
+
+async function enterCurrentApp() {
+  if (isAdminUser()) {
+    stopCapture("system");
+    stopCapture("microphone");
+    stopSessionLive();
+    sessionId = "";
+    state = null;
+    renderAdmin();
+    await loadAdminPrompts();
+    return;
+  }
+  await restoreSessionOrCreate();
 }
 
 async function logout() {
@@ -284,6 +328,331 @@ function render() {
   renderSpeakerMapStatus();
 }
 
+function renderAdmin() {
+  if (!$("adminApp")) return;
+  const list = $("adminPromptList");
+  const tabs = document.querySelectorAll("[data-admin-type]");
+  for (const tab of tabs) {
+    const active = tab.dataset.adminType === adminState.userType;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.disabled = adminState.loading || adminState.saving;
+  }
+
+  if (adminState.loading) {
+    list.innerHTML = `<div class="empty">Загружаю prompts...</div>`;
+  } else if (adminState.noAccess) {
+    list.innerHTML = `<div class="empty">У этого аккаунта нет доступа к админке.</div>`;
+  } else if (adminState.error) {
+    list.innerHTML = `<div class="empty">Не удалось загрузить prompts: ${escapeHtml(adminState.error)}</div>`;
+  } else {
+    const items = adminItemsForCurrentType();
+    if (!items.length) {
+      list.innerHTML = `<div class="empty">Для ${escapeHtml(adminState.userType)} пока нет prompts/playbooks.</div>`;
+    } else {
+      list.innerHTML = items.map((item) => {
+        const identity = adminPromptId(item);
+        const active = identity === adminState.selectedId ? " active" : "";
+        const title = item.title || item.key || "Без названия";
+        const kind = item.kind || "prompt";
+        const keyLabel = item.key || "новый_key";
+        const updated = item.updated_at ? `обновлено ${formatDateTime(item.updated_at)}` : "без даты обновления";
+        const meta = `${kind} · ${updated}`;
+        return `
+          <button class="admin-prompt-item${active}" data-admin-prompt="${escapeHtml(identity)}">
+            <span class="admin-prompt-title">${escapeHtml(title)}</span>
+            <span class="admin-prompt-key">${escapeHtml(kind)}/${escapeHtml(keyLabel)}</span>
+            <span class="admin-prompt-meta">${escapeHtml(meta)}</span>
+          </button>`;
+      }).join("");
+      for (const button of list.querySelectorAll("[data-admin-prompt]")) {
+        button.onclick = () => selectAdminPrompt(button.dataset.adminPrompt);
+      }
+    }
+  }
+
+  const selected = selectedAdminPrompt();
+  $("adminPromptTitle").value = selected ? adminState.draftTitle : "";
+  $("adminPromptKey").value = selected?.key || "";
+  $("adminPromptContent").value = selected ? adminState.draftContent : "";
+  $("adminUpdatedAt").textContent = selected?.updated_at
+    ? `Обновлено ${formatDateTime(selected.updated_at)}`
+    : "Обновление еще не приходило";
+  $("adminEditorNote").textContent = adminEditorNote(selected);
+  renderAdminStatusOnly();
+}
+
+function renderAdminStatusOnly() {
+  const selected = selectedAdminPrompt();
+  const disabled = adminEditorDisabled(selected);
+  $("adminStatus").textContent = adminState.status;
+  $("adminStatus").className = `status-pill ${adminState.statusKind}`;
+  $("adminPromptTitle").disabled = disabled;
+  $("adminPromptKey").disabled = !selected || adminState.loading || adminState.saving || adminState.noAccess || Boolean(adminState.error);
+  $("adminPromptKey").readOnly = !selected?.is_new;
+  $("adminPromptContent").disabled = disabled;
+  $("adminSavePrompt").disabled = disabled || !adminState.dirty;
+  $("adminSavePrompt").textContent = adminState.saving ? "Сохраняю..." : "Сохранить";
+  $("adminRevertPrompt").disabled = disabled || !adminState.dirty;
+  $("adminRefreshPrompts").disabled = adminState.loading || adminState.saving || !isAdminUser();
+  $("adminNewPrompt").disabled = adminState.loading || adminState.saving || adminState.noAccess || Boolean(adminState.error);
+  $("adminNewPlaybook").disabled = adminState.loading || adminState.saving || adminState.noAccess || Boolean(adminState.error);
+  if (adminState.saveError) {
+    $("adminEditorNote").textContent = `Не удалось сохранить: ${adminState.saveError}`;
+  }
+}
+
+function adminEditorDisabled(selected) {
+  return adminState.loading || adminState.saving || adminState.noAccess || Boolean(adminState.error) || !selected;
+}
+
+function adminEditorNote(selected) {
+  if (adminState.noAccess) return "Попросите владельца выдать admin-доступ.";
+  if (adminState.error) return "Можно обновить список, когда backend endpoint будет готов.";
+  if (!selected) return "Выберите prompt или playbook слева.";
+  if (adminState.dirty) return "Есть несохраненные изменения.";
+  return "Редактирование применяется через admin API.";
+}
+
+function adminItemsForCurrentType() {
+  return adminState.items
+    .filter((item) => (item.user_type || "sales") === adminState.userType)
+    .sort((a, b) => `${a.kind || "prompt"}:${a.key || ""}`.localeCompare(`${b.kind || "prompt"}:${b.key || ""}`));
+}
+
+function adminPromptId(item) {
+  if (!item) return "";
+  if (item.is_new) return item.id;
+  return `${item.user_type || "sales"}:${item.kind || "prompt"}:${item.key || item.id || ""}`;
+}
+
+function selectedAdminPrompt() {
+  const items = adminItemsForCurrentType();
+  return items.find((item) => adminPromptId(item) === adminState.selectedId) || null;
+}
+
+function syncAdminSelection(preferExisting = true) {
+  const items = adminItemsForCurrentType();
+  if (!items.length) {
+    adminState.selectedId = "";
+    adminState.draftTitle = "";
+    adminState.draftContent = "";
+    adminState.dirty = false;
+    return;
+  }
+  const hasCurrent = items.some((item) => adminPromptId(item) === adminState.selectedId);
+  if (!preferExisting || !hasCurrent) {
+    adminState.selectedId = adminPromptId(items[0]);
+  }
+  resetAdminDraftFromSelection();
+}
+
+function resetAdminDraftFromSelection() {
+  const selected = selectedAdminPrompt();
+  adminState.draftTitle = selected?.title || "";
+  adminState.draftContent = selected?.content ?? selected?.body ?? "";
+  adminState.dirty = false;
+  adminState.saveError = "";
+}
+
+async function loadAdminPrompts() {
+  adminState.loading = true;
+  adminState.saving = false;
+  adminState.noAccess = false;
+  adminState.error = "";
+  adminState.saveError = "";
+  adminState.status = "загрузка";
+  adminState.statusKind = "warn";
+  renderAdmin();
+  try {
+    const res = await fetch("/v1/admin/prompts", {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (res.status === 401) {
+      currentUser = null;
+      renderAuth(true);
+      return;
+    }
+    if (res.status === 403) {
+      adminState.items = [];
+      adminState.noAccess = true;
+      adminState.status = "нет доступа";
+      adminState.statusKind = "err";
+      syncAdminSelection(false);
+      return;
+    }
+    if (!res.ok) {
+      throw new Error(await responseError(res));
+    }
+    const data = await res.json();
+    adminState.items = Array.isArray(data.items) ? data.items : [];
+    adminState.status = adminState.items.length ? "готово" : "пусто";
+    adminState.statusKind = "on";
+    syncAdminSelection(true);
+  } catch (error) {
+    adminState.error = error.message;
+    adminState.status = "ошибка";
+    adminState.statusKind = "err";
+  } finally {
+    adminState.loading = false;
+    renderAdmin();
+  }
+}
+
+function selectAdminUserType(type) {
+  if (!ADMIN_USER_TYPES.includes(type)) return;
+  if (adminState.dirty && !confirm("Оставить несохраненные изменения?")) return;
+  adminState.userType = type;
+  adminState.saveError = "";
+  syncAdminSelection(false);
+  adminState.status = adminState.error ? "ошибка" : adminState.noAccess ? "нет доступа" : "готово";
+  adminState.statusKind = adminState.error || adminState.noAccess ? "err" : "on";
+  renderAdmin();
+}
+
+function selectAdminPrompt(id) {
+  if (id === adminState.selectedId) return;
+  if (adminState.dirty && !confirm("Оставить несохраненные изменения?")) return;
+  adminState.selectedId = id;
+  adminState.status = "готово";
+  adminState.statusKind = "on";
+  resetAdminDraftFromSelection();
+  renderAdmin();
+}
+
+function markAdminDirty() {
+  adminState.draftTitle = $("adminPromptTitle").value;
+  adminState.draftContent = $("adminPromptContent").value;
+  const selected = selectedAdminPrompt();
+  if (selected?.is_new) {
+    selected.key = $("adminPromptKey").value.trim();
+  }
+  adminState.dirty = true;
+  adminState.saveError = "";
+  adminState.status = "есть изменения";
+  adminState.statusKind = "warn";
+  renderAdminStatusOnly();
+}
+
+function createAdminPromptDraft(kind) {
+  if (adminState.dirty && !confirm("Оставить несохраненные изменения?")) return;
+  adminState.newSeq += 1;
+  const item = {
+    id: `new:${adminState.userType}:${kind}:${adminState.newSeq}`,
+    user_type: adminState.userType,
+    kind,
+    key: "",
+    title: "",
+    content: "",
+    enabled: true,
+    is_new: true,
+  };
+  adminState.items = [item, ...adminState.items];
+  adminState.selectedId = adminPromptId(item);
+  adminState.draftTitle = "";
+  adminState.draftContent = "";
+  adminState.dirty = true;
+  adminState.saveError = "";
+  adminState.status = "новый";
+  adminState.statusKind = "warn";
+  renderAdmin();
+  $("adminPromptKey").focus();
+}
+
+function revertAdminPrompt() {
+  const selected = selectedAdminPrompt();
+  if (selected?.is_new) {
+    const id = adminPromptId(selected);
+    adminState.items = adminState.items.filter((item) => adminPromptId(item) !== id);
+    syncAdminSelection(false);
+    adminState.status = adminState.items.length ? "готово" : "пусто";
+    adminState.statusKind = "on";
+    renderAdmin();
+    return;
+  }
+  resetAdminDraftFromSelection();
+  adminState.status = "готово";
+  adminState.statusKind = "on";
+  renderAdmin();
+}
+
+async function saveAdminPrompt() {
+  const selected = selectedAdminPrompt();
+  if (!selected || adminState.saving) return;
+  const payload = {
+    user_type: adminState.userType,
+    kind: selected.kind || "prompt",
+    key: selected.key || $("adminPromptKey").value.trim(),
+    title: adminState.draftTitle.trim(),
+    content: adminState.draftContent,
+  };
+  const target = payload.key;
+  if (!target) {
+    adminState.saveError = "key is required";
+    adminState.status = "ошибка";
+    adminState.statusKind = "err";
+    renderAdminStatusOnly();
+    return;
+  }
+  adminState.saving = true;
+  adminState.saveError = "";
+  adminState.status = "сохранение";
+  adminState.statusKind = "warn";
+  renderAdminStatusOnly();
+  try {
+    const res = await fetch(`/v1/admin/prompts/${encodeURIComponent(target)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 401) {
+      currentUser = null;
+      renderAuth(true);
+      return;
+    }
+    if (res.status === 403) {
+      adminState.noAccess = true;
+      adminState.status = "нет доступа";
+      adminState.statusKind = "err";
+      return;
+    }
+    if (!res.ok) {
+      throw new Error(await responseError(res));
+    }
+    const data = await res.json().catch(() => ({}));
+    const saved = data.item || data;
+    const oldId = adminPromptId(selected);
+    const next = {
+      ...selected,
+      ...payload,
+      ...saved,
+      user_type: payload.user_type,
+      kind: saved.kind ?? payload.kind,
+      key: payload.key,
+      title: saved.title ?? payload.title,
+      content: saved.content ?? payload.content,
+      is_new: false,
+    };
+    adminState.items = adminState.items.map((item) => adminPromptId(item) === oldId ? next : item);
+    adminState.selectedId = adminPromptId(next);
+    adminState.draftTitle = next.title || "";
+    adminState.draftContent = next.content || "";
+    adminState.dirty = false;
+    adminState.status = "сохранено";
+    adminState.statusKind = "on";
+    showToast("Prompt сохранен");
+  } catch (error) {
+    adminState.saveError = error.message;
+    adminState.status = "ошибка";
+    adminState.statusKind = "err";
+  } finally {
+    adminState.saving = false;
+    renderAdmin();
+  }
+}
+
 function renderDialog() {
   const dialog = $("dialog");
   if (!state) {
@@ -409,6 +778,19 @@ function formatTime(value) {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+  });
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
@@ -1129,6 +1511,7 @@ $("studentNewSession").onclick = () => {
 };
 $("logout").onclick = () => logout().catch((error) => showToast(error.message));
 $("studentLogout").onclick = () => logout().catch((error) => showToast(error.message));
+$("adminLogout").onclick = () => logout().catch((error) => showToast(error.message));
 $("authLogin").onclick = () => submitAuth("login");
 $("authRegister").onclick = () => submitAuth("register");
 $("authPassword").onkeydown = (event) => {
@@ -1185,6 +1568,17 @@ $("studentClear").onclick = () => {
   $("studentQuestion").value = "";
   $("studentAssistLog").innerHTML = `<div class="empty">Нажми «Помоги» или задай вопрос ниже.</div>`;
 };
+for (const tab of document.querySelectorAll("[data-admin-type]")) {
+  tab.onclick = () => selectAdminUserType(tab.dataset.adminType);
+}
+$("adminRefreshPrompts").onclick = () => loadAdminPrompts().catch((error) => showToast(error.message));
+$("adminNewPrompt").onclick = () => createAdminPromptDraft("prompt");
+$("adminNewPlaybook").onclick = () => createAdminPromptDraft("playbook");
+$("adminPromptTitle").oninput = markAdminDirty;
+$("adminPromptKey").oninput = markAdminDirty;
+$("adminPromptContent").oninput = markAdminDirty;
+$("adminSavePrompt").onclick = () => saveAdminPrompt().catch((error) => showToast(error.message));
+$("adminRevertPrompt").onclick = revertAdminPrompt;
 
 boot().catch((error) => {
   $("session").textContent = error.message;

@@ -243,6 +243,67 @@
     </section>
   </main>
 
+  <main id="adminApp" class="admin-app" hidden>
+    <header class="card header-card admin-header">
+      <div>
+        <h1 class="title">REC Admin</h1>
+        <div class="sub">prompts / playbooks</div>
+      </div>
+      <div class="header-actions">
+        <span id="adminAuthStatus" class="user-chip">проверяю доступ...</span>
+        <button id="adminRefreshPrompts" class="ghost">Обновить</button>
+        <button id="adminLogout" class="ghost">Выйти</button>
+      </div>
+    </header>
+
+    <section class="admin-grid">
+      <aside class="card section admin-list-card">
+        <div class="admin-tabs" role="tablist" aria-label="User type">
+          <button class="active" data-admin-type="sales" role="tab" aria-selected="true">sales</button>
+          <button data-admin-type="student" role="tab" aria-selected="false">student</button>
+        </div>
+        <div class="action-row admin-create-row">
+          <button id="adminNewPrompt" class="ghost">Новый prompt</button>
+          <button id="adminNewPlaybook" class="ghost">Новый playbook</button>
+        </div>
+        <div id="adminPromptList" class="admin-prompt-list">
+          <div class="empty">Загружаю prompts...</div>
+        </div>
+      </aside>
+
+      <section class="card section admin-editor-card">
+        <div class="admin-editor-head">
+          <p class="eyebrow">редактор</p>
+          <span id="adminStatus" class="status-pill warn">загрузка</span>
+        </div>
+
+        <label class="admin-field">
+          <span>Название</span>
+          <input id="adminPromptTitle" type="text" placeholder="Название prompt/playbook">
+        </label>
+
+        <div class="admin-meta-row">
+          <label class="admin-field">
+            <span>Ключ</span>
+            <input id="adminPromptKey" type="text" placeholder="key">
+          </label>
+          <div id="adminUpdatedAt" class="admin-updated">Обновление еще не приходило</div>
+        </div>
+
+        <label class="admin-field admin-content-field">
+          <span>Содержание</span>
+          <textarea id="adminPromptContent" rows="18" placeholder="Prompt или playbook появится здесь после загрузки"></textarea>
+        </label>
+
+        <div class="admin-editor-actions">
+          <button id="adminRevertPrompt" class="ghost">Отменить</button>
+          <button id="adminSavePrompt" class="blue">Сохранить</button>
+        </div>
+        <div id="adminEditorNote" class="admin-note">Выберите prompt или playbook слева.</div>
+      </section>
+    </section>
+  </main>
+
   <div id="toast" class="toast"></div>
 
   <script src="/static/app.js"></script>

@@ -126,6 +126,20 @@ func TestAuthRegisterSupportsStudentRole(t *testing.T) {
 	}
 }
 
+func TestAuthRecognizesAdminRole(t *testing.T) {
+	role, err := normalizeUserRole(" Admin ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if role != UserRoleAdmin {
+		t.Fatalf("role = %q, want admin", role)
+	}
+	user := authUserResponse(User{ID: "usr-admin", Email: "admin@example.com", Role: role})
+	if user.Role != UserRoleAdmin {
+		t.Fatalf("response role = %q, want admin", user.Role)
+	}
+}
+
 func TestSessionOwnershipIsolation(t *testing.T) {
 	g := newAuthTestGateway()
 	userA := registerTestUser(t, g, "a@example.com")

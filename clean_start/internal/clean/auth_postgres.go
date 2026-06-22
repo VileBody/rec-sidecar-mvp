@@ -63,6 +63,20 @@ func (s *PostgresAuthStore) EnsureSchema(ctx context.Context) error {
 			data JSONB NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS app_events_session_created_idx ON app_events(session_id, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS prompt_configs (
+			id TEXT PRIMARY KEY,
+			user_type TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			config_key TEXT NOT NULL,
+			title TEXT NOT NULL DEFAULT '',
+			body TEXT NOT NULL,
+			enabled BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL,
+			updated_by TEXT NOT NULL DEFAULT '',
+			UNIQUE (user_type, kind, config_key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS prompt_configs_user_type_kind_idx ON prompt_configs(user_type, kind)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {

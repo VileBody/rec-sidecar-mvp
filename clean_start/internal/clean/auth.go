@@ -20,6 +20,7 @@ var (
 const (
 	UserRoleSales   = "sales"
 	UserRoleStudent = "student"
+	UserRoleAdmin   = "admin"
 )
 
 type User struct {
@@ -51,6 +52,9 @@ type AuthStore interface {
 	LatestAppSession(ctx context.Context, userID string) (string, error)
 	SaveAppEvent(ctx context.Context, event Event) error
 	AppEvents(ctx context.Context, sessionID string) ([]Event, error)
+	ListPromptConfigs(ctx context.Context, filter PromptConfigFilter) ([]PromptConfig, error)
+	PromptConfig(ctx context.Context, userType, kind, key string) (PromptConfig, error)
+	UpsertPromptConfig(ctx context.Context, config PromptConfig) (PromptConfig, error)
 	Close() error
 }
 
@@ -101,6 +105,19 @@ func validatePassword(password string) error {
 }
 
 func normalizeUserRole(role string) (string, error) {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		return UserRoleSales, nil
+	}
+	switch role {
+	case UserRoleSales, UserRoleStudent, UserRoleAdmin:
+		return role, nil
+	default:
+		return "", errors.New("role must be sales, student, or admin")
+	}
+}
+
+func normalizePublicRegistrationRole(role string) (string, error) {
 	role = strings.ToLower(strings.TrimSpace(role))
 	if role == "" {
 		return UserRoleSales, nil
@@ -259,6 +276,7 @@ type memoryAuthStore struct {
 	appSessions  map[string]string
 	appCreatedAt map[string]time.Time
 	appEvents    map[string][]Event
+	prompts      map[string]PromptConfig
 }
 
 func NewMemoryAuthStore() AuthStore {
@@ -269,6 +287,7 @@ func NewMemoryAuthStore() AuthStore {
 		appSessions:  make(map[string]string),
 		appCreatedAt: make(map[string]time.Time),
 		appEvents:    make(map[string][]Event),
+		prompts:      make(map[string]PromptConfig),
 	}
 }
 
