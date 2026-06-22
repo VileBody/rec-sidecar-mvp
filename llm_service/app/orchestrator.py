@@ -97,16 +97,40 @@ class OpenerFirstDelta:
 class LlmOrchestrator:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None):
         self.settings = settings
-        self.client = client or httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.timeout_secs, pool=2.0),
-            limits=httpx.Limits(max_connections=500, max_keepalive_connections=100),
-            proxy=settings.outbound_proxy,
-        )
-        self._owns_client = client is None
-        self.cerebras = CerebrasClient(settings, self.client)
-        self.vertex = VertexClient(settings, self.client)
+        if client is not None:
+            self.client = client
+            self.cerebras_client = client
+            self.vertex_client = client
+            self._owns_client = False
+            self._owns_cerebras_client = False
+        else:
+            self.vertex_client = self._new_http_client(settings)
+            if settings.outbound_proxy:
+                self.cerebras_client = self._new_http_client(
+                    settings,
+                    proxy=settings.outbound_proxy,
+                )
+            else:
+                self.cerebras_client = self.vertex_client
+            self.client = self.vertex_client
+            self._owns_client = True
+            self._owns_cerebras_client = self.cerebras_client is not self.vertex_client
+
+        self.cerebras = CerebrasClient(settings, self.cerebras_client)
+        self.vertex = VertexClient(settings, self.vertex_client)
         self._opener_cooldowns: dict[str, float] = {}
         self._live_intelligence_sessions: dict[str, VertexLiveIntelligenceSession] = {}
+
+    @staticmethod
+    def _new_http_client(
+        settings: Settings,
+        proxy: str | None = None,
+    ) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(settings.timeout_secs, pool=2.0),
+            limits=httpx.Limits(max_connections=500, max_keepalive_connections=100),
+            proxy=proxy,
+        )
 
     async def aclose(self) -> None:
         if self._live_intelligence_sessions:
@@ -115,8 +139,10 @@ class LlmOrchestrator:
                 return_exceptions=True,
             )
             self._live_intelligence_sessions.clear()
+        if self._owns_cerebras_client:
+            await self.cerebras_client.aclose()
         if self._owns_client:
-            await self.client.aclose()
+            await self.vertex_client.aclose()
 
     def status(self) -> str:
         return "ready" if self._any_provider_configured() else "disabled"

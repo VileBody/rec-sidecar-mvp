@@ -116,6 +116,33 @@ def make_settings(**overrides):
     return Settings(**values)
 
 
+@pytest.mark.anyio
+async def test_orchestrator_uses_cerebras_proxy_without_proxying_vertex():
+    orchestrator = LlmOrchestrator(make_settings(outbound_proxy="http://proxy.test:8080"))
+    try:
+        assert orchestrator.cerebras.client is orchestrator.cerebras_client
+        assert orchestrator.vertex.client is orchestrator.vertex_client
+        assert orchestrator.cerebras.client is not orchestrator.vertex.client
+    finally:
+        await orchestrator.aclose()
+
+
+@pytest.mark.anyio
+async def test_orchestrator_reuses_injected_mock_client():
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(500))
+    )
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(outbound_proxy="http://proxy.test:8080"),
+            client,
+        )
+        assert orchestrator.cerebras.client is client
+        assert orchestrator.vertex.client is client
+    finally:
+        await client.aclose()
+
+
 def test_suggestion_parsers():
     assert parse_json_suggestion('{"action":"suggest","text":"Спроси про цель."}') == {
         "action": "suggest",
