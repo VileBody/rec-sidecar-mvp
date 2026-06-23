@@ -137,6 +137,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 		language = sourceLanguageForDirection(direction)
 	}
 	speakerRoles := speakerRolesFromQuery(r.URL.Query())
+	suppressSystemSeller := truthyQueryValue(r.URL.Query().Get("suppress_seller"))
 	stabilizer := newSTTStreamStabilizer()
 	segmentTracker := newSTTSegmentTracker()
 
@@ -179,7 +180,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = writeBrowserJSON(map[string]any{"type": "ready"})
-	g.logger.Info("browser audio stt stream connected", "session_id", sessionID, "role", role, "source", source, "provider", provider, "speaker_roles", speakerRoles)
+	g.logger.Info("browser audio stt stream connected", "session_id", sessionID, "role", role, "source", source, "provider", provider, "speaker_roles", speakerRoles, "suppress_system_seller", suppressSystemSeller)
 
 	done := make(chan error, 2)
 	audioCommands := make(chan sttAudioCommand, 128)
@@ -200,6 +201,10 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 			}
 			for index, segment := range diarizedTranscriptSegments(transcript) {
 				segmentRole := roleForSTTSpeaker(role, segment.Speaker, speakerRoles)
+				if suppressSystemSellerSegment(suppressSystemSeller, source, segmentRole) {
+					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", "system_seller_suppressed", "text", segment.Text)
+					continue
+				}
 				segmentID := segmentTracker.ID(segment, index)
 				if !stabilizer.ShouldEmit(segmentID, segment.Text, transcript.Final) {
 					continue

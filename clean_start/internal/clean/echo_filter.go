@@ -6,6 +6,19 @@ import (
 	"unicode"
 )
 
+func truthyQueryValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func suppressSystemSellerSegment(enabled bool, source, role string) bool {
+	return enabled && source == "browser-system-audio" && role == "seller"
+}
+
 func (g *Gateway) crossSourceEchoRejectReason(sessionID, role, source, text string) string {
 	if reason := g.sellerEchoRejectReason(sessionID, role, source, text); reason != "" {
 		return reason

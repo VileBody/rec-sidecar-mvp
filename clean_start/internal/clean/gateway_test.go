@@ -105,6 +105,21 @@ func TestSpeakerRolesFromQueryMapsSellerAndClient(t *testing.T) {
 	}
 }
 
+func TestSuppressSystemSellerSegment(t *testing.T) {
+	if !suppressSystemSellerSegment(true, "browser-system-audio", "seller") {
+		t.Fatal("expected system seller segment to be suppressed")
+	}
+	if suppressSystemSellerSegment(true, "browser-system-audio", "client") {
+		t.Fatal("client system segment should not be suppressed")
+	}
+	if suppressSystemSellerSegment(true, "browser-microphone-test", "seller") {
+		t.Fatal("microphone seller segment should not be suppressed")
+	}
+	if suppressSystemSellerSegment(false, "browser-system-audio", "seller") {
+		t.Fatal("disabled suppression should not reject seller segment")
+	}
+}
+
 func TestAppendTranscriptKeepsDifferentSpeakersSeparate(t *testing.T) {
 	now := time.Now().UTC()
 	items := appendTranscript(nil, TranscriptItem{
