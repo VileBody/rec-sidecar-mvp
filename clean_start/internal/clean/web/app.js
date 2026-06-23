@@ -1360,7 +1360,6 @@ async function startCapture({ automatic = false, student = false } = {}) {
       roleOverride: student ? "student_original" : "mixed",
       direction: student ? ($("studentDirection").value || "en-ru") : "",
       language: student ? sourceLanguageForDirection($("studentDirection").value || "en-ru") : "",
-      suppressSeller: !student && captureStates.microphone.active,
     });
     setCaptureStatus("on", "захват включен");
     $("captureToggle").textContent = "Стоп";
@@ -1406,7 +1405,6 @@ async function startMicTest() {
       mode: "microphone",
       sourceLabel: "browser-microphone-test",
     });
-    syncSystemSellerSuppression();
     setMicStatus("on", "микрофон включен · скажи фразу");
     $("micToggle").textContent = "Стоп микрофон";
     updateBothStatus();
@@ -1437,7 +1435,7 @@ async function startBothAudio() {
   }
 }
 
-function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direction = "", language = "", suppressSeller = false }) {
+function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direction = "", language = "" }) {
   const context = new AudioContext();
   const source = context.createMediaStreamSource(stream);
   const processor = context.createScriptProcessor(2048, 1, 1);
@@ -1456,7 +1454,6 @@ function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direct
     sourceLabel,
     direction,
     language,
-    suppressSeller,
     speechOpen: false,
     lastVoiceAt: 0,
     lastEndTurnAt: 0,
@@ -1501,8 +1498,8 @@ function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direct
 
 function connectSTTWebSocket(captureState) {
   if (!captureState?.active) return;
-  const { mode, role, sourceLabel, direction, language, suppressSeller } = captureState;
-  const ws = new WebSocket(sttStreamURL({ role, sourceLabel, direction, language, suppressSeller }));
+  const { mode, role, sourceLabel, direction, language } = captureState;
+  const ws = new WebSocket(sttStreamURL({ role, sourceLabel, direction, language }));
   captureState.ws = ws;
   ws.onopen = () => {
     if (captureStates[mode] === captureState) {
@@ -1601,7 +1598,6 @@ function stopCapture(mode, stoppedText = "") {
   if (mode === "microphone") {
     setMicStatus("warn", stoppedText || "микрофон остановлен");
     $("micToggle").textContent = "Проверить микрофон";
-    syncSystemSellerSuppression();
   } else {
     setCaptureStatus("warn", stoppedText || "захват остановлен");
     $("captureToggle").textContent = "Включить";
@@ -1647,7 +1643,7 @@ function sendStreamEndTurn(captureState) {
   captureState.lastEndTurnAt = now;
 }
 
-function sttStreamURL({ role, sourceLabel, direction = "", language = "", suppressSeller = false }) {
+function sttStreamURL({ role, sourceLabel, direction = "", language = "" }) {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({ role, source: sourceLabel });
   if (role === "mixed" && sellerSpeaker) {
@@ -1655,17 +1651,7 @@ function sttStreamURL({ role, sourceLabel, direction = "", language = "", suppre
   }
   if (direction) params.set("direction", direction);
   if (language) params.set("language", language);
-  if (suppressSeller) params.set("suppress_seller", "1");
   return `${scheme}//${location.host}/v1/sessions/${sessionId}/stt/live?${params}`;
-}
-
-function syncSystemSellerSuppression() {
-  const systemState = captureStates.system;
-  if (!systemState?.active || systemState.role !== "mixed" || systemState.sourceLabel !== "browser-system-audio") return;
-  const next = Boolean(captureStates.microphone.active);
-  if (systemState.suppressSeller === next) return;
-  systemState.suppressSeller = next;
-  reconnectCaptureSTT("system", next ? "mic_active_suppress_system_seller" : "mic_stopped_allow_system_seller");
 }
 
 function emptyCaptureState(mode) {
@@ -1682,7 +1668,6 @@ function emptyCaptureState(mode) {
     sourceLabel: mode === "microphone" ? "browser-microphone-test" : "browser-system-audio",
     direction: "",
     language: "",
-    suppressSeller: false,
     speechOpen: false,
     lastVoiceAt: 0,
     lastEndTurnAt: 0,
