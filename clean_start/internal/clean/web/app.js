@@ -334,6 +334,7 @@ async function postEvent(payload) {
 function render() {
   renderDialog();
   renderReply();
+  renderPipelineStatus();
   renderStage();
   renderAssist();
   renderStudent();
@@ -1049,6 +1050,113 @@ function renderReply() {
   syncReplyPip();
 }
 
+function renderPipelineStatus() {
+  const node = $("pipelineStatus");
+  if (!node) return;
+  if (!state) {
+    node.innerHTML = `<div class="pipeline-empty">pipeline: жду сессию</div>`;
+    return;
+  }
+  const stageStatus = latestPipelineStatus("stage");
+  const gateStatus = latestPipelineStatus("zai_gate");
+  const replyStatus = latestPipelineStatus("seller_reply");
+  const committedEvent = latestEvent("stage.committed");
+  const candidateEvent = latestEvent("stage.candidate");
+  const stage = state.stage_committed || state.stage_candidate;
+  const stageSince = committedEvent || candidateEvent;
+  const stageDuration = stageSince ? humanDuration((Date.now() - new Date(stageSince.created_at).getTime()) / 1000) : "еще нет";
+  const stageLabel = stage?.stage ? `${stage.stage}${stage.title ? ` · ${stage.title}` : ""}` : "stage неизвестен";
+  node.innerHTML = `
+    <div class="pipeline-head">
+      <span>статус</span>
+      <span>${escapeHtml(stageLabel)} · ${escapeHtml(stageDuration)}</span>
+    </div>
+    <div class="pipeline-grid">
+      ${pipelineCardHTML("Stage", stageStatus, "ждем речи клиента")}
+      ${pipelineCardHTML("ZAI gate", gateStatus, "ждет новой partial-фразы")}
+      ${pipelineCardHTML("Gemini / reply", replyStatus, state.seller_streaming ? "получаем реплику" : "ждем следующего момента")}
+    </div>
+  `;
+}
+
+function pipelineCardHTML(label, event, fallback) {
+  const data = eventData(event);
+  const status = data.status || "";
+  const kind = pipelineKind(status);
+  const primary = event ? pipelineStatusText(data, event) : fallback;
+  const detailBits = [];
+  if (data.elapsed_ms) detailBits.push(`${Math.round(Number(data.elapsed_ms))} ms`);
+  if (data.model) detailBits.push(data.model);
+  if (data.action) detailBits.push(data.action);
+  if (data.trigger) detailBits.push(data.trigger);
+  const detail = detailBits.join(" · ");
+  return `
+    <div class="pipeline-card ${kind}">
+      <div class="pipeline-label">${escapeHtml(label)}</div>
+      <div class="pipeline-primary">${escapeHtml(primary)}</div>
+      ${detail ? `<div class="pipeline-detail">${escapeHtml(detail)}</div>` : ""}
+    </div>
+  `;
+}
+
+function pipelineStatusText(data, event) {
+  const status = data.status || "";
+  if (status === "sent") return `отправлено · ожидаем ${humanDurationSince(event.created_at)}`;
+  if (status === "queued") return "в очереди · ждет предыдущий запрос";
+  if (status === "received") return "получено · ждем следующего момента";
+  if (status === "skipped") return data.detail || "skip · ждем следующего момента";
+  if (status === "error") return data.detail ? `ошибка · ${data.detail}` : "ошибка";
+  return data.detail || status || "ждем";
+}
+
+function pipelineKind(status) {
+  if (status === "received") return "ok";
+  if (status === "sent" || status === "queued") return "wait";
+  if (status === "skipped") return "skip";
+  if (status === "error") return "bad";
+  return "";
+}
+
+function latestPipelineStatus(component) {
+  const all = stateEvents("pipeline.status");
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (eventData(all[i]).component === component) return all[i];
+  }
+  return null;
+}
+
+function latestEvent(type) {
+  const all = stateEvents(type);
+  return all.length ? all[all.length - 1] : null;
+}
+
+function stateEvents(type = "") {
+  const all = Array.isArray(state?.events) ? state.events : [];
+  return type ? all.filter((item) => item.type === type) : all;
+}
+
+function eventData(event) {
+  return event?.data && typeof event.data === "object" ? event.data : {};
+}
+
+function humanDurationSince(value) {
+  if (!value) return "0s";
+  const time = new Date(value).getTime();
+  if (Number.isNaN(time)) return "0s";
+  return humanDuration((Date.now() - time) / 1000);
+}
+
+function humanDuration(secondsValue) {
+  const seconds = Math.max(0, Math.floor(Number(secondsValue || 0)));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
+}
+
 function renderStage() {
   if (!state) {
     $("stage").innerHTML = `<div class="empty">Жду данных.</div>`;
@@ -1068,6 +1176,7 @@ function renderStage() {
   $("stage").innerHTML = `
     <div class="metric-row">${metricBits.join("")}</div>
     <div class="stage-title">${escapeHtml(stage?.title || "Стадия еще не определена")}</div>
+    <div class="stage-body stage-clock">На стадии: ${escapeHtml((latestEvent("stage.committed") || latestEvent("stage.candidate")) ? humanDurationSince((latestEvent("stage.committed") || latestEvent("stage.candidate")).created_at) : "еще нет")}</div>
     <div class="stage-body">${escapeHtml(stage?.agenda || "Жду речи клиента, чтобы понять текущую стадию.")}</div>
     <div class="stage-body">${escapeHtml(score?.next_action || stage?.step || "")}</div>
   `;
@@ -1969,6 +2078,12 @@ $("adminPromptKey").oninput = markAdminDirty;
 $("adminPromptContent").oninput = markAdminDirty;
 $("adminSavePrompt").onclick = () => saveAdminPrompt().catch((error) => showToast(error.message));
 $("adminRevertPrompt").onclick = revertAdminPrompt;
+
+setInterval(() => {
+  if (!state || $("salesApp").hidden) return;
+  renderPipelineStatus();
+  renderStage();
+}, 1000);
 
 boot().catch((error) => {
   $("session").textContent = error.message;

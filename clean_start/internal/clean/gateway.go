@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -28,6 +29,9 @@ type Gateway struct {
 	server    *http.Server
 	sub       *nats.Subscription
 	publish   func(*nats.Conn, Config, Event) error
+
+	activeStreamsMu  sync.Mutex
+	activeMicStreams map[string]int
 }
 
 func NewGateway(cfg Config, nc *nats.Conn, inworld *InworldClient, logger *slog.Logger) *Gateway {
@@ -45,6 +49,35 @@ func NewGateway(cfg Config, nc *nats.Conn, inworld *InworldClient, logger *slog.
 		tokens:  NewTokenManager(cfg.JWTSecret),
 		publish: PublishEvent,
 	}
+}
+
+func (g *Gateway) registerMicStream(sessionID, source string) func() {
+	if source != "browser-microphone-test" {
+		return func() {}
+	}
+	g.activeStreamsMu.Lock()
+	if g.activeMicStreams == nil {
+		g.activeMicStreams = make(map[string]int)
+	}
+	g.activeMicStreams[sessionID]++
+	g.activeStreamsMu.Unlock()
+	return func() {
+		g.activeStreamsMu.Lock()
+		defer g.activeStreamsMu.Unlock()
+		if g.activeMicStreams == nil {
+			return
+		}
+		g.activeMicStreams[sessionID]--
+		if g.activeMicStreams[sessionID] <= 0 {
+			delete(g.activeMicStreams, sessionID)
+		}
+	}
+}
+
+func (g *Gateway) hasActiveMicStream(sessionID string) bool {
+	g.activeStreamsMu.Lock()
+	defer g.activeStreamsMu.Unlock()
+	return g.activeMicStreams != nil && g.activeMicStreams[sessionID] > 0
 }
 
 func (g *Gateway) Run(ctx context.Context) error {

@@ -154,6 +154,8 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer stream.Close()
+	unregisterMicStream := g.registerMicStream(sessionID, source)
+	defer unregisterMicStream()
 	recorder := (*AudioRecorder)(nil)
 	if g.audioSink != nil {
 		recorder = g.audioSink.Start(sessionID, role, source)
@@ -200,6 +202,10 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 			}
 			for index, segment := range diarizedTranscriptSegments(transcript) {
 				segmentRole := roleForSTTSpeaker(role, segment.Speaker, speakerRoles)
+				if suppressSystemSellerSegment(g.hasActiveMicStream(sessionID), source, segmentRole) {
+					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", "system_seller_suppressed_by_active_mic", "text", segment.Text)
+					continue
+				}
 				segmentID := segmentTracker.ID(segment, index)
 				if !stabilizer.ShouldEmit(segmentID, segment.Text, transcript.Final) {
 					continue

@@ -90,6 +90,13 @@ func (w *StageWorker) Shutdown(context.Context) error {
 	return nil
 }
 
+func (w *StageWorker) publishPipelineStatus(sessionID string, data PipelineStatusData) {
+	if data.Component == "" || data.Status == "" {
+		return
+	}
+	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventPipelineStatus, "stage-worker", data))
+}
+
 func (w *StageWorker) scheduleDetect(ctx context.Context, sessionID string, mem *sessionMemory, eventType string, text string, force bool) {
 	cleanText := strings.TrimSpace(text)
 	w.mu.Lock()
@@ -115,6 +122,7 @@ func (w *StageWorker) scheduleDetect(ctx context.Context, sessionID string, mem 
 	if state.inFlight {
 		state.pending = &req
 		w.mu.Unlock()
+		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "stage", Status: "queued", Trigger: eventType, Detail: "предыдущий stage detect еще выполняется"})
 		return
 	}
 	w.startStageLocked(ctx, state, req)
@@ -180,14 +188,18 @@ func (w *StageWorker) detectThenContinue(ctx context.Context, req stageDetection
 func (w *StageWorker) detect(ctx context.Context, sessionID string, mem *sessionMemory, eventType string) {
 	started := time.Now()
 	includeScorecard := eventType == EventStageCommitted
+	w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "stage", Status: "sent", Trigger: eventType, Detail: "отправили stage detect"})
 	stage, err := w.llm.DetectStage(ctx, sessionID, mem.contextBlock(), mem.CurrentStage, includeScorecard)
 	if err != nil {
+		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "stage", Status: "error", Trigger: eventType, Detail: err.Error(), ElapsedMS: time.Since(started).Milliseconds()})
 		_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "stage-worker", ErrorData{Where: "stage", Message: err.Error()}))
 		return
 	}
 	if stage == nil {
+		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "stage", Status: "skipped", Trigger: eventType, Detail: "stage не изменился", ElapsedMS: time.Since(started).Milliseconds()})
 		return
 	}
 	w.logger.Info("stage detected", "session_id", sessionID, "stage", stage.Stage, "event", eventType, "include_scorecard", includeScorecard, "elapsed_ms", time.Since(started).Milliseconds())
+	w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "stage", Status: "received", Trigger: eventType, Detail: stage.Stage, Provider: stage.Provider, Model: stage.Model, ElapsedMS: time.Since(started).Milliseconds()})
 	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, eventType, "stage-worker", stage))
 }

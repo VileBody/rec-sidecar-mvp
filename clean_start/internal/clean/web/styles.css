@@ -623,7 +623,7 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
 
 .reply-main {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
 }
 
 .reply-text {
@@ -654,6 +654,76 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   padding: 16px 18px;
   border-top: 1px solid var(--line);
   background: var(--paper-soft);
+}
+
+.pipeline-panel {
+  border-top: 1px solid var(--line);
+  background: #fbfcff;
+  padding: 12px 18px;
+}
+
+.pipeline-empty {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pipeline-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  margin-bottom: 9px;
+}
+
+.pipeline-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pipeline-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper);
+  padding: 10px 11px;
+}
+
+.pipeline-card.wait { border-color: #f1d98a; background: var(--yellow-soft); }
+.pipeline-card.ok { border-color: #c8ecd8; background: var(--green-soft); }
+.pipeline-card.skip { border-color: #d5dbe8; background: #f3f5f9; }
+.pipeline-card.bad { border-color: #ffd0d0; background: var(--red-soft); }
+
+.pipeline-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  margin-bottom: 5px;
+}
+
+.pipeline-primary {
+  min-height: 32px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 820;
+  line-height: 1.2;
+}
+
+.pipeline-detail {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .stage-grid {
@@ -695,6 +765,12 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
 .stage-body {
   color: #4c5464;
   line-height: 1.42;
+}
+
+.stage-clock {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .chat {
@@ -1010,6 +1086,7 @@ body.auth-locked .admin-app {
   .assist-col > header { grid-column: 1 / -1; }
   .column { min-height: 520px; }
   .reply-text { min-height: 280px; }
+  .pipeline-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 760px) {

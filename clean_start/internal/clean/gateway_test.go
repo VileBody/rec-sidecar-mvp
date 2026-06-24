@@ -105,6 +105,46 @@ func TestSpeakerRolesFromQueryMapsSellerAndClient(t *testing.T) {
 	}
 }
 
+func TestSuppressSystemSellerSegment(t *testing.T) {
+	if !suppressSystemSellerSegment(true, "browser-system-audio", "seller") {
+		t.Fatal("expected system seller segment to be suppressed")
+	}
+	if suppressSystemSellerSegment(true, "browser-system-audio", "client") {
+		t.Fatal("client system segment should not be suppressed")
+	}
+	if suppressSystemSellerSegment(true, "browser-microphone-test", "seller") {
+		t.Fatal("microphone seller segment should not be suppressed")
+	}
+	if suppressSystemSellerSegment(false, "browser-system-audio", "seller") {
+		t.Fatal("disabled suppression should not reject seller segment")
+	}
+}
+
+func TestGatewayTracksActiveMicStreams(t *testing.T) {
+	g := &Gateway{}
+	if g.hasActiveMicStream("sess-test") {
+		t.Fatal("empty gateway should not have active mic stream")
+	}
+	noop := g.registerMicStream("sess-test", "browser-system-audio")
+	noop()
+	if g.hasActiveMicStream("sess-test") {
+		t.Fatal("system stream should not count as active mic")
+	}
+	first := g.registerMicStream("sess-test", "browser-microphone-test")
+	second := g.registerMicStream("sess-test", "browser-microphone-test")
+	if !g.hasActiveMicStream("sess-test") {
+		t.Fatal("expected active mic stream")
+	}
+	first()
+	if !g.hasActiveMicStream("sess-test") {
+		t.Fatal("second mic stream should keep session active")
+	}
+	second()
+	if g.hasActiveMicStream("sess-test") {
+		t.Fatal("all mic streams are closed, session should be inactive")
+	}
+}
+
 func TestAppendTranscriptKeepsDifferentSpeakersSeparate(t *testing.T) {
 	now := time.Now().UTC()
 	items := appendTranscript(nil, TranscriptItem{

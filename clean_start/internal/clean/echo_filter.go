@@ -6,6 +6,10 @@ import (
 	"unicode"
 )
 
+func suppressSystemSellerSegment(enabled bool, source, role string) bool {
+	return enabled && source == "browser-system-audio" && role == "seller"
+}
+
 func (g *Gateway) crossSourceEchoRejectReason(sessionID, role, source, text string) string {
 	if reason := g.sellerEchoRejectReason(sessionID, role, source, text); reason != "" {
 		return reason

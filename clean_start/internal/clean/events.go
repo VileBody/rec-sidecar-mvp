@@ -42,6 +42,7 @@ const (
 	EventStageCandidate                = "stage.candidate"
 	EventStageCommitted                = "stage.committed"
 	EventScorecardUpdate               = "scorecard.update"
+	EventPipelineStatus                = "pipeline.status"
 	EventError                         = "error"
 )
 
@@ -200,6 +201,18 @@ type ScorecardData struct {
 	Summary        string          `json:"summary"`
 	Source         string          `json:"source"`
 	Raw            json.RawMessage `json:"raw,omitempty"`
+}
+
+type PipelineStatusData struct {
+	Component    string `json:"component"`
+	Status       string `json:"status"`
+	Trigger      string `json:"trigger,omitempty"`
+	Detail       string `json:"detail,omitempty"`
+	GenerationID string `json:"generation_id,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Action       string `json:"action,omitempty"`
+	ElapsedMS    int64  `json:"elapsed_ms,omitempty"`
 }
 
 type ErrorData struct {

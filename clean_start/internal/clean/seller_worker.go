@@ -105,6 +105,13 @@ func (w *SellerWorker) publish(event Event) error {
 	return PublishEvent(w.nc, w.cfg, event)
 }
 
+func (w *SellerWorker) publishPipelineStatus(sessionID string, data PipelineStatusData) {
+	if data.Component == "" || data.Status == "" {
+		return
+	}
+	_ = w.publish(NewEvent(sessionID, EventPipelineStatus, "seller-worker", data))
+}
+
 func (w *SellerWorker) maybeStartFromPartial(ctx context.Context, sessionID string, mem *sessionMemory, text string) {
 	cleanText := strings.TrimSpace(text)
 	if len([]rune(cleanText)) < w.cfg.MinSellerChars {
@@ -179,25 +186,30 @@ func (w *SellerWorker) startGeneration(parent context.Context, sessionID string,
 			contextText += "\n--- Триггер ---\n" + text + "\n"
 		}
 		started := time.Now()
+		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "sent", Trigger: trigger, GenerationID: generationID, Detail: "отправили запрос на новую реплику"})
 		suggestion, err := w.llm.LiveSellerSuggestion(ctx, sessionID, contextText, strings.TrimSpace(mem.SellerDraft), true)
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
+			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "error", Trigger: trigger, GenerationID: generationID, Detail: err.Error(), ElapsedMS: time.Since(started).Milliseconds()})
 			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "seller-worker", ErrorData{Where: "seller", Message: err.Error()}))
 			return
 		}
 		if suggestion.Action == "skip" {
+			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "skipped", Trigger: trigger, GenerationID: generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "LLM решила оставить текущую реплику"})
 			w.logger.Info("seller force generation skipped", "session_id", sessionID, "generation_id", generationID, "elapsed_ms", time.Since(started).Milliseconds(), "provider", suggestion.Provider, "model", suggestion.Model)
 			return
 		}
 		if suggestion.Text == "" {
+			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "error", Trigger: trigger, GenerationID: generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "empty seller suggestion"})
 			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "seller-worker", ErrorData{Where: "seller", Message: "empty seller suggestion"}))
 			return
 		}
 		_ = w.publish(NewEvent(sessionID, EventSellerStarted, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
 		_ = w.publish(NewEvent(sessionID, EventSellerDelta, "seller-worker", SellerDeltaData{GenerationID: generationID, Delta: suggestion.Text}))
 		w.logger.Info("seller generation done", "session_id", sessionID, "generation_id", generationID, "trigger", trigger, "elapsed_ms", time.Since(started).Milliseconds(), "provider", suggestion.Provider, "model", suggestion.Model)
+		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "received", Trigger: trigger, GenerationID: generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "новая реплика готова"})
 		_ = w.publish(NewEvent(sessionID, EventSellerDone, "seller-worker", SellerDoneData{GenerationID: generationID, Text: suggestion.Text, Provider: suggestion.Provider, Model: suggestion.Model}))
 	}()
 }
@@ -228,15 +240,25 @@ func (w *SellerWorker) startGate(parent context.Context, sessionID string, mem *
 			contextText += "\n--- Триггер ---\n" + text + "\n"
 		}
 		started := time.Now()
+		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "zai_gate", Status: "sent", Trigger: trigger, GenerationID: gateID, Detail: "проверяем, пора ли менять реплику"})
 		suggestion, err := w.llm.LiveSellerSuggestion(ctx, sessionID, contextText, currentDraft, false)
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
+			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "zai_gate", Status: "error", Trigger: trigger, GenerationID: gateID, Detail: err.Error(), ElapsedMS: time.Since(started).Milliseconds()})
 			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "seller-worker", ErrorData{Where: "seller.gate", Message: err.Error()}))
 			return
 		}
-		w.logger.Info("seller gate done", "session_id", sessionID, "action", suggestion.Action, "elapsed_ms", time.Since(started).Milliseconds(), "provider", suggestion.Provider, "model", suggestion.Model, "current_chars", len([]rune(currentDraft)), "trigger_chars", len([]rune(text)))
+		elapsedMS := time.Since(started).Milliseconds()
+		status := "received"
+		detail := "gate вернул новую реплику"
+		if suggestion.Action != "suggest" {
+			status = "skipped"
+			detail = "gate решил, что текущая реплика еще актуальна"
+		}
+		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "zai_gate", Status: status, Trigger: trigger, GenerationID: gateID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: elapsedMS, Detail: detail})
+		w.logger.Info("seller gate done", "session_id", sessionID, "action", suggestion.Action, "elapsed_ms", elapsedMS, "provider", suggestion.Provider, "model", suggestion.Model, "current_chars", len([]rune(currentDraft)), "trigger_chars", len([]rune(text)))
 		if suggestion.Action != "suggest" {
 			return
 		}
@@ -244,11 +266,11 @@ func (w *SellerWorker) startGate(parent context.Context, sessionID string, mem *
 			w.startGeneration(parent, sessionID, mem, "zai_gate_empty_suggest", text)
 			return
 		}
-		w.publishImmediateSuggestion(sessionID, trigger, suggestion)
+		w.publishImmediateSuggestion(sessionID, trigger, suggestion, elapsedMS)
 	}()
 }
 
-func (w *SellerWorker) publishImmediateSuggestion(sessionID, trigger string, suggestion liveSellerResponse) {
+func (w *SellerWorker) publishImmediateSuggestion(sessionID, trigger string, suggestion liveSellerResponse, elapsedMS int64) {
 	generationID := NewID("gen")
 	w.mu.Lock()
 	if cancel := w.cancels[sessionID]; cancel != nil {
@@ -260,6 +282,7 @@ func (w *SellerWorker) publishImmediateSuggestion(sessionID, trigger string, sug
 
 	_ = w.publish(NewEvent(sessionID, EventSellerStarted, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
 	_ = w.publish(NewEvent(sessionID, EventSellerDelta, "seller-worker", SellerDeltaData{GenerationID: generationID, Delta: suggestion.Text}))
+	w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "received", Trigger: trigger, GenerationID: generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: elapsedMS, Detail: "реплика пришла сразу из ZAI gate"})
 	_ = w.publish(NewEvent(sessionID, EventSellerDone, "seller-worker", SellerDoneData{GenerationID: generationID, Text: suggestion.Text, Provider: suggestion.Provider, Model: suggestion.Model}))
 
 	w.mu.Lock()
