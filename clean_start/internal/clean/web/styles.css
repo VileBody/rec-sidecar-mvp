@@ -649,11 +649,56 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
 .reply-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: stretch;
   gap: 10px;
   padding: 16px 18px;
   border-top: 1px solid var(--line);
   background: var(--paper-soft);
+}
+
+.reply-generate {
+  width: 100%;
+  min-height: 58px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  border-color: #1f7a4d;
+  background: #1f7a4d;
+  color: #fff;
+  border-radius: 16px;
+  font-size: clamp(18px, 1.5vw, 24px);
+  font-weight: 850;
+}
+
+.reply-generate:hover {
+  border-color: #17613c;
+  background: #17613c;
+}
+
+.reply-generate:disabled {
+  opacity: 1;
+  border-color: #7fc8a1;
+  background: #2f9a66;
+  color: #eefbf3;
+}
+
+.button-spinner {
+  display: none;
+  width: 18px;
+  height: 18px;
+  border: 3px solid rgba(255,255,255,.4);
+  border-top-color: #fff;
+  border-radius: 999px;
+  animation: spin .8s linear infinite;
+}
+
+.reply-generate.loading .button-spinner {
+  display: inline-block;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .pipeline-panel {

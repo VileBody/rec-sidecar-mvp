@@ -1046,8 +1046,18 @@ function renderReply() {
   const streaming = state?.seller_streaming ? "генерируется" : "готово";
   $("replyMeta").textContent = text ? streaming : "обновляется по речи клиента";
   $("copyReply").disabled = !text;
-  $("markSaid").disabled = !text;
+  syncGenerateReplyButton();
   syncReplyPip();
+}
+
+function syncGenerateReplyButton() {
+  const button = $("generateReply");
+  const label = $("generateReplyLabel");
+  if (!button || !label) return;
+  const generating = Boolean(state?.seller_streaming);
+  button.disabled = !state || generating;
+  button.classList.toggle("loading", generating);
+  label.textContent = generating ? "Ушел думать" : "Сгенерить ответ";
 }
 
 function renderPipelineStatus() {
@@ -1360,8 +1370,7 @@ async function openReplyPip() {
         --line: #d9e0ec;
         --paper: #ffffff;
         --paper-soft: #f6f8fc;
-        --blue: #2f6ee7;
-        --blue-soft: #eef4ff;
+        --green: #1f7a4d;
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       * { box-sizing: border-box; }
@@ -1372,10 +1381,14 @@ async function openReplyPip() {
       .meta { margin-top: 6px; color: var(--muted); font-size: 13px; font-weight: 650; }
       #pipReplyText { display: flex; align-items: center; padding: 22px 24px; font-size: clamp(25px, 8.4vw, 44px); line-height: 1.13; font-weight: 820; overflow: auto; word-break: break-word; }
       #pipReplyText.muted { color: #9aa3b5; font-weight: 680; }
-      footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--paper-soft); }
+      footer { display: flex; align-items: center; justify-content: stretch; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--paper-soft); }
       button { appearance: none; border: 1px solid #cfd8e8; border-radius: 14px; min-height: 44px; padding: 9px 16px; background: var(--paper); color: var(--ink); font: inherit; font-weight: 800; cursor: pointer; }
-      button.primary { background: var(--blue); color: white; border-color: var(--blue); }
+      button.generate { width: 100%; min-height: 58px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; background: var(--green); color: white; border-color: var(--green); font-size: 18px; }
       button:disabled { opacity: .45; cursor: default; }
+      button.generate:disabled { opacity: 1; background: #2f9a66; border-color: #7fc8a1; color: #eefbf3; }
+      .spinner { display: none; width: 17px; height: 17px; border: 3px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 999px; animation: spin .8s linear infinite; }
+      button.loading .spinner { display: inline-block; }
+      @keyframes spin { to { transform: rotate(360deg); } }
     </style>
     <header>
       <div class="eyebrow">следующая реплика</div>
@@ -1383,12 +1396,13 @@ async function openReplyPip() {
     </header>
     <main id="pipReplyText" class="muted">Жду речь клиента...</main>
     <footer>
-      <button id="pipMarkSaid">Я это сказал</button>
-      <button id="pipRefresh" class="primary">Перегенерить</button>
+      <button id="pipGenerateReply" class="generate">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="pipGenerateReplyLabel">Сгенерить ответ</span>
+      </button>
     </footer>
   `;
-  doc.getElementById("pipMarkSaid").onclick = markSaid;
-  doc.getElementById("pipRefresh").onclick = refreshReply;
+  doc.getElementById("pipGenerateReply").onclick = () => generateReply().catch((error) => showToast(error.message));
   syncReplyPip();
 }
 
@@ -1398,19 +1412,23 @@ function syncReplyPip() {
   const text = state?.seller_draft || "";
   const textNode = doc.getElementById("pipReplyText");
   const metaNode = doc.getElementById("pipReplyMeta");
-  const markButton = doc.getElementById("pipMarkSaid");
-  if (!textNode || !metaNode || !markButton) return;
+  const generateButton = doc.getElementById("pipGenerateReply");
+  const generateLabel = doc.getElementById("pipGenerateReplyLabel");
+  if (!textNode || !metaNode || !generateButton || !generateLabel) return;
   textNode.textContent = text || "Жду речь клиента...";
   textNode.classList.toggle("muted", !text);
   metaNode.textContent = text ? (state?.seller_streaming ? "генерируется" : "готово") : "обновляется по речи клиента";
-  markButton.disabled = !text;
+  const generating = Boolean(state?.seller_streaming);
+  generateButton.disabled = !state || generating;
+  generateButton.classList.toggle("loading", generating);
+  generateLabel.textContent = generating ? "Ушел думать" : "Сгенерить ответ";
 }
 
-function refreshReply() {
+function generateReply() {
   return postEvent({
     type: "seller.request",
-    trigger: "manual_refresh",
-    text: "Перегенерируй следующую реплику продавца короче и ближе к текущему контексту.",
+    trigger: "manual_generate",
+    text: "Сгенерируй свежую следующую реплику продавца под текущий момент разговора.",
   });
 }
 
@@ -2016,8 +2034,7 @@ $("micToggle").onclick = startMicTest;
 $("openReplyPip").onclick = () => openReplyPip().catch((error) => showToast(error.message));
 $("copyReply").onclick = copyReply;
 $("replyText").onclick = copyReply;
-$("markSaid").onclick = markSaid;
-$("refreshReply").onclick = refreshReply;
+$("generateReply").onclick = () => generateReply().catch((error) => showToast(error.message));
 $("help").onclick = () => requestAssist("button");
 $("askAssist").onclick = () => {
   const text = $("assistQuestion").value.trim();

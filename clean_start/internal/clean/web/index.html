@@ -107,8 +107,10 @@
         <div id="replyText" class="reply-text muted">Жду речь клиента...</div>
         <div id="pipelineStatus" class="pipeline-panel"></div>
         <div class="reply-actions">
-          <button id="markSaid" class="ghost">Я это сказал</button>
-          <button id="refreshReply" class="ghost">Перегенерить</button>
+          <button id="generateReply" class="reply-generate" type="button">
+            <span class="button-spinner" aria-hidden="true"></span>
+            <span id="generateReplyLabel">Сгенерить ответ</span>
+          </button>
         </div>
       </section>
 
