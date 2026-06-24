@@ -9,10 +9,33 @@ let captureStates = {
   microphone: emptyCaptureState("microphone"),
 };
 const SPEAKER_STORAGE_KEY = "rec-coach-seller-speaker";
+const ECHO_SUPPRESSION_STORAGE_KEY = "rec-coach-echo-suppression";
 let sellerSpeaker = localStorage.getItem(SPEAKER_STORAGE_KEY) || "";
+let echoSuppressionEnabled = localStorage.getItem(ECHO_SUPPRESSION_STORAGE_KEY) !== "0";
 let pendingStudentDirection = "";
 let studentAnswerLanguage = {};
 let replyPipWindow = null;
+let audioAdvancedVisible = false;
+const audioEchoState = {
+  systemRing: [],
+  maxMs: 2500,
+  suppressedFrames: 0,
+  sentFrames: 0,
+  doubleTalkFrames: 0,
+  lastLogAt: 0,
+  lastBestCorr: 0,
+  lastResidual: 1,
+  lastLagMs: 0,
+  thresholds: {
+    vadRms: 0.003,
+    echoCorrReject: 0.62,
+    echoCorrMaybe: 0.45,
+    residualSellerMin: 0.38,
+    minSystemRms: 0.0025,
+    maxLagMs: 1000,
+    minLagMs: 20,
+  },
+};
 const ADMIN_USER_TYPES = ["sales", "student"];
 let adminState = {
   mode: "sessions",
@@ -68,6 +91,7 @@ function currentRole() {
 }
 
 async function boot() {
+  initAudioControls();
   initSpeakerMap();
   const ok = await loadMe();
   if (ok) await enterCurrentApp();
@@ -999,8 +1023,9 @@ function roleLabel(role) {
 }
 
 function sourceLabel(source) {
-  if (source === "browser-system-audio") return "system";
-  if (source === "browser-microphone-test") return "mic";
+  if (source === "remote_audio" || source === "browser-system-audio") return "system";
+  if (source === "seller_mic" || source === "browser-microphone-test") return "mic";
+  if (source === "mixed_audio") return "mixed";
   return source;
 }
 
@@ -1536,8 +1561,8 @@ async function startCapture({ automatic = false, student = false } = {}) {
     if (!audioTracks.length) throw new Error("audio track не выбран");
     startAudioStream(stream, {
       mode: "system",
-      sourceLabel: student ? "student-system-audio" : "browser-system-audio",
-      roleOverride: student ? "student_original" : "mixed",
+      sourceLabel: student ? "student-system-audio" : "remote_audio",
+      roleOverride: student ? "student_original" : "client",
       direction: student ? ($("studentDirection").value || "en-ru") : "",
       language: student ? sourceLanguageForDirection($("studentDirection").value || "en-ru") : "",
     });
@@ -1576,15 +1601,26 @@ async function startMicTest() {
     setMicStatus("warn", "запрашиваю микрофон");
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+        echoCancellation: { ideal: true },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        channelCount: { ideal: 1 },
       },
     });
-    startAudioStream(stream, {
+    const captureState = startAudioStream(stream, {
       mode: "microphone",
-      sourceLabel: "browser-microphone-test",
+      sourceLabel: "seller_mic",
     });
+    const settings = stream.getAudioTracks()[0]?.getSettings?.() || {};
+    captureState.micSettings = settings;
+    logAudioEvent(captureState, "mic_settings", JSON.stringify({
+      echoCancellation: settings.echoCancellation ?? null,
+      noiseSuppression: settings.noiseSuppression ?? null,
+      autoGainControl: settings.autoGainControl ?? null,
+      channelCount: settings.channelCount ?? null,
+      sampleRate: settings.sampleRate ?? null,
+    }));
+    renderEchoStatus();
     setMicStatus("on", "микрофон включен · скажи фразу");
     $("micToggle").textContent = "Стоп микрофон";
     updateBothStatus();
@@ -1674,6 +1710,7 @@ function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direct
       }
     };
   }
+  return nextState;
 }
 
 function connectSTTWebSocket(captureState) {
@@ -1789,7 +1826,27 @@ function stopCapture(mode, stoppedText = "") {
 function streamAudioFrame(captureState, samples) {
   const now = Date.now();
   const rms = float32Rms(samples);
-  const isVoice = rms >= 0.003;
+  const pcm = downsampleToPCM16(samples, captureState.context.sampleRate, 16000);
+  if (captureState.mode === "system" && captureState.sourceLabel === "remote_audio" && rms >= audioEchoState.thresholds.minSystemRms) {
+    rememberSystemReferenceFrame(pcm, now, rms);
+  }
+  let isVoice = rms >= audioEchoState.thresholds.vadRms;
+  let echo = null;
+  if (captureState.mode === "microphone" && isVoice && echoSuppressionEnabled) {
+    echo = classifyMicEchoFrame(pcm, now, rms);
+    audioEchoState.lastBestCorr = echo.bestCorr;
+    audioEchoState.lastResidual = echo.residualRatio;
+    audioEchoState.lastLagMs = echo.lagMs;
+    if (echo.echoOnly) {
+      audioEchoState.suppressedFrames += 1;
+      isVoice = false;
+      maybeLogEchoStats(captureState);
+      setAudioStatus(captureState.mode, "on", "микрофон · эхо клиента подавлено");
+    } else if (echo.doubleTalk) {
+      audioEchoState.doubleTalkFrames += 1;
+    }
+    renderEchoStatus();
+  }
   if (isVoice) {
     captureState.speechOpen = true;
     captureState.lastVoiceAt = now;
@@ -1807,13 +1864,110 @@ function streamAudioFrame(captureState, samples) {
     return;
   }
 
-  const pcm = downsampleToPCM16(samples, captureState.context.sampleRate, 16000);
   const pcmBase64 = bytesToBase64(new Uint8Array(pcm.buffer));
   captureState.ws.send(JSON.stringify({ audio_chunk: { content: pcmBase64 } }));
   captureState.sentChunks += 1;
+  if (captureState.mode === "microphone") {
+    audioEchoState.sentFrames += 1;
+    maybeLogEchoStats(captureState);
+  }
   if (captureState.sentChunks % 12 === 0) {
     setAudioStatus(captureState.mode, "on", captureState.mode === "microphone" ? "микрофон · слышу речь" : "захват · слышу речь");
   }
+}
+
+function rememberSystemReferenceFrame(pcm16, nowMs, rms) {
+  audioEchoState.systemRing.push({
+    pcm: pcm16,
+    at: nowMs,
+    rms,
+  });
+  const cutoff = nowMs - audioEchoState.maxMs;
+  while (audioEchoState.systemRing.length && audioEchoState.systemRing[0].at < cutoff) {
+    audioEchoState.systemRing.shift();
+  }
+}
+
+function classifyMicEchoFrame(micPcm16, nowMs, micRms) {
+  const thresholds = audioEchoState.thresholds;
+  let bestCorr = 0;
+  let bestResidual = 1;
+  let bestLagMs = 0;
+  for (let i = audioEchoState.systemRing.length - 1; i >= 0; i--) {
+    const frame = audioEchoState.systemRing[i];
+    const lagMs = nowMs - frame.at;
+    if (lagMs < thresholds.minLagMs) continue;
+    if (lagMs > thresholds.maxLagMs) break;
+    if (frame.rms < thresholds.minSystemRms) continue;
+    const corr = normalizedCrossCorrelation(micPcm16, frame.pcm);
+    if (corr > bestCorr) {
+      bestCorr = corr;
+      bestResidual = estimateResidualRatio(micPcm16, frame.pcm);
+      bestLagMs = lagMs;
+    }
+  }
+  const echoOnly = (bestCorr >= thresholds.echoCorrReject && bestResidual < thresholds.residualSellerMin) ||
+    (bestCorr >= thresholds.echoCorrMaybe && bestResidual < thresholds.residualSellerMin * 0.7);
+  const doubleTalk = bestCorr >= thresholds.echoCorrReject && bestResidual >= thresholds.residualSellerMin;
+  return { bestCorr, residualRatio: bestResidual, lagMs: bestLagMs, echoOnly, doubleTalk, micRms };
+}
+
+function normalizedCrossCorrelation(a, b) {
+  const n = Math.min(a.length, b.length);
+  if (n < 32) return 0;
+  const stride = Math.max(1, Math.floor(n / 256));
+  let dot = 0;
+  let aa = 0;
+  let bb = 0;
+  for (let i = 0; i < n; i += stride) {
+    const av = a[i];
+    const bv = b[i];
+    dot += av * bv;
+    aa += av * av;
+    bb += bv * bv;
+  }
+  if (aa <= 0 || bb <= 0) return 0;
+  return Math.abs(dot / Math.sqrt(aa * bb));
+}
+
+function estimateResidualRatio(mic, ref) {
+  const n = Math.min(mic.length, ref.length);
+  if (n < 32) return 1;
+  const stride = Math.max(1, Math.floor(n / 256));
+  let dot = 0;
+  let rr = 0;
+  let mm = 0;
+  for (let i = 0; i < n; i += stride) {
+    const mv = mic[i];
+    const rv = ref[i];
+    dot += mv * rv;
+    rr += rv * rv;
+    mm += mv * mv;
+  }
+  if (rr <= 0 || mm <= 0) return 1;
+  const alpha = dot / rr;
+  let residual = 0;
+  for (let i = 0; i < n; i += stride) {
+    const value = mic[i] - alpha * ref[i];
+    residual += value * value;
+  }
+  return Math.sqrt(residual / mm);
+}
+
+function maybeLogEchoStats(captureState) {
+  const now = Date.now();
+  if (now - audioEchoState.lastLogAt < 5000) return;
+  audioEchoState.lastLogAt = now;
+  logAudioEvent(captureState, "echo_stats", JSON.stringify({
+    suppression: echoSuppressionEnabled,
+    suppressedFrames: audioEchoState.suppressedFrames,
+    sentFrames: audioEchoState.sentFrames,
+    doubleTalkFrames: audioEchoState.doubleTalkFrames,
+    bestCorr: Number(audioEchoState.lastBestCorr.toFixed(3)),
+    residual: Number(audioEchoState.lastResidual.toFixed(3)),
+    lagMs: Math.round(audioEchoState.lastLagMs),
+    systemRing: audioEchoState.systemRing.length,
+  }));
 }
 
 function sendStreamEndTurn(captureState) {
@@ -1844,8 +1998,8 @@ function emptyCaptureState(mode) {
     sink: null,
     ws: null,
     mode,
-    role: mode === "microphone" ? "seller" : "mixed",
-    sourceLabel: mode === "microphone" ? "browser-microphone-test" : "browser-system-audio",
+    role: mode === "microphone" ? "seller" : "client",
+    sourceLabel: mode === "microphone" ? "seller_mic" : "remote_audio",
     direction: "",
     language: "",
     speechOpen: false,
@@ -1915,15 +2069,69 @@ function updateBothStatus(text = "") {
   if (text) {
     $("bothStatus").textContent = text;
   } else if (systemOn && micOn) {
-    $("bothStatus").textContent = "звонок пишется: system=диаризация, mic=мы";
+    $("bothStatus").textContent = "звонок пишется: system=клиент, mic=мы";
   } else if (systemOn) {
-    $("bothStatus").textContent = "включен системный звук · Soniox diarization";
+    $("bothStatus").textContent = "включен системный звук · клиент";
   } else if (micOn) {
     $("bothStatus").textContent = "включен только микрофон";
   } else {
-    $("bothStatus").textContent = "system audio = speaker_1/speaker_2, микрофон = мы";
+    $("bothStatus").textContent = "system audio = клиент, микрофон = мы";
   }
   $("bothToggle").textContent = systemOn && micOn ? "Стоп всё" : "Включить всё";
+}
+
+function initAudioControls() {
+  const echoToggle = $("echoSuppressionToggle");
+  if (echoToggle) {
+    echoToggle.checked = echoSuppressionEnabled;
+    echoToggle.onchange = () => {
+      echoSuppressionEnabled = echoToggle.checked;
+      localStorage.setItem(ECHO_SUPPRESSION_STORAGE_KEY, echoSuppressionEnabled ? "1" : "0");
+      renderEchoStatus();
+    };
+  }
+  const advancedToggle = $("audioAdvancedToggle");
+  if (advancedToggle) {
+    advancedToggle.onclick = () => {
+      audioAdvancedVisible = !audioAdvancedVisible;
+      renderAudioAdvanced();
+    };
+  }
+  renderAudioAdvanced();
+  renderEchoStatus();
+}
+
+function renderAudioAdvanced() {
+  const panel = $("audioAdvancedPanel");
+  const button = $("audioAdvancedToggle");
+  if (panel) panel.hidden = !audioAdvancedVisible;
+  if (button) button.textContent = audioAdvancedVisible ? "Скрыть" : "Диагностика";
+}
+
+function renderEchoStatus() {
+  const status = $("echoStatus");
+  const metrics = $("echoDebugMetrics");
+  const micSettings = captureStates.microphone?.micSettings || {};
+  const aec = micSettings.echoCancellation === true
+    ? "AEC on"
+    : micSettings.echoCancellation === false
+      ? "AEC off"
+      : "AEC unknown";
+  const mode = echoSuppressionEnabled ? "эхо подавляется" : "эхо-фильтр выкл";
+  if (status) {
+    status.textContent = `микрофон: ${aec} · ${mode}`;
+  }
+  if (metrics) {
+    metrics.textContent = [
+      `echo stats: sent=${audioEchoState.sentFrames}`,
+      `suppressed=${audioEchoState.suppressedFrames}`,
+      `double-talk=${audioEchoState.doubleTalkFrames}`,
+      `corr=${audioEchoState.lastBestCorr.toFixed(2)}`,
+      `residual=${audioEchoState.lastResidual.toFixed(2)}`,
+      `lag=${Math.round(audioEchoState.lastLagMs)}ms`,
+      `refs=${audioEchoState.systemRing.length}`,
+    ].join(" · ");
+  }
 }
 
 function initSpeakerMap() {
@@ -2140,6 +2348,7 @@ setInterval(() => {
   syncGenerateReplyButton();
   syncReplyPip();
   renderStage();
+  renderEchoStatus();
 }, 1000);
 
 boot().catch((error) => {

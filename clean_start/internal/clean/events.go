@@ -61,13 +61,16 @@ type TextData struct {
 }
 
 type SpeechData struct {
-	Role      string `json:"role"`
-	Text      string `json:"text"`
-	Source    string `json:"source,omitempty"`
-	Speaker   string `json:"speaker,omitempty"`
-	SegmentID string `json:"segment_id,omitempty"`
-	Direction string `json:"direction,omitempty"`
-	Language  string `json:"language,omitempty"`
+	Role       string  `json:"role"`
+	RoleReason string  `json:"role_reason,omitempty"`
+	Text       string  `json:"text"`
+	Source     string  `json:"source,omitempty"`
+	Speaker    string  `json:"speaker,omitempty"`
+	SegmentID  string  `json:"segment_id,omitempty"`
+	Direction  string  `json:"direction,omitempty"`
+	Language   string  `json:"language,omitempty"`
+	EchoReason string  `json:"echo_reason,omitempty"`
+	EchoScore  float64 `json:"echo_score,omitempty"`
 }
 
 type SellerRequestData struct {

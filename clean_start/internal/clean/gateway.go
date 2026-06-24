@@ -52,7 +52,7 @@ func NewGateway(cfg Config, nc *nats.Conn, inworld *InworldClient, logger *slog.
 }
 
 func (g *Gateway) registerMicStream(sessionID, source string) func() {
-	if source != "browser-microphone-test" {
+	if normalizeCaptureSource(source) != CaptureSourceSellerMic {
 		return func() {}
 	}
 	g.activeStreamsMu.Lock()

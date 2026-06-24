@@ -56,16 +56,32 @@
         </div>
         <div class="audio-row">
           <div>
-            <div class="title" style="font-size:15px">Кто я</div>
-            <div id="speakerMapStatus" class="sub">выбери свой голос после первых реплик</div>
+            <div class="title" style="font-size:15px">Подавление эха</div>
+            <div id="echoStatus" class="sub">микрофон: AEC unknown</div>
           </div>
           <div class="capture-row">
-            <select id="sellerSpeaker">
-              <option value="">не выбрано</option>
-              <option value="1">speaker 1</option>
-              <option value="2">speaker 2</option>
-            </select>
+            <label class="switch-label">
+              <input id="echoSuppressionToggle" type="checkbox">
+              <span>эхо-фильтр</span>
+            </label>
+            <button id="audioAdvancedToggle" class="ghost" type="button">Диагностика</button>
           </div>
+        </div>
+        <div id="audioAdvancedPanel" class="audio-debug-panel" hidden>
+          <div class="audio-row">
+            <div>
+              <div class="title" style="font-size:15px">Кто я</div>
+              <div id="speakerMapStatus" class="sub">выбери свой голос после первых реплик</div>
+            </div>
+            <div class="capture-row">
+              <select id="sellerSpeaker">
+                <option value="">не выбрано</option>
+                <option value="1">speaker 1</option>
+                <option value="2">speaker 2</option>
+              </select>
+            </div>
+          </div>
+          <div id="echoDebugMetrics" class="audio-debug-metrics">echo stats: жду аудио</div>
         </div>
         <div class="audio-row">
           <div>

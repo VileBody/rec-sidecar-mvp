@@ -604,6 +604,41 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   flex-wrap: wrap;
 }
 
+.switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 760;
+  user-select: none;
+}
+
+.switch-label input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--green);
+}
+
+.audio-debug-panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--line);
+}
+
+.audio-debug-panel[hidden] {
+  display: none;
+}
+
+.audio-debug-metrics {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;

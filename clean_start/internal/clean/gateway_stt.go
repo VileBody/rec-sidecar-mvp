@@ -58,12 +58,15 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := strings.TrimSpace(req.Role)
+	roleReason := "explicit:" + role
 	if role == "" {
 		role = "client"
+		roleReason = "default:client"
 	}
-	source := strings.TrimSpace(req.Source)
+	source := normalizeCaptureSource(req.Source)
 	if sourceRole, ok := roleForCaptureSource(source); ok {
 		role = sourceRole
+		roleReason = "source:" + source
 	}
 	language := strings.TrimSpace(req.Language)
 	direction := strings.TrimSpace(req.Direction)
@@ -105,11 +108,12 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 	}
 	g.logger.Info("browser audio stt final", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw), "elapsed_ms", elapsedMS, "text_len", len([]rune(text)), "text", text)
 	event := NewEvent(sessionID, EventSTTFinal, "gateway-stt", SpeechData{
-		Role:      role,
-		Text:      text,
-		Source:    source,
-		Direction: direction,
-		Language:  language,
+		Role:       role,
+		RoleReason: roleReason,
+		Text:       text,
+		Source:     source,
+		Direction:  direction,
+		Language:   language,
 	})
 	if err := g.emit(event); err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -130,9 +134,9 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	if role == "mixed" || role == "diarized" {
 		role = "mixed"
 	}
-	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	source := normalizeCaptureSource(r.URL.Query().Get("source"))
 	if source == "" {
-		source = "browser-audio"
+		source = CaptureSourceMixedAudio
 	}
 	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
 	language := strings.TrimSpace(r.URL.Query().Get("language"))
@@ -204,9 +208,9 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 				eventType = EventSTTFinal
 			}
 			for index, segment := range diarizedTranscriptSegments(transcript) {
-				segmentRole := roleForSTTSource(role, source, segment.Speaker, speakerRoles)
+				segmentRole, roleReason := roleReasonForSTTSource(role, source, segment.Speaker, speakerRoles)
 				if suppressSystemSellerSegment(g.hasActiveMicStream(sessionID), source, segmentRole) {
-					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", "system_seller_suppressed_by_active_mic", "text", segment.Text)
+					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", "system_seller_suppressed_by_active_mic", "text", segment.Text)
 					continue
 				}
 				segmentID := segmentTracker.ID(segment, index)
@@ -214,37 +218,39 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if reason := browserTranscriptRejectReason(segment.Text); reason != "" {
-					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
+					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
 					continue
 				}
 				if segmentRole == "client" || segmentRole == "seller" {
 					if reason := g.crossSourceEchoRejectReason(sessionID, segmentRole, source, segment.Text); reason != "" {
-						g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
+						g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
 						continue
 					}
 				}
 				event := NewEvent(sessionID, eventType, "gateway-stt-live", SpeechData{
-					Role:      segmentRole,
-					Text:      segment.Text,
-					Source:    source,
-					Speaker:   segment.Speaker,
-					SegmentID: segmentID,
-					Direction: direction,
-					Language:  language,
+					Role:       segmentRole,
+					RoleReason: roleReason,
+					Text:       segment.Text,
+					Source:     source,
+					Speaker:    segment.Speaker,
+					SegmentID:  segmentID,
+					Direction:  direction,
+					Language:   language,
 				})
 				if err := g.emit(event); err != nil {
 					done <- err
 					return
 				}
-				g.logger.Info("browser audio stt stream transcript", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "final", transcript.Final, "created_at", event.CreatedAt.Format(time.RFC3339Nano), "text_len", len([]rune(segment.Text)), "text", segment.Text)
+				g.logger.Info("browser audio stt stream transcript", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "final", transcript.Final, "created_at", event.CreatedAt.Format(time.RFC3339Nano), "text_len", len([]rune(segment.Text)), "text", segment.Text)
 				if err := writeBrowserJSON(map[string]any{
-					"type":       eventType,
-					"text":       segment.Text,
-					"final":      transcript.Final,
-					"role":       segmentRole,
-					"speaker":    segment.Speaker,
-					"segment_id": segmentID,
-					"created_at": event.CreatedAt.Format(time.RFC3339Nano),
+					"type":        eventType,
+					"text":        segment.Text,
+					"final":       transcript.Final,
+					"role":        segmentRole,
+					"role_reason": roleReason,
+					"speaker":     segment.Speaker,
+					"segment_id":  segmentID,
+					"created_at":  event.CreatedAt.Format(time.RFC3339Nano),
 				}); err != nil {
 					done <- err
 					return

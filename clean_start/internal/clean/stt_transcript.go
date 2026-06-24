@@ -11,6 +11,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	CaptureSourceSellerMic   = "seller_mic"
+	CaptureSourceRemoteAudio = "remote_audio"
+	CaptureSourceMixedAudio  = "mixed_audio"
+)
+
 func transcribePCMWithStream(stream STTStream, provider string, pcm []byte) (string, error) {
 	if len(pcm) == 0 {
 		return "", errors.New("empty pcm")
@@ -171,11 +177,24 @@ func (s *sttStreamStabilizer) ShouldEmit(segmentID, text string, final bool) boo
 	return true
 }
 
-func roleForCaptureSource(source string) (string, bool) {
+func normalizeCaptureSource(source string) string {
 	switch strings.TrimSpace(source) {
 	case "browser-microphone-test":
-		return "seller", true
+		return CaptureSourceSellerMic
 	case "browser-system-audio":
+		return CaptureSourceRemoteAudio
+	case "browser-audio":
+		return CaptureSourceMixedAudio
+	default:
+		return strings.TrimSpace(source)
+	}
+}
+
+func roleForCaptureSource(source string) (string, bool) {
+	switch normalizeCaptureSource(source) {
+	case CaptureSourceSellerMic:
+		return "seller", true
+	case CaptureSourceRemoteAudio:
 		return "client", true
 	default:
 		return "", false
@@ -183,26 +202,40 @@ func roleForCaptureSource(source string) (string, bool) {
 }
 
 func roleForSTTSource(defaultRole, source, speaker string, speakerRoles map[string]string) string {
-	if role, ok := roleForCaptureSource(source); ok {
-		return role
-	}
-	return roleForSTTSpeaker(defaultRole, speaker, speakerRoles)
+	role, _ := roleReasonForSTTSource(defaultRole, source, speaker, speakerRoles)
+	return role
 }
 
-func roleForSTTSpeaker(defaultRole, speaker string, speakerRoles map[string]string) string {
+func roleReasonForSTTSource(defaultRole, source, speaker string, speakerRoles map[string]string) (string, string) {
+	normalizedSource := normalizeCaptureSource(source)
+	if role, ok := roleForCaptureSource(source); ok {
+		return role, "source:" + normalizedSource
+	}
+	return roleReasonForSTTSpeaker(defaultRole, speaker, speakerRoles)
+}
+
+func roleReasonForSTTSpeaker(defaultRole, speaker string, speakerRoles map[string]string) (string, string) {
 	defaultRole = strings.TrimSpace(defaultRole)
 	if defaultRole != "mixed" {
-		return defaultRole
+		if defaultRole == "" {
+			return "client", "default:client"
+		}
+		return defaultRole, "explicit:" + defaultRole
 	}
 	speaker = normalizeQuerySpeaker(speaker)
 	if speaker == "" {
-		return "speaker"
+		return "speaker", "default:mixed_unknown"
 	}
 	if role, ok := speakerRoles[speaker]; ok {
-		return role
+		return role, "diarization:speaker_" + speaker
 	}
 	role := "speaker_" + sanitizeSpeakerID(speaker)
 	speakerRoles[speaker] = role
+	return role, "diarization:speaker_" + speaker
+}
+
+func roleForSTTSpeaker(defaultRole, speaker string, speakerRoles map[string]string) string {
+	role, _ := roleReasonForSTTSpeaker(defaultRole, speaker, speakerRoles)
 	return role
 }
 

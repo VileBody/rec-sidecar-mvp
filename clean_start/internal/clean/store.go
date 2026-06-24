@@ -14,14 +14,17 @@ type Message struct {
 }
 
 type TranscriptItem struct {
-	ID        string    `json:"id,omitempty"`
-	Role      string    `json:"role"`
-	Text      string    `json:"text"`
-	Source    string    `json:"source,omitempty"`
-	Speaker   string    `json:"speaker,omitempty"`
-	SegmentID string    `json:"segment_id,omitempty"`
-	Final     bool      `json:"final"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id,omitempty"`
+	Role       string    `json:"role"`
+	RoleReason string    `json:"role_reason,omitempty"`
+	Text       string    `json:"text"`
+	Source     string    `json:"source,omitempty"`
+	Speaker    string    `json:"speaker,omitempty"`
+	SegmentID  string    `json:"segment_id,omitempty"`
+	Final      bool      `json:"final"`
+	EchoReason string    `json:"echo_reason,omitempty"`
+	EchoScore  float64   `json:"echo_score,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type AssistState struct {
@@ -159,9 +162,7 @@ func (s *Store) Apply(event Event) SessionState {
 			if data.Role == "client" {
 				state.ClientPartial = data.Text
 			}
-			item := TranscriptItem{
-				ID: event.ID, Role: data.Role, Text: data.Text, Source: data.Source, Speaker: data.Speaker, SegmentID: data.SegmentID, Final: false, CreatedAt: event.CreatedAt,
-			}
+			item := transcriptItemFromSpeech(event, data, false)
 			state.Transcript = appendTranscript(state.Transcript, item)
 			if data.Role == "student_original" {
 				state.Student.Originals = appendTranscript(state.Student.Originals, item)
@@ -177,9 +178,7 @@ func (s *Store) Apply(event Event) SessionState {
 			} else if data.Role == "seller" && data.Text != "" {
 				state.Messages = append(state.Messages, Message{Role: "seller", Text: data.Text, CreatedAt: event.CreatedAt})
 			}
-			item := TranscriptItem{
-				ID: event.ID, Role: data.Role, Text: data.Text, Source: data.Source, Speaker: data.Speaker, SegmentID: data.SegmentID, Final: true, CreatedAt: event.CreatedAt,
-			}
+			item := transcriptItemFromSpeech(event, data, true)
 			state.Transcript = appendTranscript(state.Transcript, item)
 			if data.Role == "student_original" {
 				state.Student.Originals = appendTranscript(state.Student.Originals, item)
@@ -444,6 +443,22 @@ func finishStudentAnswerTranslation(items []StudentAnswerItem, generationID, tex
 		}
 	}
 	return items
+}
+
+func transcriptItemFromSpeech(event Event, data SpeechData, final bool) TranscriptItem {
+	return TranscriptItem{
+		ID:         event.ID,
+		Role:       data.Role,
+		RoleReason: data.RoleReason,
+		Text:       data.Text,
+		Source:     data.Source,
+		Speaker:    data.Speaker,
+		SegmentID:  data.SegmentID,
+		Final:      final,
+		EchoReason: data.EchoReason,
+		EchoScore:  data.EchoScore,
+		CreatedAt:  event.CreatedAt,
+	}
 }
 
 func appendTranscript(items []TranscriptItem, item TranscriptItem) []TranscriptItem {

@@ -248,16 +248,24 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 		event = NewEvent(sessionID, EventStudentAnswerRequest, "gateway", StudentAnswerRequestData{Trigger: trigger, Text: strings.TrimSpace(req.Text)})
 	case EventSTTPartial, EventSTTFinal:
 		role := strings.TrimSpace(req.Role)
+		roleReason := "explicit:" + role
 		if role == "" {
 			role = "client"
+			roleReason = "default:client"
+		}
+		source := normalizeCaptureSource(req.Source)
+		if sourceRole, ok := roleForCaptureSource(source); ok {
+			role = sourceRole
+			roleReason = "source:" + source
 		}
 		event = NewEvent(sessionID, req.Type, "gateway", SpeechData{
-			Role:      role,
-			Text:      strings.TrimSpace(req.Text),
-			Source:    strings.TrimSpace(req.Source),
-			Speaker:   strings.TrimSpace(req.Speaker),
-			SegmentID: strings.TrimSpace(req.SegmentID),
-			Direction: strings.TrimSpace(req.Direction),
+			Role:       role,
+			RoleReason: roleReason,
+			Text:       strings.TrimSpace(req.Text),
+			Source:     source,
+			Speaker:    strings.TrimSpace(req.Speaker),
+			SegmentID:  strings.TrimSpace(req.SegmentID),
+			Direction:  strings.TrimSpace(req.Direction),
 		})
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported event type %q", req.Type))

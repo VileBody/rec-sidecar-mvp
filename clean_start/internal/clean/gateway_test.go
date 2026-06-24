@@ -42,8 +42,8 @@ func TestSellerEchoRejectReason(t *testing.T) {
 		Text: "Понимаю, давайте сначала быстро сверим, что именно сейчас не работает.",
 	}))
 
-	if got := g.sellerEchoRejectReason(sessionID, "client", "browser-system-audio", "Понимаю давайте сначала быстро сверим что именно сейчас не работает"); got != "seller_echo_message" {
-		t.Fatalf("seller echo reason = %q, want seller_echo_message", got)
+	if got := g.sellerEchoRejectReason(sessionID, "client", "browser-system-audio", "Понимаю давайте сначала быстро сверим что именно сейчас не работает"); got != "seller_echo_into_remote_recent_message" {
+		t.Fatalf("seller echo reason = %q, want seller_echo_into_remote_recent_message", got)
 	}
 	if got := g.sellerEchoRejectReason(sessionID, "client", "browser-system-audio", "Нет, я как клиент хочу уточнить совсем другой вопрос"); got != "" {
 		t.Fatalf("ordinary client text rejected as %q", got)
@@ -66,8 +66,8 @@ func TestSellerEchoRejectReasonUsesCurrentDraft(t *testing.T) {
 	}))
 
 	got := g.sellerEchoRejectReason(sessionID, "client", "browser-system-audio", "Давайте вернемся к вашей задаче и уточним какой результат нужен в первую очередь")
-	if got != "seller_echo_draft" {
-		t.Fatalf("seller echo reason = %q, want seller_echo_draft", got)
+	if got != "seller_echo_into_remote_draft" {
+		t.Fatalf("seller echo reason = %q, want seller_echo_into_remote_draft", got)
 	}
 }
 
@@ -84,8 +84,8 @@ func TestSellerEchoRejectReasonUsesImmediateDraft(t *testing.T) {
 	}))
 
 	got := g.sellerEchoRejectReason(sessionID, "client", "browser-system-audio", "Давайте я коротко отвечу на это и верну разговор к вашей задаче")
-	if got != "seller_echo_immediate_draft" {
-		t.Fatalf("seller echo reason = %q, want seller_echo_immediate_draft", got)
+	if got != "seller_echo_into_remote_immediate_draft" {
+		t.Fatalf("seller echo reason = %q, want seller_echo_into_remote_immediate_draft", got)
 	}
 }
 
@@ -99,8 +99,8 @@ func TestClientEchoRejectReason(t *testing.T) {
 		Text:   "Сомневаюсь, что план будет рабочим, до внедрения я обычно не дохожу.",
 	}))
 
-	if got := g.crossSourceEchoRejectReason(sessionID, "seller", "browser-microphone-test", "Сомневаюсь что план будет рабочим до внедрения я обычно не дохожу"); got != "client_echo_message" {
-		t.Fatalf("client echo reason = %q, want client_echo_message", got)
+	if got := g.crossSourceEchoRejectReason(sessionID, "seller", "browser-microphone-test", "Сомневаюсь что план будет рабочим до внедрения я обычно не дохожу"); got != "client_echo_into_mic_recent_message" {
+		t.Fatalf("client echo reason = %q, want client_echo_into_mic_recent_message", got)
 	}
 	if got := g.crossSourceEchoRejectReason(sessionID, "seller", "browser-microphone-test", "Да, понимаю, поэтому давайте разберем, где именно вы обычно застреваете."); got != "" {
 		t.Fatalf("ordinary seller text rejected as %q", got)
@@ -136,6 +136,18 @@ func TestRoleForSTTSourceOverridesDiarizedSpeakers(t *testing.T) {
 	}
 	if got := roleForSTTSource("mixed", "student-system-audio", "3", roles); got != "speaker_3" {
 		t.Fatalf("student/source-neutral role = %q, want speaker_3", got)
+	}
+}
+
+func TestNormalizeLegacyCaptureSources(t *testing.T) {
+	if got := normalizeCaptureSource("browser-microphone-test"); got != CaptureSourceSellerMic {
+		t.Fatalf("legacy mic source = %q, want %q", got, CaptureSourceSellerMic)
+	}
+	if got := normalizeCaptureSource("browser-system-audio"); got != CaptureSourceRemoteAudio {
+		t.Fatalf("legacy system source = %q, want %q", got, CaptureSourceRemoteAudio)
+	}
+	if got := normalizeCaptureSource("remote_audio"); got != CaptureSourceRemoteAudio {
+		t.Fatalf("native remote source = %q, want %q", got, CaptureSourceRemoteAudio)
 	}
 }
 

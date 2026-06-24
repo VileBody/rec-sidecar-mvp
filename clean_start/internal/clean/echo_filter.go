@@ -6,8 +6,15 @@ import (
 	"unicode"
 )
 
+const (
+	echoRecentWindow     = 5 * time.Second
+	echoLongWindow       = 45 * time.Second
+	echoRecentSimilarity = 0.72
+	echoLongSimilarity   = 0.88
+)
+
 func suppressSystemSellerSegment(enabled bool, source, role string) bool {
-	return enabled && source == "browser-system-audio" && role == "seller"
+	return enabled && normalizeCaptureSource(source) == CaptureSourceRemoteAudio && role == "seller"
 }
 
 func (g *Gateway) crossSourceEchoRejectReason(sessionID, role, source, text string) string {
@@ -21,7 +28,7 @@ func (g *Gateway) crossSourceEchoRejectReason(sessionID, role, source, text stri
 }
 
 func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) string {
-	if role != "client" || source != "browser-system-audio" {
+	if role != "client" || normalizeCaptureSource(source) != CaptureSourceRemoteAudio {
 		return ""
 	}
 	probe := normalizeEchoText(text)
@@ -33,10 +40,10 @@ func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) s
 		return ""
 	}
 	if textSimilarity(probe, normalizeEchoText(state.SellerDraft)) >= 0.82 {
-		return "seller_echo_draft"
+		return "seller_echo_into_remote_draft"
 	}
 	if textSimilarity(probe, normalizeEchoText(state.SellerDraftImmediate)) >= 0.82 {
-		return "seller_echo_immediate_draft"
+		return "seller_echo_into_remote_immediate_draft"
 	}
 	now := time.Now()
 	for i := len(state.Messages) - 1; i >= 0; i-- {
@@ -44,11 +51,18 @@ func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) s
 		if msg.Role != "seller" {
 			continue
 		}
-		if now.Sub(msg.CreatedAt) > 45*time.Second {
+		age := now.Sub(msg.CreatedAt)
+		if age > echoLongWindow {
 			break
 		}
-		if textSimilarity(probe, normalizeEchoText(msg.Text)) >= 0.82 {
-			return "seller_echo_message"
+		threshold := echoLongSimilarity
+		reason := "seller_echo_into_remote_long_message"
+		if age <= echoRecentWindow {
+			threshold = echoRecentSimilarity
+			reason = "seller_echo_into_remote_recent_message"
+		}
+		if textSimilarity(probe, normalizeEchoText(msg.Text)) >= threshold {
+			return reason
 		}
 	}
 	for i := len(state.Transcript) - 1; i >= 0; i-- {
@@ -56,18 +70,25 @@ func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) s
 		if item.Role != "seller" {
 			continue
 		}
-		if now.Sub(item.CreatedAt) > 45*time.Second {
+		age := now.Sub(item.CreatedAt)
+		if age > echoLongWindow {
 			break
 		}
-		if textSimilarity(probe, normalizeEchoText(item.Text)) >= 0.82 {
-			return "seller_echo_transcript"
+		threshold := echoLongSimilarity
+		reason := "seller_echo_into_remote_long_transcript"
+		if age <= echoRecentWindow {
+			threshold = echoRecentSimilarity
+			reason = "seller_echo_into_remote_recent_transcript"
+		}
+		if textSimilarity(probe, normalizeEchoText(item.Text)) >= threshold {
+			return reason
 		}
 	}
 	return ""
 }
 
 func (g *Gateway) clientEchoRejectReason(sessionID, role, source, text string) string {
-	if role != "seller" || source != "browser-microphone-test" {
+	if role != "seller" || normalizeCaptureSource(source) != CaptureSourceSellerMic {
 		return ""
 	}
 	probe := normalizeEchoText(text)
@@ -84,11 +105,18 @@ func (g *Gateway) clientEchoRejectReason(sessionID, role, source, text string) s
 		if msg.Role != "client" {
 			continue
 		}
-		if now.Sub(msg.CreatedAt) > 45*time.Second {
+		age := now.Sub(msg.CreatedAt)
+		if age > echoLongWindow {
 			break
 		}
-		if textSimilarity(probe, normalizeEchoText(msg.Text)) >= 0.82 {
-			return "client_echo_message"
+		threshold := echoLongSimilarity
+		reason := "client_echo_into_mic_long_message"
+		if age <= echoRecentWindow {
+			threshold = echoRecentSimilarity
+			reason = "client_echo_into_mic_recent_message"
+		}
+		if textSimilarity(probe, normalizeEchoText(msg.Text)) >= threshold {
+			return reason
 		}
 	}
 	for i := len(state.Transcript) - 1; i >= 0; i-- {
@@ -96,11 +124,18 @@ func (g *Gateway) clientEchoRejectReason(sessionID, role, source, text string) s
 		if item.Role != "client" {
 			continue
 		}
-		if now.Sub(item.CreatedAt) > 45*time.Second {
+		age := now.Sub(item.CreatedAt)
+		if age > echoLongWindow {
 			break
 		}
-		if textSimilarity(probe, normalizeEchoText(item.Text)) >= 0.82 {
-			return "client_echo_transcript"
+		threshold := echoLongSimilarity
+		reason := "client_echo_into_mic_long_transcript"
+		if age <= echoRecentWindow {
+			threshold = echoRecentSimilarity
+			reason = "client_echo_into_mic_recent_transcript"
+		}
+		if textSimilarity(probe, normalizeEchoText(item.Text)) >= threshold {
+			return reason
 		}
 	}
 	return ""

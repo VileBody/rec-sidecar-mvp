@@ -116,7 +116,7 @@ func TestGatewayPostEventAcceptsKnownEventsAndTrimsPayload(t *testing.T) {
 		t.Fatalf("transcript len = %d", len(state.Transcript))
 	}
 	item := state.Transcript[0]
-	if item.Role != "client" || item.Text != "Привет" || item.Source != "browser-system-audio" || item.Speaker != "1" || item.SegmentID != "seg" {
+	if item.Role != "client" || item.RoleReason != "source:remote_audio" || item.Text != "Привет" || item.Source != CaptureSourceRemoteAudio || item.Speaker != "1" || item.SegmentID != "seg" {
 		t.Fatalf("unexpected transcript item: %#v", item)
 	}
 }
