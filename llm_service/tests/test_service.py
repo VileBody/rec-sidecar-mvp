@@ -166,8 +166,11 @@ def test_help_prompts_force_single_sentence():
     assert "_Комментарий:_" in SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT
     assert "оставить текущую реплику" in SALES_COACH_LIVE_VALIDATOR_SYSTEM_PROMPT
     assert 'action = "skip"' in SALES_COACH_LIVE_VALIDATOR_SYSTEM_PROMPT
+    assert "По умолчанию выбирай" in SALES_COACH_LIVE_VALIDATOR_SYSTEM_PROMPT
+    assert "отвлеченную тему" in SALES_COACH_LIVE_VALIDATOR_SYSTEM_PROMPT
     assert "готовую к зачитыванию реплику продавца" in SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT
     assert "ровно одну короткую реплику" in SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT
+    assert "верни разговор к цели звонка" in SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT
 
 
 def test_stage_agenda_assets_cover_detector_tags():

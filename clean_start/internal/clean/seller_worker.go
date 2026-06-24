@@ -128,10 +128,11 @@ func (w *SellerWorker) maybeStartFromPartial(ctx context.Context, sessionID stri
 	_, generationActive := w.cancels[sessionID]
 	w.mu.Unlock()
 
+	if generationActive {
+		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "zai_gate", Status: "skipped", Trigger: "zai_semantic_gate", Detail: "Gemini уже генерирует новую реплику"})
+		return
+	}
 	if currentDraft == "" {
-		if generationActive {
-			return
-		}
 		w.startGeneration(ctx, sessionID, mem, "no_current_reply", cleanText)
 		return
 	}
@@ -260,6 +261,13 @@ func (w *SellerWorker) startGate(parent context.Context, sessionID string, mem *
 		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "zai_gate", Status: status, Trigger: trigger, GenerationID: gateID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: elapsedMS, Detail: detail})
 		w.logger.Info("seller gate done", "session_id", sessionID, "action", suggestion.Action, "elapsed_ms", elapsedMS, "provider", suggestion.Provider, "model", suggestion.Model, "current_chars", len([]rune(currentDraft)), "trigger_chars", len([]rune(text)))
 		if suggestion.Action != "suggest" {
+			return
+		}
+		w.mu.Lock()
+		generationActive := w.cancels[sessionID] != nil
+		w.mu.Unlock()
+		if generationActive {
+			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "zai_gate", Status: "skipped", Trigger: trigger, GenerationID: gateID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "Gemini уже генерирует новую реплику"})
 			return
 		}
 		if suggestion.Text == "" {

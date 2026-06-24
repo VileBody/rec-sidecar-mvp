@@ -52,6 +52,24 @@ func TestSellerEchoRejectReason(t *testing.T) {
 	}
 }
 
+func TestSellerEchoRejectReasonUsesCurrentDraft(t *testing.T) {
+	sessionID := "sess-draft-echo-test"
+	g := &Gateway{store: NewStore()}
+	g.store.Apply(NewEvent(sessionID, EventSessionCreated, "test", map[string]any{}))
+	g.store.Apply(NewEvent(sessionID, EventSellerStarted, "test", SellerStartedData{GenerationID: "gen-1", Trigger: "test"}))
+	g.store.Apply(NewEvent(sessionID, EventSellerDone, "test", SellerDoneData{
+		GenerationID: "gen-1",
+		Text:         "Давайте вернемся к вашей задаче и уточним, какой результат нужен в первую очередь.",
+		Provider:     "vertex",
+		Model:        "gemini",
+	}))
+
+	got := g.sellerEchoRejectReason(sessionID, "client", "browser-system-audio", "Давайте вернемся к вашей задаче и уточним какой результат нужен в первую очередь")
+	if got != "seller_echo_draft" {
+		t.Fatalf("seller echo reason = %q, want seller_echo_draft", got)
+	}
+}
+
 func TestClientEchoRejectReason(t *testing.T) {
 	sessionID := "sess-client-echo-test"
 	g := &Gateway{store: NewStore()}
@@ -86,6 +104,19 @@ func TestRoleForSTTSpeakerMixed(t *testing.T) {
 	}
 	if got := roleForSTTSpeaker("client", "1", roles); got != "client" {
 		t.Fatalf("explicit client role = %q, want client", got)
+	}
+}
+
+func TestRoleForSTTSourceOverridesDiarizedSpeakers(t *testing.T) {
+	roles := map[string]string{"1": "seller", "2": "client"}
+	if got := roleForSTTSource("mixed", "browser-system-audio", "3", roles); got != "client" {
+		t.Fatalf("system audio role = %q, want client", got)
+	}
+	if got := roleForSTTSource("mixed", "browser-microphone-test", "3", roles); got != "seller" {
+		t.Fatalf("microphone role = %q, want seller", got)
+	}
+	if got := roleForSTTSource("mixed", "student-system-audio", "3", roles); got != "speaker_3" {
+		t.Fatalf("student/source-neutral role = %q, want speaker_3", got)
 	}
 }
 

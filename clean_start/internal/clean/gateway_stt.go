@@ -62,6 +62,9 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 		role = "client"
 	}
 	source := strings.TrimSpace(req.Source)
+	if sourceRole, ok := roleForCaptureSource(source); ok {
+		role = sourceRole
+	}
 	language := strings.TrimSpace(req.Language)
 	direction := strings.TrimSpace(req.Direction)
 	if language == "" && direction != "" {
@@ -201,7 +204,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 				eventType = EventSTTFinal
 			}
 			for index, segment := range diarizedTranscriptSegments(transcript) {
-				segmentRole := roleForSTTSpeaker(role, segment.Speaker, speakerRoles)
+				segmentRole := roleForSTTSource(role, source, segment.Speaker, speakerRoles)
 				if suppressSystemSellerSegment(g.hasActiveMicStream(sessionID), source, segmentRole) {
 					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", "system_seller_suppressed_by_active_mic", "text", segment.Text)
 					continue
@@ -214,7 +217,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
 					continue
 				}
-				if role != "mixed" {
+				if segmentRole == "client" || segmentRole == "seller" {
 					if reason := g.crossSourceEchoRejectReason(sessionID, segmentRole, source, segment.Text); reason != "" {
 						g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
 						continue

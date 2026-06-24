@@ -152,6 +152,24 @@ func (s *sttStreamStabilizer) ShouldEmit(segmentID, text string, final bool) boo
 	return true
 }
 
+func roleForCaptureSource(source string) (string, bool) {
+	switch strings.TrimSpace(source) {
+	case "browser-microphone-test":
+		return "seller", true
+	case "browser-system-audio":
+		return "client", true
+	default:
+		return "", false
+	}
+}
+
+func roleForSTTSource(defaultRole, source, speaker string, speakerRoles map[string]string) string {
+	if role, ok := roleForCaptureSource(source); ok {
+		return role
+	}
+	return roleForSTTSpeaker(defaultRole, speaker, speakerRoles)
+}
+
 func roleForSTTSpeaker(defaultRole, speaker string, speakerRoles map[string]string) string {
 	defaultRole = strings.TrimSpace(defaultRole)
 	if defaultRole != "mixed" {
