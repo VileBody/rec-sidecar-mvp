@@ -1045,10 +1045,16 @@ function renderReply() {
     ? `<div class="rich-text">${renderRichText(text)}</div>`
     : `<div class="rich-text">Жду речь клиента...</div>`;
   $("replyText").classList.toggle("muted", !text);
+  const immediateText = state?.seller_draft_immediate || "";
+  $("immediateReplyText").innerHTML = immediateText
+    ? `<div class="rich-text">${renderRichText(immediateText)}</div>`
+    : `<div class="rich-text">Жду ручную генерацию...</div>`;
+  $("immediateReplyText").classList.toggle("muted", !immediateText);
   const streaming = state?.seller_streaming ? "генерируется" : "готово";
   $("replyMeta").textContent = text ? streaming : "обновляется по речи клиента";
   $("copyReply").disabled = !text;
   syncGenerateReplyButton();
+  renderManualReplyStatus();
   syncReplyPip();
 }
 
@@ -1056,10 +1062,10 @@ function syncGenerateReplyButton() {
   const button = $("generateReply");
   const label = $("generateReplyLabel");
   if (!button || !label) return;
-  const generating = Boolean(state?.seller_streaming);
+  const generating = manualReplyPending();
   button.disabled = !state || generating;
   button.classList.toggle("loading", generating);
-  label.textContent = generating ? "Ушел думать" : "Сгенерить ответ";
+  label.textContent = generating ? "Ушел думать" : "Сгенерить сейчас";
 }
 
 function renderPipelineStatus() {
@@ -1089,6 +1095,31 @@ function renderPipelineStatus() {
       ${pipelineCardHTML("Gemini / reply", replyStatus, state.seller_streaming ? "получаем реплику" : "ждем следующего момента")}
     </div>
   `;
+}
+
+function renderManualReplyStatus() {
+  const node = $("manualReplyStatus");
+  if (!node) return;
+  if (!state) {
+    node.innerHTML = `<div class="pipeline-empty">manual: жду сессию</div>`;
+    return;
+  }
+  const manualStatus = latestPipelineStatus("manual_reply");
+  node.innerHTML = `
+    <div class="pipeline-grid">
+      ${pipelineCardHTML("Gemini direct", manualStatus, state.seller_immediate_streaming ? "получаем реплику" : "готов к прямому запросу")}
+    </div>
+  `;
+}
+
+function manualReplyPending() {
+  if (state?.seller_immediate_streaming) return true;
+  const event = latestPipelineStatus("manual_reply");
+  const status = eventData(event).status || "";
+  if (status !== "sent" && status !== "queued") return false;
+  const startedAt = new Date(event?.created_at || "").getTime();
+  if (Number.isNaN(startedAt)) return true;
+  return Date.now() - startedAt < 90000;
 }
 
 function pipelineCardHTML(label, event, fallback) {
@@ -1338,6 +1369,13 @@ async function copyReply() {
   showToast("Реплика скопирована");
 }
 
+async function copyImmediateReply() {
+  const text = state?.seller_draft_immediate || "";
+  if (!text) return;
+  await navigator.clipboard.writeText(text);
+  showToast("Немедленная реплика скопирована");
+}
+
 async function markSaid() {
   const text = state?.seller_draft || "";
   if (!text) return;
@@ -1416,7 +1454,9 @@ async function openReplyPip() {
 function syncReplyPip() {
   if (!replyPipWindow || replyPipWindow.closed) return;
   const doc = replyPipWindow.document;
-  const text = state?.seller_draft || "";
+  const immediateText = state?.seller_draft_immediate || "";
+  const autoText = state?.seller_draft || "";
+  const text = immediateText || autoText;
   const textNode = doc.getElementById("pipReplyText");
   const metaNode = doc.getElementById("pipReplyMeta");
   const generateButton = doc.getElementById("pipGenerateReply");
@@ -1426,18 +1466,22 @@ function syncReplyPip() {
     ? `<div class="rich-text">${renderRichText(text)}</div>`
     : `<div class="rich-text">Жду речь клиента...</div>`;
   textNode.classList.toggle("muted", !text);
-  metaNode.textContent = text ? (state?.seller_streaming ? "генерируется" : "готово") : "обновляется по речи клиента";
-  const generating = Boolean(state?.seller_streaming);
+  if (immediateText) {
+    metaNode.textContent = state?.seller_immediate_streaming ? "немедленная генерируется" : "немедленная готова";
+  } else {
+    metaNode.textContent = text ? (state?.seller_streaming ? "auto генерируется" : "auto готово") : "обновляется по речи клиента";
+  }
+  const generating = manualReplyPending();
   generateButton.disabled = !state || generating;
   generateButton.classList.toggle("loading", generating);
-  generateLabel.textContent = generating ? "Ушел думать" : "Сгенерить ответ";
+  generateLabel.textContent = generating ? "Ушел думать" : "Сгенерить сейчас";
 }
 
 function generateReply() {
   return postEvent({
     type: "seller.request",
     trigger: "manual_generate",
-    text: "Сгенерируй свежую следующую реплику продавца под текущий момент разговора.",
+    text: "Сгенерируй реплику продавца немедленно под текущий момент разговора. Не валидируй текущую подсказку, дай новый вариант.",
   });
 }
 
@@ -2043,6 +2087,7 @@ $("micToggle").onclick = startMicTest;
 $("openReplyPip").onclick = () => openReplyPip().catch((error) => showToast(error.message));
 $("copyReply").onclick = copyReply;
 $("replyText").onclick = copyReply;
+$("immediateReplyText").onclick = copyImmediateReply;
 $("generateReply").onclick = () => generateReply().catch((error) => showToast(error.message));
 $("help").onclick = () => requestAssist("button");
 $("askAssist").onclick = () => {
@@ -2091,6 +2136,9 @@ $("adminRevertPrompt").onclick = revertAdminPrompt;
 setInterval(() => {
   if (!state || $("salesApp").hidden) return;
   renderPipelineStatus();
+  renderManualReplyStatus();
+  syncGenerateReplyButton();
+  syncReplyPip();
   renderStage();
 }, 1000);
 

@@ -74,6 +74,28 @@ func TestStoreApplyIgnoresMismatchedGenerationEvents(t *testing.T) {
 	}
 }
 
+func TestStoreApplySeparatesImmediateSellerDraft(t *testing.T) {
+	store := NewStore()
+	sessionID := "sess-immediate-generation"
+	store.Apply(NewEvent(sessionID, EventSessionCreated, "test", map[string]any{}))
+	store.Apply(NewEvent(sessionID, EventSellerStarted, "test", SellerStartedData{GenerationID: "gen-auto", Trigger: "client_final"}))
+	store.Apply(NewEvent(sessionID, EventSellerDone, "test", SellerDoneData{GenerationID: "gen-auto", Text: "Авто-реплика", Provider: "vertex", Model: "gemini"}))
+
+	store.Apply(NewEvent(sessionID, EventSellerStarted, "test", SellerStartedData{GenerationID: "gen-manual", Trigger: "manual_generate"}))
+	store.Apply(NewEvent(sessionID, EventSellerDelta, "test", SellerDeltaData{GenerationID: "gen-manual", Delta: "Ручная"}))
+	state := store.Apply(NewEvent(sessionID, EventSellerDone, "test", SellerDoneData{GenerationID: "gen-manual", Text: "Ручная реплика", Provider: "vertex", Model: "gemini"}))
+
+	if state.SellerDraft != "Авто-реплика" {
+		t.Fatalf("seller draft = %q, want auto draft preserved", state.SellerDraft)
+	}
+	if state.SellerDraftImmediate != "Ручная реплика" {
+		t.Fatalf("immediate draft = %q, want manual draft", state.SellerDraftImmediate)
+	}
+	if state.SellerStreaming || state.SellerImmediateStreaming {
+		t.Fatalf("streaming flags left on: auto=%v immediate=%v", state.SellerStreaming, state.SellerImmediateStreaming)
+	}
+}
+
 func TestStoreApplyStudentTranslationAndAnswer(t *testing.T) {
 	store := NewStore()
 	sessionID := "sess-student"

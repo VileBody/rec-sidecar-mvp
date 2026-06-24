@@ -73,22 +73,25 @@ type StudentState struct {
 }
 
 type SessionState struct {
-	SessionID          string           `json:"session_id"`
-	CreatedAt          time.Time        `json:"created_at"`
-	UpdatedAt          time.Time        `json:"updated_at"`
-	Messages           []Message        `json:"messages"`
-	Transcript         []TranscriptItem `json:"transcript"`
-	ClientPartial      string           `json:"client_partial"`
-	SellerDraft        string           `json:"seller_draft"`
-	SellerStreaming    bool             `json:"seller_streaming"`
-	SellerGenerationID string           `json:"seller_generation_id"`
-	Assist             AssistState      `json:"assist"`
-	Student            StudentState     `json:"student"`
-	StageCandidate     *StageData       `json:"stage_candidate,omitempty"`
-	StageCommitted     *StageData       `json:"stage_committed,omitempty"`
-	Scorecard          *ScorecardData   `json:"scorecard,omitempty"`
-	LastError          string           `json:"last_error,omitempty"`
-	Events             []Event          `json:"events"`
+	SessionID                   string           `json:"session_id"`
+	CreatedAt                   time.Time        `json:"created_at"`
+	UpdatedAt                   time.Time        `json:"updated_at"`
+	Messages                    []Message        `json:"messages"`
+	Transcript                  []TranscriptItem `json:"transcript"`
+	ClientPartial               string           `json:"client_partial"`
+	SellerDraft                 string           `json:"seller_draft"`
+	SellerStreaming             bool             `json:"seller_streaming"`
+	SellerGenerationID          string           `json:"seller_generation_id"`
+	SellerDraftImmediate        string           `json:"seller_draft_immediate"`
+	SellerImmediateStreaming    bool             `json:"seller_immediate_streaming"`
+	SellerImmediateGenerationID string           `json:"seller_immediate_generation_id"`
+	Assist                      AssistState      `json:"assist"`
+	Student                     StudentState     `json:"student"`
+	StageCandidate              *StageData       `json:"stage_candidate,omitempty"`
+	StageCommitted              *StageData       `json:"stage_committed,omitempty"`
+	Scorecard                   *ScorecardData   `json:"scorecard,omitempty"`
+	LastError                   string           `json:"last_error,omitempty"`
+	Events                      []Event          `json:"events"`
 }
 
 type Store struct {
@@ -184,22 +187,41 @@ func (s *Store) Apply(event Event) SessionState {
 		}
 	case EventSellerStarted:
 		if data, err := DecodeData[SellerStartedData](event); err == nil {
-			state.SellerDraft = ""
-			state.SellerStreaming = true
-			state.SellerGenerationID = data.GenerationID
+			if isManualSellerTrigger(data.Trigger) {
+				state.SellerDraftImmediate = ""
+				state.SellerImmediateStreaming = true
+				state.SellerImmediateGenerationID = data.GenerationID
+			} else {
+				state.SellerDraft = ""
+				state.SellerStreaming = true
+				state.SellerGenerationID = data.GenerationID
+			}
 		}
 	case EventSellerDelta:
-		if data, err := DecodeData[SellerDeltaData](event); err == nil && data.GenerationID == state.SellerGenerationID {
-			state.SellerDraft += data.Delta
-			state.SellerStreaming = true
+		if data, err := DecodeData[SellerDeltaData](event); err == nil {
+			switch data.GenerationID {
+			case state.SellerImmediateGenerationID:
+				state.SellerDraftImmediate += data.Delta
+				state.SellerImmediateStreaming = true
+			case state.SellerGenerationID:
+				state.SellerDraft += data.Delta
+				state.SellerStreaming = true
+			}
 		}
 	case EventSellerDone:
-		if data, err := DecodeData[SellerDoneData](event); err == nil && data.GenerationID == state.SellerGenerationID {
-			state.SellerDraft = data.Text
-			state.SellerStreaming = false
+		if data, err := DecodeData[SellerDoneData](event); err == nil {
+			switch data.GenerationID {
+			case state.SellerImmediateGenerationID:
+				state.SellerDraftImmediate = data.Text
+				state.SellerImmediateStreaming = false
+			case state.SellerGenerationID:
+				state.SellerDraft = data.Text
+				state.SellerStreaming = false
+			}
 		}
 	case EventSellerCanceled:
 		state.SellerStreaming = false
+		state.SellerImmediateStreaming = false
 	case EventAssistStarted:
 		if data, err := DecodeData[AssistStartedData](event); err == nil {
 			state.Assist = AssistState{Streaming: true, GenerationID: data.GenerationID}

@@ -173,6 +173,11 @@ type SellerDoneData struct {
 	Model        string `json:"model"`
 }
 
+func isManualSellerTrigger(trigger string) bool {
+	trigger = strings.TrimSpace(trigger)
+	return trigger == "manual_generate" || strings.HasPrefix(trigger, "manual_") || strings.HasPrefix(trigger, "immediate_")
+}
+
 type AssistDoneData struct {
 	GenerationID string `json:"generation_id"`
 	FastText     string `json:"fast_text"`

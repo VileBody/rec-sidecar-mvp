@@ -35,6 +35,9 @@ func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) s
 	if textSimilarity(probe, normalizeEchoText(state.SellerDraft)) >= 0.82 {
 		return "seller_echo_draft"
 	}
+	if textSimilarity(probe, normalizeEchoText(state.SellerDraftImmediate)) >= 0.82 {
+		return "seller_echo_immediate_draft"
+	}
 	now := time.Now()
 	for i := len(state.Messages) - 1; i >= 0; i-- {
 		msg := state.Messages[i]

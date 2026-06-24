@@ -125,7 +125,7 @@ func (w *SellerWorker) maybeStartFromPartial(ctx context.Context, sessionID stri
 	}
 	w.lastTexts[sessionID] = cleanText
 	currentDraft := strings.TrimSpace(mem.SellerDraft)
-	_, generationActive := w.cancels[sessionID]
+	_, generationActive := w.cancels[sellerGenerationKey(sessionID, "seller_reply")]
 	w.mu.Unlock()
 
 	if generationActive {
@@ -158,26 +158,28 @@ func (w *SellerWorker) maybeStartFromStage(ctx context.Context, sessionID string
 }
 
 func (w *SellerWorker) startGeneration(parent context.Context, sessionID string, mem *sessionMemory, trigger, text string) {
+	manual := isManualSellerTrigger(trigger)
+	component := "seller_reply"
+	sentDetail := "отправили запрос на новую реплику"
+	if manual {
+		component = "manual_reply"
+		sentDetail = "отправили прямой запрос в Gemini без ZAI gate"
+	}
+	generationKey := sellerGenerationKey(sessionID, component)
+
 	w.mu.Lock()
-	if cancel := w.cancels[sessionID]; cancel != nil {
-		cancel()
-	}
-	if cancel := w.gateCancels[sessionID]; cancel != nil {
-		cancel()
-		delete(w.gateCancels, sessionID)
-	}
 	ctx, cancel := context.WithCancel(parent)
 	generationID := NewID("gen")
-	w.cancels[sessionID] = cancel
-	w.activeGen[sessionID] = generationID
+	w.cancels[generationKey] = cancel
+	w.activeGen[generationKey] = generationID
 	w.mu.Unlock()
 
 	go func() {
 		defer func() {
 			w.mu.Lock()
-			if w.activeGen[sessionID] == generationID {
-				delete(w.cancels, sessionID)
-				delete(w.activeGen, sessionID)
+			if w.activeGen[generationKey] == generationID {
+				delete(w.cancels, generationKey)
+				delete(w.activeGen, generationKey)
 			}
 			w.mu.Unlock()
 		}()
@@ -186,33 +188,41 @@ func (w *SellerWorker) startGeneration(parent context.Context, sessionID string,
 		if text != "" {
 			contextText += "\n--- Триггер ---\n" + text + "\n"
 		}
+		currentDraft := strings.TrimSpace(mem.SellerDraft)
+		if manual {
+			currentDraft = ""
+		}
 		started := time.Now()
-		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "sent", Trigger: trigger, GenerationID: generationID, Detail: "отправили запрос на новую реплику"})
-		suggestion, err := w.llm.LiveSellerSuggestion(ctx, sessionID, contextText, strings.TrimSpace(mem.SellerDraft), true)
+		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: component, Status: "sent", Trigger: trigger, GenerationID: generationID, Detail: sentDetail})
+		suggestion, err := w.llm.LiveSellerSuggestion(ctx, sessionID, contextText, currentDraft, true)
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
-			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "error", Trigger: trigger, GenerationID: generationID, Detail: err.Error(), ElapsedMS: time.Since(started).Milliseconds()})
+			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: component, Status: "error", Trigger: trigger, GenerationID: generationID, Detail: err.Error(), ElapsedMS: time.Since(started).Milliseconds()})
 			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "seller-worker", ErrorData{Where: "seller", Message: err.Error()}))
 			return
 		}
 		if suggestion.Action == "skip" {
-			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "skipped", Trigger: trigger, GenerationID: generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "LLM решила оставить текущую реплику"})
+			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: component, Status: "skipped", Trigger: trigger, GenerationID: generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "LLM решила оставить текущую реплику"})
 			w.logger.Info("seller force generation skipped", "session_id", sessionID, "generation_id", generationID, "elapsed_ms", time.Since(started).Milliseconds(), "provider", suggestion.Provider, "model", suggestion.Model)
 			return
 		}
 		if suggestion.Text == "" {
-			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "error", Trigger: trigger, GenerationID: generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "empty seller suggestion"})
+			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: component, Status: "error", Trigger: trigger, GenerationID: generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "empty seller suggestion"})
 			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "seller-worker", ErrorData{Where: "seller", Message: "empty seller suggestion"}))
 			return
 		}
 		_ = w.publish(NewEvent(sessionID, EventSellerStarted, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
 		_ = w.publish(NewEvent(sessionID, EventSellerDelta, "seller-worker", SellerDeltaData{GenerationID: generationID, Delta: suggestion.Text}))
 		w.logger.Info("seller generation done", "session_id", sessionID, "generation_id", generationID, "trigger", trigger, "elapsed_ms", time.Since(started).Milliseconds(), "provider", suggestion.Provider, "model", suggestion.Model)
-		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "received", Trigger: trigger, GenerationID: generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "новая реплика готова"})
+		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: component, Status: "received", Trigger: trigger, GenerationID: generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "новая реплика готова"})
 		_ = w.publish(NewEvent(sessionID, EventSellerDone, "seller-worker", SellerDoneData{GenerationID: generationID, Text: suggestion.Text, Provider: suggestion.Provider, Model: suggestion.Model}))
 	}()
+}
+
+func sellerGenerationKey(sessionID, component string) string {
+	return sessionID + "/" + component
 }
 
 func (w *SellerWorker) startGate(parent context.Context, sessionID string, mem *sessionMemory, trigger, text, currentDraft string) {
@@ -264,7 +274,7 @@ func (w *SellerWorker) startGate(parent context.Context, sessionID string, mem *
 			return
 		}
 		w.mu.Lock()
-		generationActive := w.cancels[sessionID] != nil
+		generationActive := w.cancels[sellerGenerationKey(sessionID, "seller_reply")] != nil
 		w.mu.Unlock()
 		if generationActive {
 			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "zai_gate", Status: "skipped", Trigger: trigger, GenerationID: gateID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "Gemini уже генерирует новую реплику"})
@@ -280,12 +290,9 @@ func (w *SellerWorker) startGate(parent context.Context, sessionID string, mem *
 
 func (w *SellerWorker) publishImmediateSuggestion(sessionID, trigger string, suggestion liveSellerResponse, elapsedMS int64) {
 	generationID := NewID("gen")
+	generationKey := sellerGenerationKey(sessionID, "seller_reply")
 	w.mu.Lock()
-	if cancel := w.cancels[sessionID]; cancel != nil {
-		cancel()
-	}
-	delete(w.cancels, sessionID)
-	w.activeGen[sessionID] = generationID
+	w.activeGen[generationKey] = generationID
 	w.mu.Unlock()
 
 	_ = w.publish(NewEvent(sessionID, EventSellerStarted, "seller-worker", SellerStartedData{GenerationID: generationID, Trigger: trigger}))
@@ -294,9 +301,9 @@ func (w *SellerWorker) publishImmediateSuggestion(sessionID, trigger string, sug
 	_ = w.publish(NewEvent(sessionID, EventSellerDone, "seller-worker", SellerDoneData{GenerationID: generationID, Text: suggestion.Text, Provider: suggestion.Provider, Model: suggestion.Model}))
 
 	w.mu.Lock()
-	if w.activeGen[sessionID] == generationID {
-		delete(w.cancels, sessionID)
-		delete(w.activeGen, sessionID)
+	if w.activeGen[generationKey] == generationID {
+		delete(w.cancels, generationKey)
+		delete(w.activeGen, generationKey)
 	}
 	w.mu.Unlock()
 }

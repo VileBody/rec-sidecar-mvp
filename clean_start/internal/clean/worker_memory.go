@@ -6,17 +6,18 @@ import (
 )
 
 type sessionMemory struct {
-	Messages            []Message
-	ClientPartial       string
-	CurrentStage        string
-	SellerDraft         string
-	SellerGenerationID  string
-	LastSellerInput     string
-	LastTriggerText     string
-	StudentDirection    string
-	StudentOriginals    []Message
-	StudentTranslations []Message
-	StudentAnswers      []Message
+	Messages                    []Message
+	ClientPartial               string
+	CurrentStage                string
+	SellerDraft                 string
+	SellerGenerationID          string
+	SellerImmediateGenerationID string
+	LastSellerInput             string
+	LastTriggerText             string
+	StudentDirection            string
+	StudentOriginals            []Message
+	StudentTranslations         []Message
+	StudentAnswers              []Message
 }
 
 func (m *sessionMemory) contextBlock() string {
@@ -178,20 +179,30 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 		}
 	case EventSellerStarted:
 		if data, err := DecodeData[SellerStartedData](event); err == nil {
-			mem.SellerDraft = ""
-			mem.SellerGenerationID = data.GenerationID
+			if isManualSellerTrigger(data.Trigger) {
+				mem.SellerImmediateGenerationID = data.GenerationID
+			} else {
+				mem.SellerDraft = ""
+				mem.SellerGenerationID = data.GenerationID
+			}
 		}
 	case EventSellerDelta:
 		if data, err := DecodeData[SellerDeltaData](event); err == nil && data.GenerationID == mem.SellerGenerationID {
 			mem.SellerDraft += data.Delta
 		}
 	case EventSellerDone:
-		if data, err := DecodeData[SellerDoneData](event); err == nil && data.GenerationID == mem.SellerGenerationID {
-			mem.SellerDraft = data.Text
-			mem.SellerGenerationID = ""
+		if data, err := DecodeData[SellerDoneData](event); err == nil {
+			switch data.GenerationID {
+			case mem.SellerImmediateGenerationID:
+				mem.SellerImmediateGenerationID = ""
+			case mem.SellerGenerationID:
+				mem.SellerDraft = data.Text
+				mem.SellerGenerationID = ""
+			}
 		}
 	case EventSellerCanceled:
 		mem.SellerGenerationID = ""
+		mem.SellerImmediateGenerationID = ""
 	}
 	return cloneSessionMemory(mem)
 }

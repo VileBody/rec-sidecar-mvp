@@ -931,6 +931,53 @@ async def test_live_uses_gemini_generator_when_zai_marks_reply_stale():
 
 
 @pytest.mark.anyio
+async def test_live_force_skips_zai_validator_even_with_current_reply():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                vertex_project="project-id",
+                vertex_access_token="token",
+            ),
+            client,
+        )
+        validator_calls = []
+        generator_calls = []
+
+        async def fake_validator(request: LiveRequest) -> dict[str, str]:
+            validator_calls.append(request.current_text)
+            return {"action": "skip", "text": ""}
+
+        async def fake_generator(request: LiveRequest) -> dict[str, str]:
+            generator_calls.append(request.current_text)
+            return {
+                "action": "suggest",
+                "text": "Давайте коротко зафиксируем главный вопрос и вернем разговор к задаче.",
+            }
+
+        orchestrator._cerebras_live_validator = fake_validator
+        orchestrator._vertex_live_generate = fake_generator
+
+        response = await orchestrator.live(
+            LiveRequest(
+                run_id="run",
+                content="Пользователь нажал ручную генерацию.",
+                current_text="Старая авто-подсказка еще висит на экране.",
+                force=True,
+            )
+        )
+
+        assert response.action == "suggest"
+        assert response.provider == "vertex"
+        assert response.model == "gemini-3.5-flash"
+        assert response.text.startswith("Давайте коротко")
+        assert validator_calls == []
+        assert generator_calls == ["Старая авто-подсказка еще висит на экране."]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_stage_agenda_uses_cerebras_stage_detection_and_vertex_scorecard_minimal():
     calls = []
 

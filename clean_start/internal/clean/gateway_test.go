@@ -71,6 +71,24 @@ func TestSellerEchoRejectReasonUsesCurrentDraft(t *testing.T) {
 	}
 }
 
+func TestSellerEchoRejectReasonUsesImmediateDraft(t *testing.T) {
+	sessionID := "sess-immediate-draft-echo-test"
+	g := &Gateway{store: NewStore()}
+	g.store.Apply(NewEvent(sessionID, EventSessionCreated, "test", map[string]any{}))
+	g.store.Apply(NewEvent(sessionID, EventSellerStarted, "test", SellerStartedData{GenerationID: "gen-1", Trigger: "manual_generate"}))
+	g.store.Apply(NewEvent(sessionID, EventSellerDone, "test", SellerDoneData{
+		GenerationID: "gen-1",
+		Text:         "Давайте я коротко отвечу на это и верну разговор к вашей задаче.",
+		Provider:     "vertex",
+		Model:        "gemini",
+	}))
+
+	got := g.sellerEchoRejectReason(sessionID, "client", "browser-system-audio", "Давайте я коротко отвечу на это и верну разговор к вашей задаче")
+	if got != "seller_echo_immediate_draft" {
+		t.Fatalf("seller echo reason = %q, want seller_echo_immediate_draft", got)
+	}
+}
+
 func TestClientEchoRejectReason(t *testing.T) {
 	sessionID := "sess-client-echo-test"
 	g := &Gateway{store: NewStore()}

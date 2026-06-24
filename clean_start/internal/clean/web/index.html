@@ -103,14 +103,25 @@
       </header>
 
       <section class="card reply-main">
-        <p class="eyebrow" style="padding:18px 18px 0;margin:0">следующая реплика</p>
-        <div id="replyText" class="reply-text muted">Жду речь клиента...</div>
-        <div id="pipelineStatus" class="pipeline-panel"></div>
-        <div class="reply-actions">
-          <button id="generateReply" class="reply-generate" type="button">
-            <span class="button-spinner" aria-hidden="true"></span>
-            <span id="generateReplyLabel">Сгенерить ответ</span>
-          </button>
+        <div class="reply-auto-panel">
+          <p class="eyebrow reply-panel-title">следующая реплика</p>
+          <div id="replyText" class="reply-text muted">Жду речь клиента...</div>
+          <div id="pipelineStatus" class="pipeline-panel"></div>
+        </div>
+
+        <div class="reply-manual-panel">
+          <div class="manual-reply-head">
+            <div>
+              <p class="eyebrow">сгенерить реплику немедленно</p>
+              <div class="manual-reply-meta">прямой Gemini, без ZAI gate</div>
+            </div>
+            <button id="generateReply" class="reply-generate" type="button">
+              <span class="button-spinner" aria-hidden="true"></span>
+              <span id="generateReplyLabel">Сгенерить сейчас</span>
+            </button>
+          </div>
+          <div id="immediateReplyText" class="reply-immediate-text muted">Жду ручную генерацию...</div>
+          <div id="manualReplyStatus" class="manual-status"></div>
         </div>
       </section>
     </section>

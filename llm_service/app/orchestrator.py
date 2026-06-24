@@ -153,7 +153,7 @@ class LlmOrchestrator:
         current_text = (request.current_text or "").strip()
 
         if self._split_live_flow():
-            if current_text:
+            if current_text and not request.force:
                 try:
                     validator_started_at = time.monotonic()
                     verdict = await self._cerebras_live_validator(request)
