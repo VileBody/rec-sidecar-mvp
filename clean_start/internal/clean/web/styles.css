@@ -129,8 +129,8 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
 }
 
 .dialog-col { grid-template-rows: auto minmax(0, 1fr) auto; }
-.reply-col { grid-template-rows: auto minmax(280px, 1fr) minmax(190px, .54fr); }
-.assist-col { grid-template-rows: auto minmax(260px, .9fr) minmax(230px, .82fr); }
+.reply-col { grid-template-rows: auto minmax(0, 1fr); }
+.assist-col { grid-template-rows: auto minmax(260px, .9fr) minmax(260px, .9fr); }
 
 .card {
   min-width: 0;
@@ -628,17 +628,37 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
 
 .reply-text {
   align-self: stretch;
-  display: flex;
-  align-items: center;
+  display: block;
   width: 100%;
-  padding: clamp(18px, 3vw, 34px);
-  font-size: clamp(22px, 2.1vw, 34px);
-  line-height: 1.16;
-  font-weight: 760;
-  letter-spacing: -.015em;
+  min-height: 0;
+  padding: clamp(18px, 2.3vw, 28px);
+  font-size: clamp(19px, 1.45vw, 26px);
+  line-height: 1.24;
+  font-weight: 720;
+  letter-spacing: 0;
   word-break: break-word;
   cursor: pointer;
   overflow: auto;
+}
+
+.reply-text .rich-text {
+  min-height: 100%;
+  align-content: center;
+  gap: 10px;
+}
+
+.reply-text .rich-text p {
+  margin: 0;
+}
+
+.reply-text .rich-text ul,
+.reply-text .rich-text ol {
+  margin: 0;
+  padding-left: 1.25em;
+}
+
+.reply-text .rich-text li + li {
+  margin-top: 6px;
 }
 
 .reply-text.muted {
@@ -774,6 +794,10 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
 .stage-grid {
   display: grid;
   gap: 10px;
+}
+
+.stage-section {
+  min-height: 0;
 }
 
 .metric-row {
@@ -1020,8 +1044,6 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
 }
 
 #assistQuestion { min-height: 82px; }
-#manualText { min-height: 96px; }
-
 .toast {
   position: fixed;
   left: 50%;

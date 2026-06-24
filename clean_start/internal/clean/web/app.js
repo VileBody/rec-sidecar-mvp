@@ -1041,7 +1041,9 @@ function formatDuration(value) {
 
 function renderReply() {
   const text = state?.seller_draft || "";
-  $("replyText").textContent = text || "Жду речь клиента...";
+  $("replyText").innerHTML = text
+    ? `<div class="rich-text">${renderRichText(text)}</div>`
+    : `<div class="rich-text">Жду речь клиента...</div>`;
   $("replyText").classList.toggle("muted", !text);
   const streaming = state?.seller_streaming ? "генерируется" : "готово";
   $("replyMeta").textContent = text ? streaming : "обновляется по речи клиента";
@@ -1379,8 +1381,13 @@ async function openReplyPip() {
       header { padding: 18px 20px 8px; border-bottom: 1px solid var(--line); }
       .eyebrow { color: #8a92a4; font-size: 12px; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
       .meta { margin-top: 6px; color: var(--muted); font-size: 13px; font-weight: 650; }
-      #pipReplyText { display: flex; align-items: center; padding: 22px 24px; font-size: clamp(25px, 8.4vw, 44px); line-height: 1.13; font-weight: 820; overflow: auto; word-break: break-word; }
+      #pipReplyText { display: block; padding: 22px 24px; font-size: clamp(21px, 6.6vw, 34px); line-height: 1.2; font-weight: 760; overflow: auto; word-break: break-word; }
       #pipReplyText.muted { color: #9aa3b5; font-weight: 680; }
+      .rich-text { min-height: 100%; display: grid; align-content: center; gap: 10px; }
+      .rich-text p { margin: 0; }
+      .rich-text ul, .rich-text ol { margin: 0; padding-left: 1.25em; }
+      .rich-text li + li { margin-top: 6px; }
+      .rich-text code { border: 1px solid var(--line); border-radius: 6px; padding: 1px 5px; background: #eef1f6; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; }
       footer { display: flex; align-items: center; justify-content: stretch; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--paper-soft); }
       button { appearance: none; border: 1px solid #cfd8e8; border-radius: 14px; min-height: 44px; padding: 9px 16px; background: var(--paper); color: var(--ink); font: inherit; font-weight: 800; cursor: pointer; }
       button.generate { width: 100%; min-height: 58px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; background: var(--green); color: white; border-color: var(--green); font-size: 18px; }
@@ -1415,7 +1422,9 @@ function syncReplyPip() {
   const generateButton = doc.getElementById("pipGenerateReply");
   const generateLabel = doc.getElementById("pipGenerateReplyLabel");
   if (!textNode || !metaNode || !generateButton || !generateLabel) return;
-  textNode.textContent = text || "Жду речь клиента...";
+  textNode.innerHTML = text
+    ? `<div class="rich-text">${renderRichText(text)}</div>`
+    : `<div class="rich-text">Жду речь клиента...</div>`;
   textNode.classList.toggle("muted", !text);
   metaNode.textContent = text ? (state?.seller_streaming ? "генерируется" : "готово") : "обновляется по речи клиента";
   const generating = Boolean(state?.seller_streaming);
@@ -2044,23 +2053,6 @@ $("askAssist").onclick = () => {
 $("clearAssist").onclick = () => {
   $("assistQuestion").value = "";
   $("assistLog").innerHTML = `<div class="empty">Нажми «Помоги» или задай уточнение ниже.</div>`;
-};
-$("sendSeller").onclick = () => {
-  const text = $("manualText").value.trim();
-  if (!text) return;
-  postEvent({ type: "seller.input", text });
-  $("manualText").value = "";
-};
-$("sendClient").onclick = () => {
-  const text = $("manualText").value.trim();
-  if (!text) return;
-  postEvent({ type: "client.final", text });
-  $("manualText").value = "";
-};
-$("sendPartial").onclick = () => {
-  const text = $("manualText").value.trim();
-  if (!text) return;
-  postEvent({ type: "client.partial", text });
 };
 $("studentDirection").onchange = () => updateStudentDirection().catch((error) => showToast(error.message));
 $("studentSendOriginal").onclick = () => sendStudentOriginal().catch((error) => showToast(error.message));
