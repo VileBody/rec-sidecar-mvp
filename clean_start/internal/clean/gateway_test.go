@@ -19,6 +19,7 @@ func TestBrowserTranscriptRejectReason(t *testing.T) {
 		want string
 	}{
 		{name: "keeps russian speech", text: "Ну и почему ничего не пишут?", want: ""},
+		{name: "keeps intentional english phrase", text: "Can AI do that?", want: ""},
 		{name: "drops single latin letter", text: "D", want: "too_short"},
 		{name: "drops latin hallucination", text: "Verkosveezi.", want: "no_cyrillic"},
 		{name: "drops japanese hallucination", text: "愛を射抜いたのさ。", want: "non_russian_script"},

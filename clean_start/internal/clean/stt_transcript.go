@@ -78,12 +78,31 @@ func browserTranscriptRejectReason(text string) string {
 		if nonRussianScript > 0 {
 			return "non_russian_script"
 		}
+		if latinPhraseLooksIntentional(trimmed) {
+			return ""
+		}
 		return "no_cyrillic"
 	}
 	if nonRussianScript > cyrillic {
 		return "mostly_non_russian_script"
 	}
 	return ""
+}
+
+func latinPhraseLooksIntentional(text string) bool {
+	words := 0
+	for _, field := range strings.Fields(text) {
+		letters := 0
+		for _, r := range field {
+			if unicode.IsLetter(r) {
+				letters++
+			}
+		}
+		if letters > 0 {
+			words++
+		}
+	}
+	return words >= 3
 }
 
 func diarizedTranscriptSegments(transcript STTTranscript) []STTSegment {
