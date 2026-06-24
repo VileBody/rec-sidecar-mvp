@@ -17,6 +17,8 @@ from .prompts import (
     SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
     SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
     SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT,
+    SALES_COACH_PIVOT_GATE_SYSTEM_PROMPT,
+    SALES_COACH_READY_GATE_SYSTEM_PROMPT,
     SALES_COACH_LIVE_VALIDATOR_SYSTEM_PROMPT,
     SALES_COACH_STRUCTURED_SYSTEM_PROMPT,
     SALES_COACH_SYSTEM_PROMPT,
@@ -28,6 +30,8 @@ from .providers import (
     CerebrasClient,
     ProviderError,
     VertexClient,
+    cerebras_pivot_gate_response_format,
+    cerebras_ready_gate_response_format,
     cerebras_stage_response_format,
     cerebras_structured_response_format,
     parse_bos_eos_text,
@@ -39,6 +43,10 @@ from .schemas import (
     LiveRequest,
     LiveResponse,
     OpenerResponse,
+    PivotGateRequest,
+    PivotGateResponse,
+    ReadyGateRequest,
+    ReadyGateResponse,
     StageAgendaResponse,
     StageRequest,
     StudentAnswerRequest,
@@ -242,6 +250,82 @@ class LlmOrchestrator:
             provider=provider,
             model=model,
         )
+
+    async def ready_gate(self, request: ReadyGateRequest) -> ReadyGateResponse:
+        started_at = time.monotonic()
+        if not self.cerebras.configured():
+            response = fallback_ready_gate(request)
+            logger.info(
+                "ready_gate fallback run_id=%s revision=%s action=%s reason=no_cerebras",
+                request.run_id,
+                request.client_revision,
+                response.action,
+            )
+            return response
+
+        text = await self.cerebras.text(
+            model=self.settings.cerebras_model,
+            system_prompt=SALES_COACH_READY_GATE_SYSTEM_PROMPT,
+            user_content=ready_gate_user_content(request),
+            temperature=0.0,
+            prompt_cache_key=f"rec-sidecar-ready-gate-v1-{request.run_id}",
+            max_tokens=420,
+            response_format=cerebras_ready_gate_response_format(),
+        )
+        response = parse_ready_gate_response(
+            text,
+            fallback_revision=request.client_revision,
+            provider="cerebras",
+            model=self.settings.cerebras_model,
+        )
+        logger.info(
+            "ready_gate run_id=%s revision=%s action=%s confidence=%.2f elapsed_ms=%s model=%s",
+            request.run_id,
+            response.client_revision,
+            response.action,
+            response.confidence,
+            int((time.monotonic() - started_at) * 1000),
+            self.settings.cerebras_model,
+        )
+        return response
+
+    async def pivot_gate(self, request: PivotGateRequest) -> PivotGateResponse:
+        started_at = time.monotonic()
+        if not self.cerebras.configured():
+            response = fallback_pivot_gate(request)
+            logger.info(
+                "pivot_gate fallback run_id=%s revision=%s status=%s reason=no_cerebras",
+                request.run_id,
+                request.client_revision,
+                response.status,
+            )
+            return response
+
+        text = await self.cerebras.text(
+            model=self.settings.cerebras_model,
+            system_prompt=SALES_COACH_PIVOT_GATE_SYSTEM_PROMPT,
+            user_content=pivot_gate_user_content(request),
+            temperature=0.0,
+            prompt_cache_key=f"rec-sidecar-pivot-gate-v1-{request.run_id}",
+            max_tokens=460,
+            response_format=cerebras_pivot_gate_response_format(),
+        )
+        response = parse_pivot_gate_response(
+            text,
+            fallback_revision=request.client_revision,
+            provider="cerebras",
+            model=self.settings.cerebras_model,
+        )
+        logger.info(
+            "pivot_gate run_id=%s revision=%s status=%s confidence=%.2f elapsed_ms=%s model=%s",
+            request.run_id,
+            response.client_revision,
+            response.status,
+            response.confidence,
+            int((time.monotonic() - started_at) * 1000),
+            self.settings.cerebras_model,
+        )
+        return response
 
     async def chat_stream(self, request: ChatRequest) -> AsyncIterator[bytes]:
         user_content = f"{request.context}\n\n--- Вопрос продавца ---\n{request.question}\n"
@@ -803,7 +887,13 @@ class LlmOrchestrator:
 
     def _live_generator_user_content(self, request: LiveRequest) -> str:
         current_text = (request.current_text or "").strip()
-        parts = ["--- Свежий снимок звонка ---", request.content]
+        parts = [
+            "--- Свежий снимок звонка ---",
+            request.content,
+            "",
+            "--- Как использовать методологию ---",
+            "Если в снимке есть Current stage / agenda и Current scorecard, сначала определи ближайший незакрытый шаг: miss/pending/uncertain check или Recommended next action. Реплика должна закрывать именно его; если scorecard green/ready_to_advance, реплика должна переводить разговор на следующий stage.",
+        ]
         if current_text:
             parts.extend(
                 [
@@ -1338,6 +1428,245 @@ class LlmOrchestrator:
         if self.settings.provider == "cerebras":
             return self.cerebras.configured()
         return self.cerebras.configured() or self.vertex.configured()
+
+
+def ready_gate_user_content(request: ReadyGateRequest) -> str:
+    current_text = (request.current_text or "").strip() or "(empty)"
+    return (
+        f"{request.content.strip()}\n\n"
+        f"--- Current visible seller reply ---\n{current_text}\n\n"
+        f"--- Client revision ---\n{request.client_revision}\n"
+    )
+
+
+def pivot_gate_user_content(request: PivotGateRequest) -> str:
+    current_text = (request.current_text or "").strip() or "(empty)"
+    active_generation_id = (request.active_generation_id or "").strip() or "(unknown)"
+    base_client_text = (request.base_client_text or "").strip() or "(empty)"
+    pending_replan_state = (request.pending_replan_state or "").strip() or "pending_replan=false; level=none"
+    return (
+        f"{request.content.strip()}\n\n"
+        f"--- Current visible seller reply ---\n{current_text}\n\n"
+        f"--- Active Gemini generation ---\n{active_generation_id}\n\n"
+        f"--- Base client text used to start Gemini ---\n{base_client_text}\n\n"
+        f"--- Pending replan state ---\n{pending_replan_state}\n\n"
+        f"--- Client revision ---\n{request.client_revision}\n"
+    )
+
+
+def parse_ready_gate_response(
+    text: str,
+    *,
+    fallback_revision: int,
+    provider: str,
+    model: str,
+) -> ReadyGateResponse:
+    value = load_json_object(text)
+    action = normalize_ready_action(value.get("action"))
+    readiness = normalize_ready_readiness(value.get("readiness"), action)
+    semantic_type = normalize_ready_semantic_type(value.get("semantic_type"))
+    mutex_decision = "LOCK_AND_GENERATE" if action == "GENERATE" else "DO_NOT_LOCK"
+    return ReadyGateResponse(
+        client_revision=positive_int(value.get("client_revision"), fallback_revision),
+        action=action,
+        confidence=clamp_confidence(value.get("confidence")),
+        reason=str(value.get("reason") or "").strip(),
+        readiness=readiness,
+        semantic_type=semantic_type,
+        mutex_decision=mutex_decision,
+        generation_brief=str(value.get("generation_brief") or "").strip(),
+        latest_client_intent=str(value.get("latest_client_intent") or "").strip(),
+        provider=provider,
+        model=model,
+    )
+
+
+def parse_pivot_gate_response(
+    text: str,
+    *,
+    fallback_revision: int,
+    provider: str,
+    model: str,
+) -> PivotGateResponse:
+    value = load_json_object(text)
+    status = normalize_pivot_status(value.get("status"))
+    pivot_type = normalize_pivot_type(value.get("pivot_type"))
+    sets_pending_replan = status == "CHANGE_HARD"
+    clears_pending_replan = status == "NO_CHANGE"
+    replan_level = "hard" if status == "CHANGE_HARD" else "soft" if status == "ADAPT_SOFT" else "none"
+    return PivotGateResponse(
+        client_revision=positive_int(value.get("client_revision"), fallback_revision),
+        status=status,
+        confidence=clamp_confidence(value.get("confidence")),
+        reason=str(value.get("reason") or "").strip(),
+        pivot_type=pivot_type,
+        sets_pending_replan=sets_pending_replan,
+        clears_pending_replan=clears_pending_replan,
+        replan_level=replan_level,
+        latest_client_intent=str(value.get("latest_client_intent") or "").strip(),
+        base_client_intent=str(value.get("base_client_intent") or "").strip(),
+        provider=provider,
+        model=model,
+    )
+
+
+def fallback_ready_gate(request: ReadyGateRequest) -> ReadyGateResponse:
+    has_context = bool(request.content.strip())
+    has_current = bool((request.current_text or "").strip())
+    action = "WAIT"
+    readiness = "incomplete"
+    reason = "fallback ready gate waits for clearer client intent"
+    if has_context and not has_current:
+        action = "GENERATE"
+        readiness = "actionable"
+        reason = "fallback ready gate has context and no visible reply"
+    elif has_context and has_current:
+        action = "KEEP"
+        readiness = "meaningful_but_covered"
+        reason = "fallback ready gate keeps current visible reply"
+    return ReadyGateResponse(
+        client_revision=request.client_revision,
+        action=action,
+        confidence=1.0,
+        reason=reason,
+        readiness=readiness,
+        semantic_type="other",
+        mutex_decision="LOCK_AND_GENERATE" if action == "GENERATE" else "DO_NOT_LOCK",
+        generation_brief="",
+        latest_client_intent="",
+        provider="fallback",
+        model="local",
+    )
+
+
+def fallback_pivot_gate(request: PivotGateRequest) -> PivotGateResponse:
+    return PivotGateResponse(
+        client_revision=request.client_revision,
+        status="WAIT_NOISE",
+        confidence=1.0,
+        reason="fallback pivot gate leaves pending replan unchanged",
+        pivot_type="none",
+        sets_pending_replan=False,
+        clears_pending_replan=False,
+        replan_level="none",
+        latest_client_intent="",
+        base_client_intent="",
+        provider="fallback",
+        model="local",
+    )
+
+
+def load_json_object(text: str) -> dict[str, Any]:
+    try:
+        value = json.loads(text)
+    except ValueError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or start >= end:
+            raise
+        value = json.loads(text[start : end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("structured gate response must be a JSON object")
+    return value
+
+
+def positive_int(value: Any, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    return parsed if parsed > 0 else fallback
+
+
+def clamp_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, confidence))
+
+
+def normalize_ready_action(value: Any) -> str:
+    action = str(value or "").strip().upper()
+    if action in {"SUGGEST", "ON"}:
+        return "GENERATE"
+    if action == "SKIP":
+        return "KEEP"
+    if action in {"WAIT", "KEEP", "GENERATE"}:
+        return action
+    return "WAIT"
+
+
+def normalize_ready_readiness(value: Any, action: str) -> str:
+    readiness = str(value or "").strip().lower()
+    if readiness in {"incomplete", "noise", "meaningful_but_covered", "actionable"}:
+        return readiness
+    if action == "GENERATE":
+        return "actionable"
+    if action == "KEEP":
+        return "meaningful_but_covered"
+    return "incomplete"
+
+
+def normalize_ready_semantic_type(value: Any) -> str:
+    semantic_type = str(value or "").strip().lower()
+    if semantic_type in {
+        "none",
+        "question",
+        "objection",
+        "concern",
+        "buying_signal",
+        "price",
+        "budget",
+        "timing",
+        "integration",
+        "competitor",
+        "authority",
+        "next_step",
+        "correction",
+        "refusal",
+        "clarification",
+        "other",
+    }:
+        return semantic_type
+    return "other"
+
+
+def normalize_pivot_status(value: Any) -> str:
+    status = str(value or "").strip().upper()
+    if status in {"SUGGEST", "GENERATE", "INVALIDATED"}:
+        return "CHANGE_HARD"
+    if status in {"SKIP", "VALID"}:
+        return "NO_CHANGE"
+    if status == "SOFT":
+        return "ADAPT_SOFT"
+    if status in {"WAIT_NOISE", "NO_CHANGE", "ADAPT_SOFT", "CHANGE_HARD"}:
+        return status
+    if status == "WAIT":
+        return "WAIT_NOISE"
+    return "WAIT_NOISE"
+
+
+def normalize_pivot_type(value: Any) -> str:
+    pivot_type = str(value or "").strip().lower()
+    if pivot_type in {
+        "none",
+        "objection",
+        "price",
+        "budget",
+        "timing",
+        "integration",
+        "competitor",
+        "authority",
+        "priority_shift",
+        "refusal",
+        "correction",
+        "new_question",
+        "buying_signal",
+        "other",
+    }:
+        return pivot_type
+    return "none"
 
 
 def sse_event(payload: dict[str, Any]) -> bytes:

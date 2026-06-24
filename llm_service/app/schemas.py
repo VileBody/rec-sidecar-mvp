@@ -35,6 +35,84 @@ class LiveResponse(BaseModel):
     model: str
 
 
+class ReadyGateRequest(StrictModel):
+    run_id: str
+    content: str
+    current_text: str | None = None
+    client_revision: int
+
+
+class ReadyGateResponse(BaseModel):
+    client_revision: int
+    action: Literal["WAIT", "KEEP", "GENERATE"]
+    confidence: float
+    reason: str
+    readiness: Literal["incomplete", "noise", "meaningful_but_covered", "actionable"]
+    semantic_type: Literal[
+        "none",
+        "question",
+        "objection",
+        "concern",
+        "buying_signal",
+        "price",
+        "budget",
+        "timing",
+        "integration",
+        "competitor",
+        "authority",
+        "next_step",
+        "correction",
+        "refusal",
+        "clarification",
+        "other",
+    ]
+    mutex_decision: Literal["DO_NOT_LOCK", "LOCK_AND_GENERATE"]
+    generation_brief: str = ""
+    latest_client_intent: str = ""
+    provider: str
+    model: str
+
+
+class PivotGateRequest(StrictModel):
+    run_id: str
+    content: str
+    current_text: str | None = None
+    client_revision: int
+    active_generation_id: str | None = None
+    base_client_text: str | None = None
+    pending_replan_state: str | None = None
+
+
+class PivotGateResponse(BaseModel):
+    client_revision: int
+    status: Literal["NO_CHANGE", "WAIT_NOISE", "ADAPT_SOFT", "CHANGE_HARD"]
+    confidence: float
+    reason: str
+    pivot_type: Literal[
+        "none",
+        "objection",
+        "price",
+        "budget",
+        "timing",
+        "integration",
+        "competitor",
+        "authority",
+        "priority_shift",
+        "refusal",
+        "correction",
+        "new_question",
+        "buying_signal",
+        "other",
+    ]
+    sets_pending_replan: bool
+    clears_pending_replan: bool
+    replan_level: Literal["none", "soft", "hard"]
+    latest_client_intent: str = ""
+    base_client_intent: str = ""
+    provider: str
+    model: str
+
+
 class ChatRequest(StrictModel):
     id: int
     run_id: str

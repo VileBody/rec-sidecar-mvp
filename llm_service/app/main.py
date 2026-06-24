@@ -18,6 +18,10 @@ from .schemas import (
     LiveRequest,
     LiveResponse,
     OpenerResponse,
+    PivotGateRequest,
+    PivotGateResponse,
+    ReadyGateRequest,
+    ReadyGateResponse,
     StageAgendaResponse,
     StageRequest,
     StudentAnswerRequest,
@@ -76,6 +80,32 @@ async def live(request: LiveRequest) -> LiveResponse:
         return await orchestrator.live(request)
     except ProviderError as exc:
         raise HTTPException(status_code=provider_status(exc), detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/coach/live/ready-gate",
+    response_model=ReadyGateResponse,
+    dependencies=[Depends(require_service_token)],
+)
+async def ready_gate(request: ReadyGateRequest) -> ReadyGateResponse:
+    try:
+        return await orchestrator.ready_gate(request)
+    except (ProviderError, ValueError) as exc:
+        status_code = provider_status(exc) if isinstance(exc, ProviderError) else 502
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/coach/live/pivot-gate",
+    response_model=PivotGateResponse,
+    dependencies=[Depends(require_service_token)],
+)
+async def pivot_gate(request: PivotGateRequest) -> PivotGateResponse:
+    try:
+        return await orchestrator.pivot_gate(request)
+    except (ProviderError, ValueError) as exc:
+        status_code = provider_status(exc) if isinstance(exc, ProviderError) else 502
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @app.post("/v1/coach/chat/stream", dependencies=[Depends(require_service_token)])

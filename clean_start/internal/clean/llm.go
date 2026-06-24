@@ -40,6 +40,35 @@ type liveSellerResponse struct {
 	Model    string `json:"model"`
 }
 
+type readyGateResponse struct {
+	ClientRevision     int64   `json:"client_revision"`
+	Action             string  `json:"action"`
+	Confidence         float64 `json:"confidence"`
+	Reason             string  `json:"reason"`
+	Readiness          string  `json:"readiness"`
+	SemanticType       string  `json:"semantic_type"`
+	MutexDecision      string  `json:"mutex_decision"`
+	GenerationBrief    string  `json:"generation_brief"`
+	LatestClientIntent string  `json:"latest_client_intent"`
+	Provider           string  `json:"provider"`
+	Model              string  `json:"model"`
+}
+
+type pivotGateResponse struct {
+	ClientRevision      int64   `json:"client_revision"`
+	Status              string  `json:"status"`
+	Confidence          float64 `json:"confidence"`
+	Reason              string  `json:"reason"`
+	PivotType           string  `json:"pivot_type"`
+	SetsPendingReplan   bool    `json:"sets_pending_replan"`
+	ClearsPendingReplan bool    `json:"clears_pending_replan"`
+	ReplanLevel         string  `json:"replan_level"`
+	LatestClientIntent  string  `json:"latest_client_intent"`
+	BaseClientIntent    string  `json:"base_client_intent"`
+	Provider            string  `json:"provider"`
+	Model               string  `json:"model"`
+}
+
 type studentTranslateResponse struct {
 	Text     string `json:"text"`
 	Provider string `json:"provider"`
@@ -175,6 +204,77 @@ func (c *LLMClient) LiveSellerSuggestion(ctx context.Context, sessionID, context
 		out.Provider = "llm-helper"
 	}
 	return out, nil
+}
+
+func (c *LLMClient) ReadySellerGate(ctx context.Context, sessionID, contextText, currentText string, clientRevision int64) (readyGateResponse, error) {
+	if c.cfg.LLMServiceURL == "" {
+		return fallbackReadyGate(clientRevision, contextText, currentText), nil
+	}
+	body := map[string]any{
+		"run_id":          sessionID,
+		"content":         contextText,
+		"current_text":    currentText,
+		"client_revision": clientRevision,
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.LLMServiceURL+"/v1/coach/live/ready-gate", bytes.NewReader(raw))
+	if err != nil {
+		return readyGateResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.cfg.LLMServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fallbackReadyGate(clientRevision, contextText, currentText), nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fallbackReadyGate(clientRevision, contextText, currentText), nil
+	}
+	var out readyGateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return readyGateResponse{}, err
+	}
+	return normalizeReadyGate(out, clientRevision), nil
+}
+
+func (c *LLMClient) PivotSellerGate(ctx context.Context, sessionID, contextText, currentText, activeGenerationID, baseClientText, pendingReplanState string, clientRevision int64) (pivotGateResponse, error) {
+	if c.cfg.LLMServiceURL == "" {
+		return fallbackPivotGate(clientRevision), nil
+	}
+	body := map[string]any{
+		"run_id":               sessionID,
+		"content":              contextText,
+		"current_text":         currentText,
+		"client_revision":      clientRevision,
+		"active_generation_id": activeGenerationID,
+		"base_client_text":     baseClientText,
+		"pending_replan_state": pendingReplanState,
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.LLMServiceURL+"/v1/coach/live/pivot-gate", bytes.NewReader(raw))
+	if err != nil {
+		return pivotGateResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.cfg.LLMServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fallbackPivotGate(clientRevision), nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fallbackPivotGate(clientRevision), nil
+	}
+	var out pivotGateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return pivotGateResponse{}, err
+	}
+	return normalizePivotGate(out, clientRevision), nil
 }
 
 func (c *LLMClient) DetectStage(ctx context.Context, sessionID, contextText, currentStage string, includeScorecard bool) (*StageData, error) {
@@ -494,6 +594,131 @@ func fallbackClientReply(contextText string) string {
 		return "Сомневаюсь, что я реально дойду до внедрения, у меня уже было несколько форматов, где все заканчивалось конспектами."
 	}
 	return "Честно, пока звучит интересно, но я не понимаю, зачем мне тратить на это время именно сейчас."
+}
+
+func fallbackReadyGate(clientRevision int64, contextText, currentText string) readyGateResponse {
+	action := "WAIT"
+	readiness := "incomplete"
+	mutexDecision := "DO_NOT_LOCK"
+	reason := "fallback ready gate waits for clearer client intent"
+	if strings.TrimSpace(contextText) != "" {
+		if strings.TrimSpace(currentText) == "" {
+			action = "GENERATE"
+			readiness = "actionable"
+			mutexDecision = "LOCK_AND_GENERATE"
+			reason = "fallback ready gate has actionable context and no visible reply"
+		} else {
+			action = "KEEP"
+			readiness = "meaningful_but_covered"
+			reason = "fallback ready gate keeps current visible reply"
+		}
+	}
+	return readyGateResponse{
+		ClientRevision: clientRevision,
+		Action:         action,
+		Confidence:     1,
+		Reason:         reason,
+		Readiness:      readiness,
+		SemanticType:   "other",
+		MutexDecision:  mutexDecision,
+		Provider:       "fallback",
+		Model:          "local",
+	}
+}
+
+func fallbackPivotGate(clientRevision int64) pivotGateResponse {
+	return pivotGateResponse{
+		ClientRevision:      clientRevision,
+		Status:              "WAIT_NOISE",
+		Confidence:          1,
+		Reason:              "fallback pivot gate does not change pending replan",
+		PivotType:           "none",
+		SetsPendingReplan:   false,
+		ClearsPendingReplan: false,
+		ReplanLevel:         "none",
+		Provider:            "fallback",
+		Model:               "local",
+	}
+}
+
+func normalizeReadyGate(out readyGateResponse, fallbackRevision int64) readyGateResponse {
+	if out.ClientRevision == 0 {
+		out.ClientRevision = fallbackRevision
+	}
+	out.Action = strings.ToUpper(strings.TrimSpace(out.Action))
+	switch out.Action {
+	case "SUGGEST", "GENERATE", "ON":
+		out.Action = "GENERATE"
+	case "SKIP", "KEEP":
+		out.Action = "KEEP"
+	case "WAIT":
+	default:
+		out.Action = "WAIT"
+	}
+	out.Readiness = strings.ToLower(strings.TrimSpace(out.Readiness))
+	out.SemanticType = strings.ToLower(strings.TrimSpace(out.SemanticType))
+	out.MutexDecision = strings.ToUpper(strings.TrimSpace(out.MutexDecision))
+	if out.Action == "GENERATE" {
+		out.MutexDecision = "LOCK_AND_GENERATE"
+		if out.Readiness == "" {
+			out.Readiness = "actionable"
+		}
+	} else {
+		out.MutexDecision = "DO_NOT_LOCK"
+	}
+	if out.Confidence == 0 && out.Action == "GENERATE" {
+		out.Confidence = 1
+	}
+	if out.Provider == "" {
+		out.Provider = "llm-helper"
+	}
+	return out
+}
+
+func normalizePivotGate(out pivotGateResponse, fallbackRevision int64) pivotGateResponse {
+	if out.ClientRevision == 0 {
+		out.ClientRevision = fallbackRevision
+	}
+	out.Status = strings.ToUpper(strings.TrimSpace(out.Status))
+	switch out.Status {
+	case "SUGGEST", "GENERATE", "INVALIDATED", "CHANGE_HARD":
+		out.Status = "CHANGE_HARD"
+	case "SKIP", "VALID", "NO_CHANGE":
+		out.Status = "NO_CHANGE"
+	case "ADAPT_SOFT", "SOFT":
+		out.Status = "ADAPT_SOFT"
+	case "WAIT", "WAIT_NOISE":
+		out.Status = "WAIT_NOISE"
+	default:
+		out.Status = "WAIT_NOISE"
+	}
+	out.PivotType = strings.ToLower(strings.TrimSpace(out.PivotType))
+	out.ReplanLevel = strings.ToLower(strings.TrimSpace(out.ReplanLevel))
+	switch out.Status {
+	case "CHANGE_HARD":
+		out.SetsPendingReplan = true
+		out.ClearsPendingReplan = false
+		out.ReplanLevel = "hard"
+	case "ADAPT_SOFT":
+		out.SetsPendingReplan = false
+		out.ClearsPendingReplan = false
+		out.ReplanLevel = "soft"
+	case "NO_CHANGE":
+		out.SetsPendingReplan = false
+		out.ClearsPendingReplan = true
+		out.ReplanLevel = "none"
+	case "WAIT_NOISE":
+		out.SetsPendingReplan = false
+		out.ClearsPendingReplan = false
+		out.ReplanLevel = "none"
+	}
+	if out.Confidence == 0 && out.Status != "WAIT_NOISE" {
+		out.Confidence = 1
+	}
+	if out.Provider == "" {
+		out.Provider = "llm-helper"
+	}
+	return out
 }
 
 func fallbackStudentTranslation(text, direction string) string {

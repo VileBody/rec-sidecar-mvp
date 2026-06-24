@@ -13,37 +13,54 @@ const (
 	echoLongSimilarity   = 0.88
 )
 
+type echoRejectMatch struct {
+	Reason string
+	Score  float64
+}
+
+func (m echoRejectMatch) Found() bool {
+	return m.Reason != ""
+}
+
 func suppressSystemSellerSegment(enabled bool, source, role string) bool {
 	return enabled && normalizeCaptureSource(source) == CaptureSourceRemoteAudio && role == "seller"
 }
 
 func (g *Gateway) crossSourceEchoRejectReason(sessionID, role, source, text string) string {
-	if reason := g.sellerEchoRejectReason(sessionID, role, source, text); reason != "" {
-		return reason
+	return g.crossSourceEchoRejectMatch(sessionID, role, source, text).Reason
+}
+
+func (g *Gateway) crossSourceEchoRejectMatch(sessionID, role, source, text string) echoRejectMatch {
+	if match := g.sellerEchoRejectMatch(sessionID, role, source, text); match.Found() {
+		return match
 	}
-	if reason := g.clientEchoRejectReason(sessionID, role, source, text); reason != "" {
-		return reason
+	if match := g.clientEchoRejectMatch(sessionID, role, source, text); match.Found() {
+		return match
 	}
-	return ""
+	return echoRejectMatch{}
 }
 
 func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) string {
+	return g.sellerEchoRejectMatch(sessionID, role, source, text).Reason
+}
+
+func (g *Gateway) sellerEchoRejectMatch(sessionID, role, source, text string) echoRejectMatch {
 	if role != "client" || normalizeCaptureSource(source) != CaptureSourceRemoteAudio {
-		return ""
+		return echoRejectMatch{}
 	}
 	probe := normalizeEchoText(text)
 	if len([]rune(probe)) < 8 {
-		return ""
+		return echoRejectMatch{}
 	}
 	state, ok := g.store.Get(sessionID)
 	if !ok {
-		return ""
+		return echoRejectMatch{}
 	}
-	if textSimilarity(probe, normalizeEchoText(state.SellerDraft)) >= 0.82 {
-		return "seller_echo_into_remote_draft"
+	if score := textSimilarity(probe, normalizeEchoText(state.SellerDraft)); score >= 0.82 {
+		return echoRejectMatch{Reason: "seller_echo_into_remote_draft", Score: score}
 	}
-	if textSimilarity(probe, normalizeEchoText(state.SellerDraftImmediate)) >= 0.82 {
-		return "seller_echo_into_remote_immediate_draft"
+	if score := textSimilarity(probe, normalizeEchoText(state.SellerDraftImmediate)); score >= 0.82 {
+		return echoRejectMatch{Reason: "seller_echo_into_remote_immediate_draft", Score: score}
 	}
 	now := time.Now()
 	for i := len(state.Messages) - 1; i >= 0; i-- {
@@ -61,8 +78,8 @@ func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) s
 			threshold = echoRecentSimilarity
 			reason = "seller_echo_into_remote_recent_message"
 		}
-		if textSimilarity(probe, normalizeEchoText(msg.Text)) >= threshold {
-			return reason
+		if score := textSimilarity(probe, normalizeEchoText(msg.Text)); score >= threshold {
+			return echoRejectMatch{Reason: reason, Score: score}
 		}
 	}
 	for i := len(state.Transcript) - 1; i >= 0; i-- {
@@ -80,24 +97,28 @@ func (g *Gateway) sellerEchoRejectReason(sessionID, role, source, text string) s
 			threshold = echoRecentSimilarity
 			reason = "seller_echo_into_remote_recent_transcript"
 		}
-		if textSimilarity(probe, normalizeEchoText(item.Text)) >= threshold {
-			return reason
+		if score := textSimilarity(probe, normalizeEchoText(item.Text)); score >= threshold {
+			return echoRejectMatch{Reason: reason, Score: score}
 		}
 	}
-	return ""
+	return echoRejectMatch{}
 }
 
 func (g *Gateway) clientEchoRejectReason(sessionID, role, source, text string) string {
+	return g.clientEchoRejectMatch(sessionID, role, source, text).Reason
+}
+
+func (g *Gateway) clientEchoRejectMatch(sessionID, role, source, text string) echoRejectMatch {
 	if role != "seller" || normalizeCaptureSource(source) != CaptureSourceSellerMic {
-		return ""
+		return echoRejectMatch{}
 	}
 	probe := normalizeEchoText(text)
 	if len([]rune(probe)) < 8 {
-		return ""
+		return echoRejectMatch{}
 	}
 	state, ok := g.store.Get(sessionID)
 	if !ok {
-		return ""
+		return echoRejectMatch{}
 	}
 	now := time.Now()
 	for i := len(state.Messages) - 1; i >= 0; i-- {
@@ -115,8 +136,8 @@ func (g *Gateway) clientEchoRejectReason(sessionID, role, source, text string) s
 			threshold = echoRecentSimilarity
 			reason = "client_echo_into_mic_recent_message"
 		}
-		if textSimilarity(probe, normalizeEchoText(msg.Text)) >= threshold {
-			return reason
+		if score := textSimilarity(probe, normalizeEchoText(msg.Text)); score >= threshold {
+			return echoRejectMatch{Reason: reason, Score: score}
 		}
 	}
 	for i := len(state.Transcript) - 1; i >= 0; i-- {
@@ -134,11 +155,11 @@ func (g *Gateway) clientEchoRejectReason(sessionID, role, source, text string) s
 			threshold = echoRecentSimilarity
 			reason = "client_echo_into_mic_recent_transcript"
 		}
-		if textSimilarity(probe, normalizeEchoText(item.Text)) >= threshold {
-			return reason
+		if score := textSimilarity(probe, normalizeEchoText(item.Text)); score >= threshold {
+			return echoRejectMatch{Reason: reason, Score: score}
 		}
 	}
-	return ""
+	return echoRejectMatch{}
 }
 
 func normalizeEchoText(text string) string {

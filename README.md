@@ -37,6 +37,38 @@ Partials are shown by default. Set `INWORLD_SHOW_PARTIALS=false` to show only fi
 Transient Inworld/network failures are retried by default with `INWORLD_STT_MAX_RECONNECTS=3`, `INWORLD_STT_RECONNECT_BACKOFF_MS=750`, `INWORLD_STT_RECONNECT_MAX_BACKOFF_MS=5000`, and `INWORLD_STT_CONNECT_TIMEOUT_MS=10000`; microphone/config/auth failures remain terminal.
 Debug timing logs are written to `logs/rec-sidecar.log` by default. Set `REC_SIDECAR_LOG=off` to disable or `REC_SIDECAR_LOG_RAW=true` to include raw server messages.
 
+## WebRTC AEC3 Audio Sidecar
+
+For browser capture, the app can optionally clean the seller microphone with a local WebRTC AEC3 helper before sending it to STT. This is the native-audio path for the "mic hears system output" problem:
+
+- browser `system` audio is sent as AEC3 `far` / render reference
+- browser `microphone` audio is sent as AEC3 `near` / capture
+- the helper returns cleaned PCM16, and only that cleaned seller mic is forwarded to the existing STT websocket
+- if the helper is off, disconnected, or backlogged, the UI falls back to the current browser echo filter/raw mic path
+
+Run the helper locally:
+
+```bash
+cargo run --bin audio_sidecar -- --addr 127.0.0.1:8122
+```
+
+Then open the sales UI, go to `Подавление эха -> Диагностика`, keep the helper URL as `ws://127.0.0.1:8122`, and click `AEC3 вкл`. The helper expects mono LINEAR16 16 kHz audio in 10 ms WebRTC frames; the browser keeps sending its normal larger chunks, and the helper buffers/splits them internally.
+
+The websocket protocol is intentionally small:
+
+```json
+{"type":"hello","sample_rate_hz":16000,"channels":1}
+{"type":"far","pcm16":"<base64 little-endian i16>"}
+{"type":"near","pcm16":"<base64 little-endian i16>"}
+{"type":"flush"}
+```
+
+`near` responses return:
+
+```json
+{"type":"clean","pcm16":"<base64 little-endian i16>","samples":160,"stats":{"delay_ms":42}}
+```
+
 ## Sales Coach
 
 LLM calls are handled by a FastAPI sidecar on `COACH_LLM_SERVICE_URL` (default `http://127.0.0.1:8088`). Start it with:

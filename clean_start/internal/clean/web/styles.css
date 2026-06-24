@@ -637,6 +637,7 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   font-size: 12px;
   font-weight: 720;
   line-height: 1.35;
+  white-space: pre-wrap;
 }
 
 .status-pill {

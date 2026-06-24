@@ -1,5 +1,6 @@
 pub mod app;
 pub mod asr;
+pub mod audio_aec;
 pub mod coach;
 pub mod context;
 pub mod session;

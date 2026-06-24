@@ -14,10 +14,11 @@ import (
 )
 
 type sellerLiveCall struct {
+	kind        string
 	force       bool
 	content     string
 	currentText string
-	respond     chan liveSellerResponse
+	respond     chan any
 }
 
 type sellerWorkerHarness struct {
@@ -56,7 +57,7 @@ func (h *sellerWorkerHarness) close() {
 }
 
 func (h *sellerWorkerHarness) handleLive(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/v1/coach/live" {
+	if r.URL.Path != "/v1/coach/live" && r.URL.Path != "/v1/coach/live/ready-gate" && r.URL.Path != "/v1/coach/live/pivot-gate" {
 		http.NotFound(w, r)
 		return
 	}
@@ -69,11 +70,18 @@ func (h *sellerWorkerHarness) handleLive(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	kind := "generate"
+	if strings.HasSuffix(r.URL.Path, "/ready-gate") {
+		kind = "ready_gate"
+	} else if strings.HasSuffix(r.URL.Path, "/pivot-gate") {
+		kind = "pivot_gate"
+	}
 	call := &sellerLiveCall{
+		kind:        kind,
 		force:       req.Force,
 		content:     req.Content,
 		currentText: req.CurrentText,
-		respond:     make(chan liveSellerResponse, 1),
+		respond:     make(chan any, 1),
 	}
 	h.mu.Lock()
 	if call.force {
@@ -169,27 +177,27 @@ func TestSellerWorkerStaleGateDiscard(t *testing.T) {
 
 	h.worker.maybeStartFromPartial(ctx, sessionID, mem, firstPartial)
 	firstGate := h.nextCall(t)
-	if firstGate.force {
-		t.Fatal("first partial should start ZAI gate, not Gemini")
+	if firstGate.kind != "ready_gate" || firstGate.force {
+		t.Fatalf("first partial call = kind %q force %v, want ready gate", firstGate.kind, firstGate.force)
 	}
 
 	h.worker.maybeStartFromPartial(ctx, sessionID, mem, latestPartial)
 	latestGate := h.nextCall(t)
-	if latestGate.force {
-		t.Fatal("latest partial should start ZAI gate, not Gemini")
+	if latestGate.kind != "ready_gate" || latestGate.force {
+		t.Fatalf("latest partial call = kind %q force %v, want ready gate", latestGate.kind, latestGate.force)
 	}
 
-	firstGate.respond <- liveSellerResponse{Action: "generate", Provider: "zai", Model: "gate"}
+	firstGate.respond <- readyGateResponse{ClientRevision: 1, Action: "GENERATE", Confidence: 1, Provider: "zai", Model: "gate"}
 	waitForSellerWorker(t, func() bool {
-		return h.hasPipelineStatus("zai_gate", "skipped", "generate", "устаревший")
+		return h.hasPipelineStatus("ready_gate", "skipped", "GENERATE", "устаревший")
 	})
 	if got := h.forceCount(); got != 0 {
 		t.Fatalf("stale gate started Gemini: force calls = %d", got)
 	}
 
-	latestGate.respond <- liveSellerResponse{Action: "wait", Provider: "zai", Model: "gate"}
+	latestGate.respond <- readyGateResponse{ClientRevision: 2, Action: "WAIT", Confidence: 1, Provider: "zai", Model: "gate"}
 	waitForSellerWorker(t, func() bool {
-		return h.hasPipelineStatus("zai_gate", "skipped", "wait", "подождать")
+		return h.hasPipelineStatus("ready_gate", "skipped", "WAIT", "оставить")
 	})
 }
 
@@ -204,23 +212,28 @@ func TestSellerWorkerPendingReplanDuringGemini(t *testing.T) {
 	latestPartial := firstPartial + strings.Repeat("б", 16)
 
 	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), firstPartial)
+	ready := h.nextCall(t)
+	if ready.kind != "ready_gate" {
+		t.Fatalf("first call kind = %q, want ready gate", ready.kind)
+	}
+	ready.respond <- readyGateResponse{ClientRevision: 1, Action: "GENERATE", Confidence: 1, Provider: "zai", Model: "gate"}
 	firstGemini := h.nextCall(t)
-	if !firstGemini.force {
-		t.Fatal("first auto generation should call Gemini")
+	if firstGemini.kind != "generate" || !firstGemini.force {
+		t.Fatalf("first auto generation call = kind %q force %v, want Gemini", firstGemini.kind, firstGemini.force)
 	}
 
 	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), latestPartial)
 	validity := h.nextCall(t)
-	if validity.force {
-		t.Fatal("partial during Gemini should call ZAI validity, not second Gemini")
+	if validity.kind != "pivot_gate" || validity.force {
+		t.Fatalf("partial during Gemini call = kind %q force %v, want pivot gate", validity.kind, validity.force)
 	}
-	validity.respond <- liveSellerResponse{Action: "invalidated", Provider: "zai", Model: "validity"}
+	validity.respond <- pivotGateResponse{ClientRevision: 2, Status: "CHANGE_HARD", Confidence: 1, Provider: "zai", Model: "pivot"}
 
 	waitForSellerWorker(t, func() bool {
 		h.worker.mu.Lock()
 		defer h.worker.mu.Unlock()
 		state := h.worker.autoStates[sessionID]
-		return state != nil && state.pendingReplan && state.pendingFromValidity && state.pendingText == latestPartial
+		return state != nil && state.pendingReplan && state.pendingReplanLevel == "hard" && state.pendingText == latestPartial
 	})
 	if got := h.forceCount(); got != 1 {
 		t.Fatalf("Gemini should still have only one force call while pending, got %d", got)
@@ -241,19 +254,24 @@ func TestSellerWorkerNoSecondGeminiWhileBusy(t *testing.T) {
 	latestPartial := firstPartial + strings.Repeat("б", 16)
 
 	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), firstPartial)
+	ready := h.nextCall(t)
+	if ready.kind != "ready_gate" {
+		t.Fatalf("first call kind = %q, want ready gate", ready.kind)
+	}
+	ready.respond <- readyGateResponse{ClientRevision: 1, Action: "GENERATE", Confidence: 1, Provider: "zai", Model: "gate"}
 	firstGemini := h.nextCall(t)
-	if !firstGemini.force {
-		t.Fatal("first auto generation should call Gemini")
+	if firstGemini.kind != "generate" || !firstGemini.force {
+		t.Fatalf("first auto generation call = kind %q force %v, want Gemini", firstGemini.kind, firstGemini.force)
 	}
 
 	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), latestPartial)
 	validity := h.nextCall(t)
-	if validity.force {
-		t.Fatal("busy seller reply should launch validity, not Gemini")
+	if validity.kind != "pivot_gate" || validity.force {
+		t.Fatalf("busy seller reply call = kind %q force %v, want pivot gate", validity.kind, validity.force)
 	}
-	validity.respond <- liveSellerResponse{Action: "invalidated", Provider: "zai", Model: "validity"}
+	validity.respond <- pivotGateResponse{ClientRevision: 2, Status: "CHANGE_HARD", Confidence: 1, Provider: "zai", Model: "pivot"}
 	waitForSellerWorker(t, func() bool {
-		return h.hasPipelineStatus("zai_validity", "received", "invalidated", "очередь")
+		return h.hasPipelineStatus("pivot_gate", "received", "CHANGE_HARD", "очередь")
 	})
 
 	time.Sleep(50 * time.Millisecond)
@@ -263,8 +281,8 @@ func TestSellerWorkerNoSecondGeminiWhileBusy(t *testing.T) {
 
 	firstGemini.respond <- liveSellerResponse{Action: "suggest", Text: "первый ответ", Provider: "vertex", Model: "gemini"}
 	secondGemini := h.nextCall(t)
-	if !secondGemini.force {
-		t.Fatal("handoff after first Gemini should be another Gemini call")
+	if secondGemini.kind != "generate" || !secondGemini.force {
+		t.Fatalf("handoff call = kind %q force %v, want Gemini", secondGemini.kind, secondGemini.force)
 	}
 	secondGemini.respond <- liveSellerResponse{Action: "suggest", Text: "обновленный ответ", Provider: "vertex", Model: "gemini"}
 	waitForSellerWorker(t, func() bool {
@@ -283,25 +301,30 @@ func TestSellerWorkerImmediateHandoffAfterGeminiDoneIfInvalidated(t *testing.T) 
 	latestPartial := firstPartial + strings.Repeat("б", 16)
 
 	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), firstPartial)
+	ready := h.nextCall(t)
+	if ready.kind != "ready_gate" {
+		t.Fatalf("first call kind = %q, want ready gate", ready.kind)
+	}
+	ready.respond <- readyGateResponse{ClientRevision: 1, Action: "GENERATE", Confidence: 1, Provider: "zai", Model: "gate"}
 	firstGemini := h.nextCall(t)
-	if !firstGemini.force {
-		t.Fatal("first auto generation should call Gemini")
+	if firstGemini.kind != "generate" || !firstGemini.force {
+		t.Fatalf("first auto generation call = kind %q force %v, want Gemini", firstGemini.kind, firstGemini.force)
 	}
 
 	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), latestPartial)
 	validity := h.nextCall(t)
-	if validity.force {
-		t.Fatal("partial during Gemini should call validity")
+	if validity.kind != "pivot_gate" || validity.force {
+		t.Fatalf("partial during Gemini call = kind %q force %v, want pivot gate", validity.kind, validity.force)
 	}
-	validity.respond <- liveSellerResponse{Action: "invalidated", Provider: "zai", Model: "validity"}
+	validity.respond <- pivotGateResponse{ClientRevision: 2, Status: "CHANGE_HARD", Confidence: 1, Provider: "zai", Model: "pivot"}
 	waitForSellerWorker(t, func() bool {
-		return h.hasPipelineStatus("zai_validity", "received", "invalidated", "очередь")
+		return h.hasPipelineStatus("pivot_gate", "received", "CHANGE_HARD", "очередь")
 	})
 
 	firstGemini.respond <- liveSellerResponse{Action: "suggest", Text: "старый ответ", Provider: "vertex", Model: "gemini"}
 	secondGemini := h.nextCall(t)
-	if !secondGemini.force {
-		t.Fatal("pending replan should immediately hand off to Gemini")
+	if secondGemini.kind != "generate" || !secondGemini.force {
+		t.Fatalf("pending replan handoff call = kind %q force %v, want Gemini", secondGemini.kind, secondGemini.force)
 	}
 	if got := h.forceCount(); got != 2 {
 		t.Fatalf("force calls after handoff = %d, want 2", got)
@@ -314,6 +337,102 @@ func TestSellerWorkerImmediateHandoffAfterGeminiDoneIfInvalidated(t *testing.T) 
 	waitForSellerWorker(t, func() bool {
 		return h.hasSellerDoneText("обновленный ответ")
 	})
+}
+
+func TestSellerWorkerNewestPivotWins(t *testing.T) {
+	h := newSellerWorkerHarness(t)
+	defer h.close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessionID := "sess-newest-pivot"
+	firstPartial := strings.Repeat("а", 16)
+	secondPartial := firstPartial + strings.Repeat("б", 16)
+	thirdPartial := secondPartial + strings.Repeat("в", 16)
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), firstPartial)
+	ready := h.nextCall(t)
+	ready.respond <- readyGateResponse{ClientRevision: 1, Action: "GENERATE", Confidence: 1, Provider: "zai", Model: "gate"}
+	firstGemini := h.nextCall(t)
+	if firstGemini.kind != "generate" || !firstGemini.force {
+		t.Fatalf("first auto generation call = kind %q force %v, want Gemini", firstGemini.kind, firstGemini.force)
+	}
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), secondPartial)
+	olderPivot := h.nextCall(t)
+	if olderPivot.kind != "pivot_gate" {
+		t.Fatalf("older pivot kind = %q, want pivot_gate", olderPivot.kind)
+	}
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), thirdPartial)
+	newerPivot := h.nextCall(t)
+	if newerPivot.kind != "pivot_gate" {
+		t.Fatalf("newer pivot kind = %q, want pivot_gate", newerPivot.kind)
+	}
+
+	newerPivot.respond <- pivotGateResponse{ClientRevision: 3, Status: "NO_CHANGE", Confidence: 1, Provider: "zai", Model: "pivot"}
+	waitForSellerWorker(t, func() bool {
+		return h.hasPipelineStatus("pivot_gate", "skipped", "NO_CHANGE", "cleared")
+	})
+	olderPivot.respond <- pivotGateResponse{ClientRevision: 2, Status: "CHANGE_HARD", Confidence: 1, Provider: "zai", Model: "pivot"}
+	waitForSellerWorker(t, func() bool {
+		return h.hasPipelineStatus("pivot_gate", "skipped", "CHANGE_HARD", "устаревший")
+	})
+
+	h.worker.mu.Lock()
+	state := h.worker.autoStates[sessionID]
+	pending := state != nil && state.pendingReplan
+	h.worker.mu.Unlock()
+	if pending {
+		t.Fatal("older hard pivot should not set pending replan after newer NO_CHANGE")
+	}
+
+	cancel()
+	_ = firstGemini
+}
+
+func TestSellerWorkerWaitNoiseKeepsPendingReplan(t *testing.T) {
+	h := newSellerWorkerHarness(t)
+	defer h.close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessionID := "sess-noise-keeps-pending"
+	firstPartial := strings.Repeat("а", 16)
+	secondPartial := firstPartial + strings.Repeat("б", 16)
+	thirdPartial := secondPartial + strings.Repeat("в", 16)
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), firstPartial)
+	ready := h.nextCall(t)
+	ready.respond <- readyGateResponse{ClientRevision: 1, Action: "GENERATE", Confidence: 1, Provider: "zai", Model: "gate"}
+	firstGemini := h.nextCall(t)
+	if firstGemini.kind != "generate" || !firstGemini.force {
+		t.Fatalf("first auto generation call = kind %q force %v, want Gemini", firstGemini.kind, firstGemini.force)
+	}
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), secondPartial)
+	hardPivot := h.nextCall(t)
+	hardPivot.respond <- pivotGateResponse{ClientRevision: 2, Status: "CHANGE_HARD", Confidence: 1, Provider: "zai", Model: "pivot"}
+	waitForSellerWorker(t, func() bool {
+		return h.hasPipelineStatus("pivot_gate", "received", "CHANGE_HARD", "очередь")
+	})
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), thirdPartial)
+	noisePivot := h.nextCall(t)
+	noisePivot.respond <- pivotGateResponse{ClientRevision: 3, Status: "WAIT_NOISE", Confidence: 1, Provider: "zai", Model: "pivot"}
+	waitForSellerWorker(t, func() bool {
+		return h.hasPipelineStatus("pivot_gate", "skipped", "WAIT_NOISE", "unchanged")
+	})
+
+	h.worker.mu.Lock()
+	state := h.worker.autoStates[sessionID]
+	pending := state != nil && state.pendingReplan && state.pendingReplanLevel == "hard" && state.pendingText == secondPartial
+	h.worker.mu.Unlock()
+	if !pending {
+		t.Fatal("WAIT_NOISE should leave existing hard pending replan untouched")
+	}
+
+	cancel()
+	_ = firstGemini
 }
 
 func (h *sellerWorkerHarness) hasSellerDoneText(text string) bool {

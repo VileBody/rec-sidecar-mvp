@@ -18,6 +18,7 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync",
 tokio-socks = "0.5"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 url = "2"
+webrtc-audio-processing = { version = "2.1", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

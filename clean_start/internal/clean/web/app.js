@@ -10,12 +10,27 @@ let captureStates = {
 };
 const SPEAKER_STORAGE_KEY = "rec-coach-seller-speaker";
 const ECHO_SUPPRESSION_STORAGE_KEY = "rec-coach-echo-suppression";
+const AEC3_ENABLED_STORAGE_KEY = "rec-coach-aec3-enabled";
+const AEC3_URL_STORAGE_KEY = "rec-coach-aec3-url";
 let sellerSpeaker = localStorage.getItem(SPEAKER_STORAGE_KEY) || "";
 let echoSuppressionEnabled = localStorage.getItem(ECHO_SUPPRESSION_STORAGE_KEY) !== "0";
+let aec3Enabled = localStorage.getItem(AEC3_ENABLED_STORAGE_KEY) === "1";
 let pendingStudentDirection = "";
 let studentAnswerLanguage = {};
 let replyPipWindow = null;
 let audioAdvancedVisible = false;
+const audioAec3State = {
+  url: localStorage.getItem(AEC3_URL_STORAGE_KEY) || "ws://127.0.0.1:8122",
+  ws: null,
+  ready: false,
+  connecting: false,
+  status: "off",
+  error: "",
+  cleanFrames: 0,
+  farFrames: 0,
+  lastStats: null,
+  lastConnectAttemptAt: 0,
+};
 const audioEchoState = {
   systemRing: [],
   maxMs: 2500,
@@ -26,6 +41,22 @@ const audioEchoState = {
   lastBestCorr: 0,
   lastResidual: 1,
   lastLagMs: 0,
+  serverRejected: 0,
+  serverEchoRejected: 0,
+  serverTextRejected: 0,
+  serverSourceSuppressed: 0,
+  recentRejects: [],
+  attributionCounts: {
+    micSeller: 0,
+    micClient: 0,
+    systemClient: 0,
+    systemSeller: 0,
+    systemSpeaker: 0,
+    mixedSeller: 0,
+    mixedClient: 0,
+    other: 0,
+  },
+  lastAttribution: "",
   thresholds: {
     vadRms: 0.003,
     echoCorrReject: 0.62,
@@ -1101,7 +1132,10 @@ function renderPipelineStatus() {
     return;
   }
   const stageStatus = latestPipelineStatus("stage");
-  const gateStatus = latestPipelineStatus("zai_gate");
+  const gateStatus =
+    latestPipelineStatus("pivot_gate") ||
+    latestPipelineStatus("ready_gate") ||
+    latestPipelineStatus("zai_gate");
   const replyStatus = latestPipelineStatus("seller_reply");
   const committedEvent = latestEvent("stage.committed");
   const candidateEvent = latestEvent("stage.candidate");
@@ -1730,7 +1764,12 @@ function connectSTTWebSocket(captureState) {
     const data = JSON.parse(event.data || "{}");
     if (data.type === "error") {
       setAudioStatus(mode, "err", data.error || "STT stream error");
+    } else if (data.type === "stt.rejected") {
+      recordSTTRejection(captureState, data);
+      const reason = data.reason ? ` · ${data.reason}` : "";
+      setAudioStatus(mode, "on", mode === "microphone" ? `микрофон · подавлено${reason}` : `захват · подавлено${reason}`);
     } else if (data.type === "stt.final") {
+      recordSTTAttribution(captureState, data);
       const roleText = roleLabel(data.role);
       const speakerText = data.speaker ? ` · spk ${data.speaker}` : "";
       setAudioStatus(mode, "on", mode === "microphone" ? "микрофон · распознано" : `захват · ${roleText}${speakerText}`);
@@ -1821,6 +1860,9 @@ function stopCapture(mode, stoppedText = "") {
     $("studentCaptureToggle").textContent = "Включить";
   }
   updateBothStatus();
+  if (!captureStates.system.active && !captureStates.microphone.active) {
+    closeAec3Connection("idle");
+  }
 }
 
 function streamAudioFrame(captureState, samples) {
@@ -1829,10 +1871,18 @@ function streamAudioFrame(captureState, samples) {
   const pcm = downsampleToPCM16(samples, captureState.context.sampleRate, 16000);
   if (captureState.mode === "system" && captureState.sourceLabel === "remote_audio" && rms >= audioEchoState.thresholds.minSystemRms) {
     rememberSystemReferenceFrame(pcm, now, rms);
+    sendAec3Far(pcm);
   }
+  if (captureState.mode === "microphone" && sendAec3Near(pcm)) return;
+
+  processPCMForSTT(captureState, pcm, { now, rms });
+}
+
+function processPCMForSTT(captureState, pcm, { now = Date.now(), rms = pcm16Rms(pcm), skipEchoFilter = false, statusPrefix = "" } = {}) {
+  if (captureStates[captureState.mode] !== captureState || captureState.ws?.readyState !== WebSocket.OPEN) return;
   let isVoice = rms >= audioEchoState.thresholds.vadRms;
   let echo = null;
-  if (captureState.mode === "microphone" && isVoice && echoSuppressionEnabled) {
+  if (captureState.mode === "microphone" && isVoice && echoSuppressionEnabled && !skipEchoFilter) {
     echo = classifyMicEchoFrame(pcm, now, rms);
     audioEchoState.lastBestCorr = echo.bestCorr;
     audioEchoState.lastResidual = echo.residualRatio;
@@ -1855,16 +1905,16 @@ function streamAudioFrame(captureState, samples) {
   if (captureState.speechOpen && !isVoice && now - captureState.lastVoiceAt >= 650) {
     sendStreamEndTurn(captureState);
     captureState.speechOpen = false;
-    setAudioStatus(captureState.mode, "on", captureState.mode === "microphone" ? "микрофон · жду финал" : "захват · жду финал");
+    setAudioStatus(captureState.mode, "on", statusPrefix || (captureState.mode === "microphone" ? "микрофон · жду финал" : "захват · жду финал"));
     return;
   }
 
   if (!isVoice && !captureState.speechOpen) {
-    setAudioStatus(captureState.mode, "on", captureState.mode === "microphone" ? "микрофон · жду речь" : "захват · жду речь");
+    setAudioStatus(captureState.mode, "on", statusPrefix || (captureState.mode === "microphone" ? "микрофон · жду речь" : "захват · жду речь"));
     return;
   }
 
-  const pcmBase64 = bytesToBase64(new Uint8Array(pcm.buffer));
+  const pcmBase64 = pcm16ToBase64(pcm);
   captureState.ws.send(JSON.stringify({ audio_chunk: { content: pcmBase64 } }));
   captureState.sentChunks += 1;
   if (captureState.mode === "microphone") {
@@ -1872,7 +1922,7 @@ function streamAudioFrame(captureState, samples) {
     maybeLogEchoStats(captureState);
   }
   if (captureState.sentChunks % 12 === 0) {
-    setAudioStatus(captureState.mode, "on", captureState.mode === "microphone" ? "микрофон · слышу речь" : "захват · слышу речь");
+    setAudioStatus(captureState.mode, "on", statusPrefix || (captureState.mode === "microphone" ? "микрофон · слышу речь" : "захват · слышу речь"));
   }
 }
 
@@ -1967,6 +2017,11 @@ function maybeLogEchoStats(captureState) {
     residual: Number(audioEchoState.lastResidual.toFixed(3)),
     lagMs: Math.round(audioEchoState.lastLagMs),
     systemRing: audioEchoState.systemRing.length,
+    serverRejected: audioEchoState.serverRejected,
+    serverEchoRejected: audioEchoState.serverEchoRejected,
+    serverSourceSuppressed: audioEchoState.serverSourceSuppressed,
+    attribution: audioEchoState.attributionCounts,
+    lastAttribution: audioEchoState.lastAttribution,
   }));
 }
 
@@ -2039,6 +2094,31 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+function pcm16ToBase64(samples) {
+  return bytesToBase64(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
+}
+
+function base64ToInt16(base64) {
+  const binary = atob(base64 || "");
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const samples = new Int16Array(Math.floor(bytes.length / 2));
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < samples.length; i++) {
+    samples[i] = view.getInt16(i * 2, true);
+  }
+  return samples;
+}
+
+function pcm16Rms(samples) {
+  let sum = 0;
+  for (const sample of samples) {
+    const value = sample / 32768;
+    sum += value * value;
+  }
+  return Math.sqrt(sum / Math.max(samples.length, 1));
+}
+
 function setCaptureStatus(kind, text) {
   $("captureStatus").textContent = text;
   $("capturePill").textContent = kind === "on" ? "вкл" : kind === "err" ? "ошибка" : "ожидание";
@@ -2090,6 +2170,27 @@ function initAudioControls() {
       renderEchoStatus();
     };
   }
+  const aec3Toggle = $("aec3Toggle");
+  if (aec3Toggle) {
+    aec3Toggle.onclick = () => {
+      aec3Enabled = !aec3Enabled;
+      localStorage.setItem(AEC3_ENABLED_STORAGE_KEY, aec3Enabled ? "1" : "0");
+      if (!aec3Enabled) closeAec3Connection("disabled");
+      renderEchoStatus();
+      ensureAec3Connection();
+    };
+  }
+  const aec3Url = $("aec3Url");
+  if (aec3Url) {
+    aec3Url.value = audioAec3State.url;
+    aec3Url.onchange = () => {
+      audioAec3State.url = aec3Url.value.trim() || "ws://127.0.0.1:8122";
+      localStorage.setItem(AEC3_URL_STORAGE_KEY, audioAec3State.url);
+      closeAec3Connection("url_changed");
+      renderEchoStatus();
+      ensureAec3Connection();
+    };
+  }
   const advancedToggle = $("audioAdvancedToggle");
   if (advancedToggle) {
     advancedToggle.onclick = () => {
@@ -2108,30 +2209,254 @@ function renderAudioAdvanced() {
   if (button) button.textContent = audioAdvancedVisible ? "Скрыть" : "Диагностика";
 }
 
+function recordSTTAttribution(captureState, data) {
+  const source = normalizeClientCaptureSource(data.source || captureState.sourceLabel);
+  const role = data.role || "";
+  const counts = audioEchoState.attributionCounts;
+  if (source === "seller_mic" && role === "seller") {
+    counts.micSeller += 1;
+  } else if (source === "seller_mic" && role === "client") {
+    counts.micClient += 1;
+  } else if (source === "remote_audio" && role === "client") {
+    counts.systemClient += 1;
+  } else if (source === "remote_audio" && role === "seller") {
+    counts.systemSeller += 1;
+  } else if (source === "remote_audio" && String(role).startsWith("speaker_")) {
+    counts.systemSpeaker += 1;
+  } else if (source === "mixed_audio" && role === "seller") {
+    counts.mixedSeller += 1;
+  } else if (source === "mixed_audio" && role === "client") {
+    counts.mixedClient += 1;
+  } else {
+    counts.other += 1;
+  }
+  const speakerText = data.speaker ? ` · spk ${data.speaker}` : "";
+  audioEchoState.lastAttribution = `${sourceLabel(source)} -> ${roleLabel(role)}${speakerText}`;
+  renderEchoStatus();
+}
+
+function recordSTTRejection(captureState, data) {
+  const reason = data.reason || "unknown";
+  audioEchoState.serverRejected += 1;
+  if (reason === "system_seller_suppressed_by_active_mic") {
+    audioEchoState.serverSourceSuppressed += 1;
+  } else if (reason.includes("echo_into")) {
+    audioEchoState.serverEchoRejected += 1;
+  } else {
+    audioEchoState.serverTextRejected += 1;
+  }
+  const source = normalizeClientCaptureSource(data.source || captureState.sourceLabel);
+  const score = typeof data.echo_score === "number" && Number.isFinite(data.echo_score)
+    ? ` · score=${data.echo_score.toFixed(2)}`
+    : "";
+  const text = compactDebugText(data.text || "", 36);
+  const preview = text ? ` · "${text}"` : "";
+  audioEchoState.recentRejects.unshift(`${sourceLabel(source)} -> ${roleLabel(data.role)} · ${reason}${score}${preview}`);
+  audioEchoState.recentRejects = audioEchoState.recentRejects.slice(0, 4);
+  renderEchoStatus();
+}
+
+function normalizeClientCaptureSource(source) {
+  const value = String(source || "").trim();
+  if (value === "browser-microphone-test") return "seller_mic";
+  if (value === "browser-system-audio") return "remote_audio";
+  if (value === "browser-audio") return "mixed_audio";
+  return value;
+}
+
+function compactDebugText(text, maxLen) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLen) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLen - 1))}…`;
+}
+
+function formatPercent(part, total) {
+  if (!total) return "0%";
+  return `${Math.round((part / total) * 100)}%`;
+}
+
 function renderEchoStatus() {
   const status = $("echoStatus");
   const metrics = $("echoDebugMetrics");
+  const aec3Status = $("aec3Status");
+  const aec3Toggle = $("aec3Toggle");
   const micSettings = captureStates.microphone?.micSettings || {};
   const aec = micSettings.echoCancellation === true
     ? "AEC on"
     : micSettings.echoCancellation === false
       ? "AEC off"
       : "AEC unknown";
-  const mode = echoSuppressionEnabled ? "эхо подавляется" : "эхо-фильтр выкл";
+  const mode = aec3Enabled
+    ? `AEC3 ${audioAec3State.ready ? "ready" : audioAec3State.status}`
+    : (echoSuppressionEnabled ? "эхо подавляется" : "эхо-фильтр выкл");
   if (status) {
     status.textContent = `микрофон: ${aec} · ${mode}`;
   }
-  if (metrics) {
-    metrics.textContent = [
-      `echo stats: sent=${audioEchoState.sentFrames}`,
-      `suppressed=${audioEchoState.suppressedFrames}`,
-      `double-talk=${audioEchoState.doubleTalkFrames}`,
-      `corr=${audioEchoState.lastBestCorr.toFixed(2)}`,
-      `residual=${audioEchoState.lastResidual.toFixed(2)}`,
-      `lag=${Math.round(audioEchoState.lastLagMs)}ms`,
-      `refs=${audioEchoState.systemRing.length}`,
-    ].join(" · ");
+  if (aec3Toggle) {
+    aec3Toggle.textContent = aec3Enabled ? "AEC3 вкл" : "AEC3 выкл";
+    aec3Toggle.className = aec3Enabled ? "blue" : "ghost";
   }
+  if (aec3Status) {
+    const stats = audioAec3State.lastStats || {};
+    const details = audioAec3State.error
+      ? audioAec3State.error
+      : `clean=${audioAec3State.cleanFrames} · far=${audioAec3State.farFrames} · delay=${stats.delay_ms ?? "-"}ms · erl=${formatOptionalNumber(stats.echo_return_loss)} · erle=${formatOptionalNumber(stats.echo_return_loss_enhancement)} · residual=${formatOptionalNumber(stats.residual_echo_likelihood)}`;
+    aec3Status.textContent = aec3Enabled
+      ? `${audioAec3State.ready ? "ready" : audioAec3State.status} · ${details}`
+      : "локальный helper выключен";
+  }
+  if (metrics) {
+    const counts = audioEchoState.attributionCounts;
+    const localEchoTotal = audioEchoState.sentFrames + audioEchoState.suppressedFrames;
+    const expectedRoutes = counts.micSeller + counts.systemClient;
+    const suspiciousRoutes = counts.micClient + counts.systemSeller;
+    const routeTotal = expectedRoutes + suspiciousRoutes;
+    const routeAccuracy = routeTotal ? formatPercent(expectedRoutes, routeTotal) : "жду";
+    const recentRejects = audioEchoState.recentRejects.length
+      ? audioEchoState.recentRejects.map((item) => `  - ${item}`).join("\n")
+      : "  - пока нет";
+    metrics.textContent = [
+      `audio suppress: sent=${audioEchoState.sentFrames} · suppressed=${audioEchoState.suppressedFrames} (${formatPercent(audioEchoState.suppressedFrames, localEchoTotal)}) · double-talk=${audioEchoState.doubleTalkFrames}`,
+      `audio signal: corr=${audioEchoState.lastBestCorr.toFixed(2)} · residual=${audioEchoState.lastResidual.toFixed(2)} · lag=${Math.round(audioEchoState.lastLagMs)}ms · refs=${audioEchoState.systemRing.length}`,
+      `server reject: total=${audioEchoState.serverRejected} · echo=${audioEchoState.serverEchoRejected} · source=${audioEchoState.serverSourceSuppressed} · text=${audioEchoState.serverTextRejected}`,
+      `attribution: ok=${routeAccuracy} · mic->мы=${counts.micSeller} · mic->клиент=${counts.micClient} · system->клиент=${counts.systemClient} · system->мы=${counts.systemSeller} · system->spk=${counts.systemSpeaker}`,
+      `last route: ${audioEchoState.lastAttribution || "жду STT"}`,
+      `recent rejects:\n${recentRejects}`,
+    ].join("\n");
+  }
+}
+
+function formatOptionalNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "-";
+}
+
+function shouldUseAec3() {
+  return aec3Enabled && !isStudentUser();
+}
+
+function ensureAec3Connection() {
+  if (!shouldUseAec3()) return false;
+  if (audioAec3State.ready && audioAec3State.ws?.readyState === WebSocket.OPEN) return true;
+  if (audioAec3State.connecting) return false;
+  const now = Date.now();
+  if (now - audioAec3State.lastConnectAttemptAt < 1500) return false;
+  audioAec3State.lastConnectAttemptAt = now;
+  audioAec3State.connecting = true;
+  audioAec3State.status = "connecting";
+  audioAec3State.error = "";
+  renderEchoStatus();
+
+  try {
+    const ws = new WebSocket(audioAec3State.url);
+    audioAec3State.ws = ws;
+    ws.onopen = () => {
+      audioAec3State.connecting = false;
+      audioAec3State.status = "hello";
+      sendAec3JSON({ type: "hello", sample_rate_hz: 16000, channels: 1 });
+      renderEchoStatus();
+    };
+    ws.onmessage = (event) => handleAec3Message(event.data);
+    ws.onerror = () => {
+      audioAec3State.error = "helper websocket error";
+      audioAec3State.status = "error";
+      audioAec3State.ready = false;
+      audioAec3State.connecting = false;
+      renderEchoStatus();
+    };
+    ws.onclose = () => {
+      audioAec3State.ready = false;
+      audioAec3State.connecting = false;
+      audioAec3State.status = "closed";
+      renderEchoStatus();
+    };
+  } catch (error) {
+    audioAec3State.ready = false;
+    audioAec3State.connecting = false;
+    audioAec3State.status = "error";
+    audioAec3State.error = error.message;
+    renderEchoStatus();
+  }
+
+  return false;
+}
+
+function closeAec3Connection(reason = "") {
+  const ws = audioAec3State.ws;
+  audioAec3State.ws = null;
+  audioAec3State.ready = false;
+  audioAec3State.connecting = false;
+  audioAec3State.status = reason || "closed";
+  audioAec3State.error = "";
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "close" }));
+    ws.close();
+  } else if (ws && ws.readyState === WebSocket.CONNECTING) {
+    ws.close();
+  }
+}
+
+function sendAec3JSON(payload) {
+  const ws = audioAec3State.ws;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  ws.send(JSON.stringify(payload));
+  return true;
+}
+
+function handleAec3Message(raw) {
+  let data = null;
+  try {
+    data = JSON.parse(raw || "{}");
+  } catch (error) {
+    audioAec3State.error = `bad helper json: ${error.message}`;
+    renderEchoStatus();
+    return;
+  }
+
+  if (data.type === "ready") {
+    audioAec3State.ready = true;
+    audioAec3State.status = "ready";
+    audioAec3State.error = "";
+  } else if (data.type === "ack") {
+    audioAec3State.lastStats = data.stats || audioAec3State.lastStats;
+    if (data.what === "far") audioAec3State.farFrames += Number(data.frames || 0);
+  } else if (data.type === "clean") {
+    audioAec3State.lastStats = data.stats || audioAec3State.lastStats;
+    if (data.samples > 0 && data.pcm16) {
+      const captureState = captureStates.microphone;
+      if (captureState?.active) {
+        const pcm = base64ToInt16(data.pcm16);
+        audioAec3State.cleanFrames += 1;
+        processPCMForSTT(captureState, pcm, {
+          now: Date.now(),
+          rms: pcm16Rms(pcm),
+          skipEchoFilter: true,
+          statusPrefix: "микрофон · AEC3",
+        });
+      }
+    }
+  } else if (data.type === "error") {
+    audioAec3State.error = data.error || "helper error";
+    audioAec3State.status = "error";
+  }
+  renderEchoStatus();
+}
+
+function sendAec3Far(pcm) {
+  if (!shouldUseAec3()) return false;
+  ensureAec3Connection();
+  if (!audioAec3State.ready || audioAec3State.ws?.readyState !== WebSocket.OPEN) return false;
+  return sendAec3JSON({ type: "far", pcm16: pcm16ToBase64(pcm) });
+}
+
+function sendAec3Near(pcm) {
+  if (!shouldUseAec3()) return false;
+  ensureAec3Connection();
+  if (!audioAec3State.ready || audioAec3State.ws?.readyState !== WebSocket.OPEN) return false;
+  if (audioAec3State.ws.bufferedAmount > 1_000_000) {
+    audioAec3State.error = "helper backlog; fallback to raw mic";
+    return false;
+  }
+  return sendAec3JSON({ type: "near", pcm16: pcm16ToBase64(pcm) });
 }
 
 function initSpeakerMap() {

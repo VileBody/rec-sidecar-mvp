@@ -15,6 +15,14 @@ type ScorecardWorker struct {
 	sub    *nats.Subscription
 }
 
+type stageScorecardPayload struct {
+	Readiness      string `json:"readiness"`
+	ReadinessLabel string `json:"readiness_label"`
+	ReadyToAdvance bool   `json:"ready_to_advance"`
+	NextAction     string `json:"next_action"`
+	Summary        string `json:"summary"`
+}
+
 func NewScorecardWorker(cfg Config, nc *nats.Conn, logger *slog.Logger) *ScorecardWorker {
 	return &ScorecardWorker{cfg: cfg, nc: nc, logger: logger.With("component", "scorecard-worker")}
 }
@@ -50,12 +58,26 @@ func (w *ScorecardWorker) Shutdown(context.Context) error {
 
 func scorecardFromStage(stage StageData) ScorecardData {
 	if len(stage.Scorecard) > 0 && string(stage.Scorecard) != "null" {
+		var payload stageScorecardPayload
+		_ = json.Unmarshal(stage.Scorecard, &payload)
+		if payload.Readiness == "" {
+			payload.Readiness = "pending"
+		}
+		if payload.ReadinessLabel == "" {
+			payload.ReadinessLabel = "Из LLM scorecard"
+		}
+		if payload.NextAction == "" {
+			payload.NextAction = stage.Step
+		}
+		if payload.Summary == "" {
+			payload.Summary = "Scorecard пришел вместе со stage response."
+		}
 		return ScorecardData{
-			Readiness:      "pending",
-			ReadinessLabel: "Из LLM scorecard",
-			ReadyToAdvance: false,
-			NextAction:     stage.Step,
-			Summary:        "Scorecard пришел вместе со stage response.",
+			Readiness:      payload.Readiness,
+			ReadinessLabel: payload.ReadinessLabel,
+			ReadyToAdvance: payload.ReadyToAdvance,
+			NextAction:     payload.NextAction,
+			Summary:        payload.Summary,
 			Source:         "llm-helper",
 			Raw:            stage.Scorecard,
 		}

@@ -64,10 +64,20 @@
               <input id="echoSuppressionToggle" type="checkbox">
               <span>эхо-фильтр</span>
             </label>
+            <button id="aec3Toggle" class="ghost" type="button">AEC3 выкл</button>
             <button id="audioAdvancedToggle" class="ghost" type="button">Диагностика</button>
           </div>
         </div>
         <div id="audioAdvancedPanel" class="audio-debug-panel" hidden>
+          <div class="audio-row">
+            <div>
+              <div class="title" style="font-size:15px">WebRTC AEC3</div>
+              <div id="aec3Status" class="sub">локальный helper выключен</div>
+            </div>
+            <div class="capture-row">
+              <input id="aec3Url" type="text" value="ws://127.0.0.1:8122" aria-label="AEC3 helper URL">
+            </div>
+          </div>
           <div class="audio-row">
             <div>
               <div class="title" style="font-size:15px">Кто я</div>

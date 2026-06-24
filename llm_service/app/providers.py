@@ -207,6 +207,132 @@ def cerebras_structured_response_format() -> dict[str, Any]:
     }
 
 
+def cerebras_ready_gate_response_format() -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "sales_ready_gate",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "client_revision": {"type": "integer"},
+                    "action": {"type": "string", "enum": ["WAIT", "KEEP", "GENERATE"]},
+                    "confidence": {"type": "number"},
+                    "reason": {"type": "string"},
+                    "readiness": {
+                        "type": "string",
+                        "enum": [
+                            "incomplete",
+                            "noise",
+                            "meaningful_but_covered",
+                            "actionable",
+                        ],
+                    },
+                    "semantic_type": {
+                        "type": "string",
+                        "enum": [
+                            "none",
+                            "question",
+                            "objection",
+                            "concern",
+                            "buying_signal",
+                            "price",
+                            "budget",
+                            "timing",
+                            "integration",
+                            "competitor",
+                            "authority",
+                            "next_step",
+                            "correction",
+                            "refusal",
+                            "clarification",
+                            "other",
+                        ],
+                    },
+                    "mutex_decision": {
+                        "type": "string",
+                        "enum": ["DO_NOT_LOCK", "LOCK_AND_GENERATE"],
+                    },
+                    "generation_brief": {"type": "string"},
+                    "latest_client_intent": {"type": "string"},
+                },
+                "required": [
+                    "client_revision",
+                    "action",
+                    "confidence",
+                    "reason",
+                    "readiness",
+                    "semantic_type",
+                    "mutex_decision",
+                    "generation_brief",
+                    "latest_client_intent",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def cerebras_pivot_gate_response_format() -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "sales_pivot_gate",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "client_revision": {"type": "integer"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["NO_CHANGE", "WAIT_NOISE", "ADAPT_SOFT", "CHANGE_HARD"],
+                    },
+                    "confidence": {"type": "number"},
+                    "reason": {"type": "string"},
+                    "pivot_type": {
+                        "type": "string",
+                        "enum": [
+                            "none",
+                            "objection",
+                            "price",
+                            "budget",
+                            "timing",
+                            "integration",
+                            "competitor",
+                            "authority",
+                            "priority_shift",
+                            "refusal",
+                            "correction",
+                            "new_question",
+                            "buying_signal",
+                            "other",
+                        ],
+                    },
+                    "sets_pending_replan": {"type": "boolean"},
+                    "clears_pending_replan": {"type": "boolean"},
+                    "replan_level": {"type": "string", "enum": ["none", "soft", "hard"]},
+                    "latest_client_intent": {"type": "string"},
+                    "base_client_intent": {"type": "string"},
+                },
+                "required": [
+                    "client_revision",
+                    "status",
+                    "confidence",
+                    "reason",
+                    "pivot_type",
+                    "sets_pending_replan",
+                    "clears_pending_replan",
+                    "replan_level",
+                    "latest_client_intent",
+                    "base_client_intent",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 def cerebras_stage_response_format() -> dict[str, Any]:
     return {
         "type": "json_schema",

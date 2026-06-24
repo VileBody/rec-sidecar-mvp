@@ -1,6 +1,7 @@
 package clean
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 )
@@ -9,6 +10,8 @@ type sessionMemory struct {
 	Messages                    []Message
 	ClientPartial               string
 	CurrentStage                string
+	CurrentStageData            *StageData
+	CurrentScorecard            *ScorecardData
 	SellerDraft                 string
 	SellerGenerationID          string
 	SellerImmediateGenerationID string
@@ -41,12 +44,89 @@ func (m *sessionMemory) contextBlock() string {
 		b.WriteString(m.ClientPartial)
 		b.WriteString("\n")
 	}
-	if m.CurrentStage != "" {
-		b.WriteString("\n--- Current stage ---\n")
-		b.WriteString(m.CurrentStage)
-		b.WriteString("\n")
-	}
+	m.writeSalesGuidanceBlock(&b)
 	return b.String()
+}
+
+func (m *sessionMemory) writeSalesGuidanceBlock(b *strings.Builder) {
+	stage := strings.TrimSpace(m.CurrentStage)
+	if m.CurrentStageData != nil && strings.TrimSpace(m.CurrentStageData.Stage) != "" {
+		stage = strings.TrimSpace(m.CurrentStageData.Stage)
+	}
+	if stage == "" {
+		return
+	}
+	b.WriteString("\n--- Current stage / agenda ---\n")
+	b.WriteString("Stage: ")
+	b.WriteString(stage)
+	b.WriteString("\n")
+	if data := m.CurrentStageData; data != nil {
+		writeContextLine(b, "Title", data.Title)
+		writeContextLine(b, "Agenda", data.Agenda)
+		writeContextLine(b, "Emotional intent", data.Emotion)
+		writeContextLine(b, "Canonical next step", data.Step)
+	}
+	if score := m.CurrentScorecard; score != nil {
+		b.WriteString("\n--- Current scorecard ---\n")
+		writeContextLine(b, "Readiness", score.Readiness)
+		writeContextLine(b, "Readiness label", score.ReadinessLabel)
+		writeContextLine(b, "Summary", score.Summary)
+		writeContextLine(b, "Recommended next action", score.NextAction)
+		if score.ReadyToAdvance {
+			b.WriteString("Ready to advance: yes\n")
+		} else {
+			b.WriteString("Ready to advance: no\n")
+		}
+		if raw := compactRawJSON(score.Raw, 2200); raw != "" {
+			b.WriteString("Raw scorecard: ")
+			b.WriteString(raw)
+			b.WriteString("\n")
+		}
+	} else if m.CurrentStageData != nil {
+		if raw := compactRawJSON(m.CurrentStageData.Scorecard, 2200); raw != "" {
+			b.WriteString("\n--- Current scorecard ---\n")
+			b.WriteString("Raw scorecard: ")
+			b.WriteString(raw)
+			b.WriteString("\n")
+		}
+	}
+}
+
+func writeContextLine(b *strings.Builder, label, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	b.WriteString(label)
+	b.WriteString(": ")
+	b.WriteString(value)
+	b.WriteString("\n")
+}
+
+func compactRawJSON(raw json.RawMessage, maxRunes int) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return truncateRunes(strings.Join(strings.Fields(string(raw)), " "), maxRunes)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return truncateRunes(strings.Join(strings.Fields(string(raw)), " "), maxRunes)
+	}
+	return truncateRunes(string(encoded), maxRunes)
+}
+
+func truncateRunes(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func (m *sessionMemory) studentContextBlock() string {
@@ -176,6 +256,13 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 	case EventStageCandidate, EventStageCommitted:
 		if data, err := DecodeData[StageData](event); err == nil && data.Stage != "" {
 			mem.CurrentStage = data.Stage
+			stageCopy := cloneStageData(data)
+			mem.CurrentStageData = &stageCopy
+		}
+	case EventScorecardUpdate:
+		if data, err := DecodeData[ScorecardData](event); err == nil {
+			scoreCopy := cloneScorecardData(data)
+			mem.CurrentScorecard = &scoreCopy
 		}
 	case EventSellerStarted:
 		if data, err := DecodeData[SellerStartedData](event); err == nil {
@@ -213,5 +300,23 @@ func cloneSessionMemory(mem *sessionMemory) *sessionMemory {
 	copy.StudentOriginals = append([]Message(nil), mem.StudentOriginals...)
 	copy.StudentTranslations = append([]Message(nil), mem.StudentTranslations...)
 	copy.StudentAnswers = append([]Message(nil), mem.StudentAnswers...)
+	if mem.CurrentStageData != nil {
+		stageCopy := cloneStageData(*mem.CurrentStageData)
+		copy.CurrentStageData = &stageCopy
+	}
+	if mem.CurrentScorecard != nil {
+		scoreCopy := cloneScorecardData(*mem.CurrentScorecard)
+		copy.CurrentScorecard = &scoreCopy
+	}
 	return &copy
+}
+
+func cloneStageData(data StageData) StageData {
+	data.Scorecard = append(json.RawMessage(nil), data.Scorecard...)
+	return data
+}
+
+func cloneScorecardData(data ScorecardData) ScorecardData {
+	data.Raw = append(json.RawMessage(nil), data.Raw...)
+	return data
 }

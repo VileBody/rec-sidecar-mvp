@@ -25,6 +25,7 @@ type Config struct {
 	LogLevel                  slog.Level
 	MinSellerChars            int
 	MinSellerGrowth           int
+	AutoReplanOnSoft          bool
 	MinStageChars             int
 	MinStageGrowth            int
 	StagePartialMinInterval   time.Duration
@@ -78,6 +79,7 @@ func ConfigFromEnv() Config {
 		LogLevel:                  parseLogLevel(env("CLEAN_START_LOG_LEVEL", "info")),
 		MinSellerChars:            envInt("CLEAN_START_MIN_SELLER_CHARS", 12),
 		MinSellerGrowth:           envInt("CLEAN_START_MIN_SELLER_GROWTH", 12),
+		AutoReplanOnSoft:          envBool("CLEAN_START_AUTO_REPLAN_ON_SOFT", false),
 		MinStageChars:             envInt("CLEAN_START_MIN_STAGE_CHARS", 18),
 		MinStageGrowth:            envInt("CLEAN_START_MIN_STAGE_GROWTH", 24),
 		StagePartialMinInterval:   time.Duration(envInt("CLEAN_START_STAGE_PARTIAL_INTERVAL_MS", 2200)) * time.Millisecond,

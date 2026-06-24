@@ -186,6 +186,24 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 		defer browserWriteMu.Unlock()
 		return browserConn.WriteJSON(value)
 	}
+	writeBrowserReject := func(segment STTSegment, segmentID, segmentRole, roleReason, reason string, score float64, final bool) error {
+		payload := map[string]any{
+			"type":        "stt.rejected",
+			"text":        segment.Text,
+			"final":       final,
+			"role":        segmentRole,
+			"role_reason": roleReason,
+			"source":      source,
+			"speaker":     segment.Speaker,
+			"segment_id":  segmentID,
+			"reason":      reason,
+			"created_at":  time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		if score > 0 {
+			payload["echo_score"] = score
+		}
+		return writeBrowserJSON(payload)
+	}
 
 	_ = writeBrowserJSON(map[string]any{"type": "ready"})
 	g.logger.Info("browser audio stt stream connected", "session_id", sessionID, "role", role, "source", source, "provider", provider, "speaker_roles", speakerRoles)
@@ -209,21 +227,33 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 			}
 			for index, segment := range diarizedTranscriptSegments(transcript) {
 				segmentRole, roleReason := roleReasonForSTTSource(role, source, segment.Speaker, speakerRoles)
-				if suppressSystemSellerSegment(g.hasActiveMicStream(sessionID), source, segmentRole) {
-					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", "system_seller_suppressed_by_active_mic", "text", segment.Text)
-					continue
-				}
 				segmentID := segmentTracker.ID(segment, index)
 				if !stabilizer.ShouldEmit(segmentID, segment.Text, transcript.Final) {
 					continue
 				}
+				if suppressSystemSellerSegment(g.hasActiveMicStream(sessionID), source, segmentRole) {
+					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", "system_seller_suppressed_by_active_mic", "text", segment.Text)
+					if err := writeBrowserReject(segment, segmentID, segmentRole, roleReason, "system_seller_suppressed_by_active_mic", 1, transcript.Final); err != nil {
+						done <- err
+						return
+					}
+					continue
+				}
 				if reason := browserTranscriptRejectReason(segment.Text); reason != "" {
 					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
+					if err := writeBrowserReject(segment, segmentID, segmentRole, roleReason, reason, 0, transcript.Final); err != nil {
+						done <- err
+						return
+					}
 					continue
 				}
 				if segmentRole == "client" || segmentRole == "seller" {
-					if reason := g.crossSourceEchoRejectReason(sessionID, segmentRole, source, segment.Text); reason != "" {
-						g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
+					if match := g.crossSourceEchoRejectMatch(sessionID, segmentRole, source, segment.Text); match.Found() {
+						g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", match.Reason, "echo_score", match.Score, "text", segment.Text)
+						if err := writeBrowserReject(segment, segmentID, segmentRole, roleReason, match.Reason, match.Score, transcript.Final); err != nil {
+							done <- err
+							return
+						}
 						continue
 					}
 				}

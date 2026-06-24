@@ -1,6 +1,7 @@
 package clean
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -62,5 +63,42 @@ func TestStudentMemoryIncludesHelpHistoryInContext(t *testing.T) {
 	}
 	if !strings.Contains(context, "Assistant: TL;DR: GIL ограничивает выполнение Python-кода.") {
 		t.Fatalf("context missing previous answer: %s", context)
+	}
+}
+
+func TestSalesMemoryIncludesStageAgendaAndScorecardInContext(t *testing.T) {
+	book := newMemoryBook()
+	sessionID := "sess-sales-guidance"
+	book.apply(NewEvent(sessionID, EventStageCommitted, "test", StageData{
+		Stage:   "S2.2",
+		Title:   "Квалификация: текущая ситуация",
+		Agenda:  "узнать текущую ситуацию, боли и ограничения",
+		Emotion: "признать нагрузку клиента",
+		Step:    "добрать факты текущей ситуации",
+	}))
+	mem := book.apply(NewEvent(sessionID, EventScorecardUpdate, "test", ScorecardData{
+		Readiness:      "yellow",
+		ReadinessLabel: "Почти",
+		ReadyToAdvance: false,
+		Summary:        "Не хватает конкретики по ограничениям.",
+		NextAction:     "Уточнить: Где именно сейчас упираетесь — деньги, время или доверие к формату?",
+		Source:         "llm-helper",
+		Raw:            json.RawMessage(`{"checks":[{"id":"current_context","result":"hit"},{"id":"pain","result":"pending"}]}`),
+	}))
+
+	context := mem.contextBlock()
+	for _, want := range []string{
+		"--- Current stage / agenda ---",
+		"Stage: S2.2",
+		"Agenda: узнать текущую ситуацию, боли и ограничения",
+		"Canonical next step: добрать факты текущей ситуации",
+		"--- Current scorecard ---",
+		"Readiness: yellow",
+		"Recommended next action: Уточнить: Где именно сейчас упираетесь",
+		`"id":"pain"`,
+	} {
+		if !strings.Contains(context, want) {
+			t.Fatalf("context missing %q:\n%s", want, context)
+		}
 	}
 }

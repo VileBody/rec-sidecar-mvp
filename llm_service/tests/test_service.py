@@ -26,6 +26,8 @@ from llm_service.app.orchestrator import (
     ConstructivePrefixStripper,
     LlmOrchestrator,
     OpenerCandidate,
+    parse_pivot_gate_response,
+    parse_ready_gate_response,
     sse_event,
     strip_constructive_prefix,
 )
@@ -33,10 +35,14 @@ from llm_service.app.prompts import (
     SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
     SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
     SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT,
+    SALES_COACH_PIVOT_GATE_SYSTEM_PROMPT,
+    SALES_COACH_READY_GATE_SYSTEM_PROMPT,
     SALES_COACH_LIVE_VALIDATOR_SYSTEM_PROMPT,
 )
 from llm_service.app.providers import (
     CerebrasClient,
+    cerebras_pivot_gate_response_format,
+    cerebras_ready_gate_response_format,
     cerebras_stage_response_format,
     parse_bos_eos_text,
     parse_json_suggestion,
@@ -171,6 +177,73 @@ def test_help_prompts_force_single_sentence():
     assert "готовую к зачитыванию реплику продавца" in SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT
     assert "ровно одну короткую реплику" in SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT
     assert "верни разговор к цели звонка" in SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT
+    assert "gemini_lock = OFF" in SALES_COACH_READY_GATE_SYSTEM_PROMPT
+    assert "WAIT | KEEP | GENERATE" in SALES_COACH_READY_GATE_SYSTEM_PROMPT
+    assert "LOCK_AND_GENERATE" in SALES_COACH_READY_GATE_SYSTEM_PROMPT
+    assert "gemini_lock = ON" in SALES_COACH_PIVOT_GATE_SYSTEM_PROMPT
+    assert "NO_CHANGE | WAIT_NOISE | ADAPT_SOFT | CHANGE_HARD" in SALES_COACH_PIVOT_GATE_SYSTEM_PROMPT
+    assert "WAIT_NOISE should not clear an existing pending replan" in SALES_COACH_PIVOT_GATE_SYSTEM_PROMPT
+
+
+def test_gate_schemas_and_parsers_normalize_mutex_contract():
+    ready_schema = cerebras_ready_gate_response_format()["json_schema"]["schema"]
+    pivot_schema = cerebras_pivot_gate_response_format()["json_schema"]["schema"]
+    assert ready_schema["properties"]["action"]["enum"] == ["WAIT", "KEEP", "GENERATE"]
+    assert "buying_signal" in ready_schema["properties"]["semantic_type"]["enum"]
+    assert pivot_schema["properties"]["status"]["enum"] == [
+        "NO_CHANGE",
+        "WAIT_NOISE",
+        "ADAPT_SOFT",
+        "CHANGE_HARD",
+    ]
+    assert "priority_shift" in pivot_schema["properties"]["pivot_type"]["enum"]
+
+    ready = parse_ready_gate_response(
+        json.dumps(
+            {
+                "client_revision": 7,
+                "action": "suggest",
+                "confidence": 0.8,
+                "reason": "new objection",
+                "readiness": "",
+                "semantic_type": "objection",
+                "mutex_decision": "",
+                "generation_brief": "handle objection",
+                "latest_client_intent": "client doubts value",
+            }
+        ),
+        fallback_revision=1,
+        provider="cerebras",
+        model="zai-glm-4.7",
+    )
+    assert ready.action == "GENERATE"
+    assert ready.mutex_decision == "LOCK_AND_GENERATE"
+    assert ready.readiness == "actionable"
+    assert ready.client_revision == 7
+
+    pivot = parse_pivot_gate_response(
+        json.dumps(
+            {
+                "client_revision": 8,
+                "status": "skip",
+                "confidence": 0.7,
+                "reason": "same intent",
+                "pivot_type": "none",
+                "sets_pending_replan": True,
+                "clears_pending_replan": False,
+                "replan_level": "hard",
+                "latest_client_intent": "same concern",
+                "base_client_intent": "same concern",
+            }
+        ),
+        fallback_revision=1,
+        provider="cerebras",
+        model="zai-glm-4.7",
+    )
+    assert pivot.status == "NO_CHANGE"
+    assert pivot.sets_pending_replan is False
+    assert pivot.clears_pending_replan is True
+    assert pivot.replan_level == "none"
 
 
 def test_stage_agenda_assets_cover_detector_tags():
