@@ -86,6 +86,9 @@ spec:
         app.kubernetes.io/name: tempo
         app.kubernetes.io/part-of: rec-sidecar
     spec:
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: tempo
           image: grafana/tempo:2.5.0
