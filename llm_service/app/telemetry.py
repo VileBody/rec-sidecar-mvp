@@ -5,6 +5,7 @@ import os
 import time
 from contextlib import contextmanager
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request, Response
 
@@ -75,7 +76,7 @@ def setup_tracing(app: FastAPI) -> None:
     if not trace or not TracerProvider or not OTLPSpanExporter:
         logger.warning("otel python packages unavailable; traces disabled")
         return
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    endpoint = otlp_grpc_endpoint_from_env()
     if not endpoint:
         logger.info("otel traces disabled; OTEL_EXPORTER_OTLP_ENDPOINT is empty")
         return
@@ -93,7 +94,24 @@ def setup_tracing(app: FastAPI) -> None:
         FastAPIInstrumentor.instrument_app(app, excluded_urls=os.getenv("OTEL_PYTHON_FASTAPI_EXCLUDED_URLS", "/healthz,/metrics"))
     if HTTPXClientInstrumentor:
         HTTPXClientInstrumentor().instrument()
-    logger.info("otel traces enabled service=%s", os.getenv("OTEL_SERVICE_NAME", "llm-sidecar"))
+    logger.info("otel traces enabled service=%s endpoint=%s", os.getenv("OTEL_SERVICE_NAME", "llm-sidecar"), endpoint)
+
+
+def otlp_grpc_endpoint_from_env() -> str:
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "").strip()
+    if not endpoint:
+        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    return normalize_otlp_grpc_endpoint(endpoint)
+
+
+def normalize_otlp_grpc_endpoint(endpoint: str) -> str:
+    endpoint = endpoint.strip()
+    if not endpoint:
+        return ""
+    parsed = urlparse(endpoint)
+    if parsed.scheme and parsed.netloc:
+        return parsed.netloc
+    return endpoint.removeprefix("http://").removeprefix("https://")
 
 
 def setup_metrics(app: FastAPI) -> None:
@@ -143,4 +161,3 @@ def current_trace_id() -> str:
     if not context or not context.is_valid:
         return ""
     return format(context.trace_id, "032x")
-

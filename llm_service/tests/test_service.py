@@ -1998,3 +1998,13 @@ def test_vertex_stream_parser_handles_array_delimited_json():
 
     _, _, consumed = pop_vertex_stream_value(buffer)
     assert consumed is False
+
+
+def test_normalize_otlp_grpc_endpoint_accepts_url_or_hostport():
+    from llm_service.app.telemetry import normalize_otlp_grpc_endpoint
+
+    assert normalize_otlp_grpc_endpoint("http://otel-collector:4317") == "otel-collector:4317"
+    assert normalize_otlp_grpc_endpoint("https://tempo.local:4317") == "tempo.local:4317"
+    assert normalize_otlp_grpc_endpoint("otel-collector:4317") == "otel-collector:4317"
+    assert normalize_otlp_grpc_endpoint("  http://127.0.0.1:4317  ") == "127.0.0.1:4317"
+    assert normalize_otlp_grpc_endpoint("") == ""
