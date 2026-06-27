@@ -169,6 +169,10 @@ spec:
       app.kubernetes.io/name: clean-start-gateway
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
       labels:
         app.kubernetes.io/name: clean-start-gateway
         app.kubernetes.io/part-of: rec-sidecar
@@ -183,7 +187,11 @@ spec:
           ports:
             - name: http
               containerPort: 8110
+            - name: metrics
+              containerPort: 9090
           envFrom:
+            - configMapRef:
+                name: clean-start-observability-env
             - secretRef:
                 name: llm-helper-env
             - secretRef:
@@ -204,6 +212,8 @@ spec:
               value: nats://clean-start-nats:4222
             - name: COACH_LLM_SERVICE_URL
               value: http://llm-helper
+            - name: OTEL_SERVICE_NAME
+              value: clean-start-gateway
           readinessProbe:
             httpGet:
               path: /healthz
@@ -352,6 +362,10 @@ spec:
       app.kubernetes.io/name: clean-start-seller-worker
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
       labels:
         app.kubernetes.io/name: clean-start-seller-worker
         app.kubernetes.io/part-of: rec-sidecar
@@ -363,7 +377,12 @@ spec:
           image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
           imagePullPolicy: Always
           args: ["--role", "seller-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
           envFrom:
+            - configMapRef:
+                name: clean-start-observability-env
             - secretRef:
                 name: llm-helper-env
           env:
@@ -371,6 +390,8 @@ spec:
               value: nats://clean-start-nats:4222
             - name: COACH_LLM_SERVICE_URL
               value: http://llm-helper
+            - name: OTEL_SERVICE_NAME
+              value: clean-start-seller-worker
           resources:
             requests:
               cpu: 50m
@@ -394,6 +415,10 @@ spec:
       app.kubernetes.io/name: clean-start-assist-worker
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
       labels:
         app.kubernetes.io/name: clean-start-assist-worker
         app.kubernetes.io/part-of: rec-sidecar
@@ -405,7 +430,12 @@ spec:
           image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
           imagePullPolicy: Always
           args: ["--role", "assist-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
           envFrom:
+            - configMapRef:
+                name: clean-start-observability-env
             - secretRef:
                 name: llm-helper-env
           env:
@@ -413,6 +443,8 @@ spec:
               value: nats://clean-start-nats:4222
             - name: COACH_LLM_SERVICE_URL
               value: http://llm-helper
+            - name: OTEL_SERVICE_NAME
+              value: clean-start-assist-worker
           resources:
             requests:
               cpu: 50m
@@ -436,6 +468,10 @@ spec:
       app.kubernetes.io/name: clean-start-stage-worker
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
       labels:
         app.kubernetes.io/name: clean-start-stage-worker
         app.kubernetes.io/part-of: rec-sidecar
@@ -447,7 +483,12 @@ spec:
           image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
           imagePullPolicy: Always
           args: ["--role", "stage-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
           envFrom:
+            - configMapRef:
+                name: clean-start-observability-env
             - secretRef:
                 name: llm-helper-env
           env:
@@ -455,6 +496,8 @@ spec:
               value: nats://clean-start-nats:4222
             - name: COACH_LLM_SERVICE_URL
               value: http://llm-helper
+            - name: OTEL_SERVICE_NAME
+              value: clean-start-stage-worker
           resources:
             requests:
               cpu: 50m
@@ -478,6 +521,10 @@ spec:
       app.kubernetes.io/name: clean-start-scorecard-worker
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
       labels:
         app.kubernetes.io/name: clean-start-scorecard-worker
         app.kubernetes.io/part-of: rec-sidecar
@@ -489,9 +536,17 @@ spec:
           image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
           imagePullPolicy: Always
           args: ["--role", "scorecard-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: clean-start-observability-env
           env:
             - name: NATS_URL
               value: nats://clean-start-nats:4222
+            - name: OTEL_SERVICE_NAME
+              value: clean-start-scorecard-worker
           resources:
             requests:
               cpu: 50m
@@ -515,6 +570,10 @@ spec:
       app.kubernetes.io/name: clean-start-student-worker
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
       labels:
         app.kubernetes.io/name: clean-start-student-worker
         app.kubernetes.io/part-of: rec-sidecar
@@ -526,7 +585,12 @@ spec:
           image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
           imagePullPolicy: Always
           args: ["--role", "student-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
           envFrom:
+            - configMapRef:
+                name: clean-start-observability-env
             - secretRef:
                 name: llm-helper-env
           env:
@@ -534,6 +598,8 @@ spec:
               value: nats://clean-start-nats:4222
             - name: COACH_LLM_SERVICE_URL
               value: http://llm-helper
+            - name: OTEL_SERVICE_NAME
+              value: clean-start-student-worker
           resources:
             requests:
               cpu: 50m
@@ -557,6 +623,10 @@ spec:
       app.kubernetes.io/name: clean-start-test-agent
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
       labels:
         app.kubernetes.io/name: clean-start-test-agent
         app.kubernetes.io/part-of: rec-sidecar
@@ -571,7 +641,11 @@ spec:
           ports:
             - name: http
               containerPort: 8110
+            - name: metrics
+              containerPort: 9090
           envFrom:
+            - configMapRef:
+                name: clean-start-observability-env
             - secretRef:
                 name: llm-helper-env
           env:
@@ -581,6 +655,8 @@ spec:
               value: nats://clean-start-nats:4222
             - name: COACH_LLM_SERVICE_URL
               value: http://llm-helper
+            - name: OTEL_SERVICE_NAME
+              value: clean-start-test-agent
           readinessProbe:
             httpGet:
               path: /healthz

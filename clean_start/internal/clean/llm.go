@@ -102,6 +102,7 @@ func (c *LLMClient) StreamSeller(ctx context.Context, sessionID, contextText, qu
 		return "", "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
 	if c.cfg.LLMServiceToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
 	}
@@ -166,6 +167,7 @@ func (c *LLMClient) LiveSellerSuggestion(ctx context.Context, sessionID, context
 		return liveSellerResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
 	if c.cfg.LLMServiceToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
 	}
@@ -222,6 +224,7 @@ func (c *LLMClient) ReadySellerGate(ctx context.Context, sessionID, contextText,
 		return readyGateResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
 	if c.cfg.LLMServiceToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
 	}
@@ -259,6 +262,7 @@ func (c *LLMClient) PivotSellerGate(ctx context.Context, sessionID, contextText,
 		return pivotGateResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
 	if c.cfg.LLMServiceToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
 	}
@@ -293,6 +297,7 @@ func (c *LLMClient) DetectStage(ctx context.Context, sessionID, contextText, cur
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
 	if c.cfg.LLMServiceToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
 	}
@@ -329,6 +334,7 @@ func (c *LLMClient) HelpOpener(ctx context.Context, sessionID, contextText strin
 		return "", "", false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
 	if c.cfg.LLMServiceToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
 	}
@@ -363,6 +369,7 @@ func (c *LLMClient) StreamHelpConstructive(ctx context.Context, sessionID, conte
 		return "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
 	if c.cfg.LLMServiceToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
 	}
@@ -435,6 +442,7 @@ func (c *LLMClient) StudentTranslate(ctx context.Context, sessionID, text, direc
 		return "", "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
 	if c.cfg.LLMServiceToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
 	}
@@ -470,6 +478,7 @@ func (c *LLMClient) StreamStudentAnswer(ctx context.Context, sessionID, contextT
 		return "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
 	if c.cfg.LLMServiceToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
 	}

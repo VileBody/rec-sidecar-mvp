@@ -113,13 +113,13 @@ func (g *Gateway) createSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	created := NewEvent(sessionID, EventSessionCreated, "gateway", map[string]any{})
+	created := NewEventFromContext(r.Context(), sessionID, EventSessionCreated, "gateway", map[string]any{})
 	if err := g.emit(created); err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
 	if g.cfg.CoachEnabled && req.AutoOpener {
-		opener := NewEvent(sessionID, EventSellerRequest, "gateway", SellerRequestData{Trigger: "opener"})
+		opener := NewEventFromContext(r.Context(), sessionID, EventSellerRequest, "gateway", SellerRequestData{Trigger: "opener"})
 		if err := g.emit(opener); err != nil {
 			writeError(w, http.StatusBadGateway, err)
 			return
@@ -197,11 +197,11 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 	var event Event
 	switch req.Type {
 	case EventSellerInput:
-		event = NewEvent(sessionID, EventSellerInput, "gateway", TextData{Text: strings.TrimSpace(req.Text)})
+		event = NewEventFromContext(r.Context(), sessionID, EventSellerInput, "gateway", TextData{Text: strings.TrimSpace(req.Text)})
 	case EventClientPartial:
-		event = NewEvent(sessionID, EventClientPartial, "gateway", TextData{Text: strings.TrimSpace(req.Text)})
+		event = NewEventFromContext(r.Context(), sessionID, EventClientPartial, "gateway", TextData{Text: strings.TrimSpace(req.Text)})
 	case EventClientFinal:
-		event = NewEvent(sessionID, EventClientFinal, "gateway", TextData{Text: strings.TrimSpace(req.Text)})
+		event = NewEventFromContext(r.Context(), sessionID, EventClientFinal, "gateway", TextData{Text: strings.TrimSpace(req.Text)})
 	case EventSellerRequest:
 		if !g.cfg.CoachEnabled {
 			g.logger.Info("coach request ignored", "session_id", sessionID, "type", req.Type, "reason", "coach_disabled")
@@ -213,7 +213,7 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 		if trigger == "" {
 			trigger = "manual"
 		}
-		event = NewEvent(sessionID, EventSellerRequest, "gateway", SellerRequestData{Trigger: trigger, Text: strings.TrimSpace(req.Text)})
+		event = NewEventFromContext(r.Context(), sessionID, EventSellerRequest, "gateway", SellerRequestData{Trigger: trigger, Text: strings.TrimSpace(req.Text)})
 	case EventAssistRequest:
 		if !g.cfg.CoachEnabled {
 			g.logger.Info("coach request ignored", "session_id", sessionID, "type", req.Type, "reason", "coach_disabled")
@@ -225,27 +225,27 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 		if trigger == "" {
 			trigger = "manual"
 		}
-		event = NewEvent(sessionID, EventAssistRequest, "gateway", AssistRequestData{Trigger: trigger, Text: strings.TrimSpace(req.Text)})
+		event = NewEventFromContext(r.Context(), sessionID, EventAssistRequest, "gateway", AssistRequestData{Trigger: trigger, Text: strings.TrimSpace(req.Text)})
 	case EventStudentDirection:
 		direction, err := normalizeStudentDirection(req.Direction)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		event = NewEvent(sessionID, EventStudentDirection, "gateway", StudentDirectionData{Direction: direction})
+		event = NewEventFromContext(r.Context(), sessionID, EventStudentDirection, "gateway", StudentDirectionData{Direction: direction})
 	case EventStudentInput:
 		direction, err := normalizeStudentDirection(req.Direction)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		event = NewEvent(sessionID, EventStudentInput, "gateway", StudentInputData{Text: strings.TrimSpace(req.Text), Direction: direction})
+		event = NewEventFromContext(r.Context(), sessionID, EventStudentInput, "gateway", StudentInputData{Text: strings.TrimSpace(req.Text), Direction: direction})
 	case EventStudentAnswerRequest:
 		trigger := req.Trigger
 		if trigger == "" {
 			trigger = "manual"
 		}
-		event = NewEvent(sessionID, EventStudentAnswerRequest, "gateway", StudentAnswerRequestData{Trigger: trigger, Text: strings.TrimSpace(req.Text)})
+		event = NewEventFromContext(r.Context(), sessionID, EventStudentAnswerRequest, "gateway", StudentAnswerRequestData{Trigger: trigger, Text: strings.TrimSpace(req.Text)})
 	case EventSTTPartial, EventSTTFinal:
 		role := strings.TrimSpace(req.Role)
 		roleReason := "explicit:" + role
@@ -258,7 +258,7 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 			role = sourceRole
 			roleReason = "source:" + source
 		}
-		event = NewEvent(sessionID, req.Type, "gateway", SpeechData{
+		event = NewEventFromContext(r.Context(), sessionID, req.Type, "gateway", SpeechData{
 			Role:       role,
 			RoleReason: roleReason,
 			Text:       strings.TrimSpace(req.Text),
@@ -302,6 +302,51 @@ func (g *Gateway) logBrowserAudio(w http.ResponseWriter, r *http.Request) {
 		"role", strings.TrimSpace(req.Role),
 		"source", strings.TrimSpace(req.Source),
 		"detail", strings.TrimSpace(req.Detail),
+	)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (g *Gateway) logClientTelemetry(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	if _, ok := g.requireSessionOwner(w, r, sessionID); !ok {
+		return
+	}
+	var req ClientTelemetryData
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.Event = strings.TrimSpace(req.Event)
+	if req.Event == "" {
+		req.Event = "unknown"
+	}
+	if req.Detail != "" && len([]rune(req.Detail)) > 160 {
+		req.Detail = string([]rune(req.Detail)[:160])
+	}
+	event := NewEventFromContext(r.Context(), sessionID, EventClientTelemetry, "browser", req)
+	event.GenerationID = strings.TrimSpace(req.GenerationID)
+	if err := g.emit(event); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	labels := map[string]string{"event": req.Event, "source": strings.TrimSpace(req.Source)}
+	IncCounter("seller_client_events_total", labels)
+	if req.DurationMS > 0 {
+		ObserveHistogram("seller_ui_render_latency_ms", req.DurationMS, labels)
+	}
+	g.logger.Info(
+		"browser telemetry client event",
+		"session_id", sessionID,
+		"trace_id", event.TraceID,
+		"span_id", event.SpanID,
+		"event", req.Event,
+		"source", strings.TrimSpace(req.Source),
+		"role", strings.TrimSpace(req.Role),
+		"mode", strings.TrimSpace(req.Mode),
+		"generation_id", strings.TrimSpace(req.GenerationID),
+		"state_version", req.StateVersion,
+		"duration_ms", req.DurationMS,
+		"detail", req.Detail,
 	)
 	w.WriteHeader(http.StatusNoContent)
 }

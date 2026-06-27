@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type SellerWorker struct {
@@ -84,30 +85,33 @@ func (w *SellerWorker) Run(ctx context.Context) error {
 			w.logger.Warn("bad event", "error", err)
 			return
 		}
+		event = EventWithNATSHeaders(event, msg.Header)
+		handleCtx, span := StartEventSpan(ctx, event, "seller_worker.handle_event")
+		defer EndSpan(span, nil)
 		mem := w.memory.apply(event)
 		switch event.Type {
 		case EventSellerRequest:
 			data, _ := DecodeData[SellerRequestData](event)
-			w.startGeneration(ctx, event.SessionID, mem, data.Trigger, data.Text)
+			w.startGeneration(handleCtx, event.SessionID, mem, data.Trigger, data.Text)
 		case EventClientPartial:
 			data, _ := DecodeData[TextData](event)
-			w.maybeStartFromClientText(ctx, event.SessionID, mem, data.Text, "partial")
+			w.maybeStartFromClientText(handleCtx, event.SessionID, mem, data.Text, "partial")
 		case EventClientFinal:
 			data, _ := DecodeData[TextData](event)
-			w.maybeStartFromClientText(ctx, event.SessionID, mem, data.Text, "final")
+			w.maybeStartFromClientText(handleCtx, event.SessionID, mem, data.Text, "final")
 		case EventSTTPartial:
 			data, _ := DecodeData[SpeechData](event)
 			if data.Role == "client" {
-				w.maybeStartFromClientText(ctx, event.SessionID, mem, data.Text, "partial")
+				w.maybeStartFromClientText(handleCtx, event.SessionID, mem, data.Text, "partial")
 			}
 		case EventSTTFinal:
 			data, _ := DecodeData[SpeechData](event)
 			if data.Role == "client" {
-				w.maybeStartFromClientText(ctx, event.SessionID, mem, data.Text, "final")
+				w.maybeStartFromClientText(handleCtx, event.SessionID, mem, data.Text, "final")
 			}
 		case EventStageCandidate, EventStageCommitted:
 			data, _ := DecodeData[StageData](event)
-			w.maybeStartFromStage(ctx, event.SessionID, mem, event.Type, data.Stage)
+			w.maybeStartFromStage(handleCtx, event.SessionID, mem, event.Type, data.Stage)
 		}
 	})
 	if err != nil {
@@ -139,11 +143,22 @@ func (w *SellerWorker) publish(event Event) error {
 	return w.publishEvent(w.nc, w.cfg, event)
 }
 
+func (w *SellerWorker) publishWithContext(ctx context.Context, event Event) error {
+	event = EventWithTraceContext(ctx, event)
+	w.memory.apply(event)
+	return w.publishEvent(w.nc, w.cfg, event)
+}
+
 func (w *SellerWorker) publishPipelineStatus(sessionID string, data PipelineStatusData) {
+	w.publishPipelineStatusContext(context.Background(), sessionID, data)
+}
+
+func (w *SellerWorker) publishPipelineStatusContext(ctx context.Context, sessionID string, data PipelineStatusData) {
 	if data.Component == "" || data.Status == "" {
 		return
 	}
-	_ = w.publish(NewEvent(sessionID, EventPipelineStatus, "seller-worker", data))
+	data.TraceID = traceIDFromContext(ctx)
+	_ = w.publishWithContext(ctx, NewEvent(sessionID, EventPipelineStatus, "seller-worker", data))
 }
 
 func (w *SellerWorker) maybeStartFromPartial(ctx context.Context, sessionID string, mem *sessionMemory, text string) {
@@ -161,6 +176,11 @@ func (w *SellerWorker) maybeStartFromClientText(ctx context.Context, sessionID s
 	}
 	w.mu.Lock()
 	prev := w.lastTexts[sessionID]
+	if isFinal && strings.TrimSpace(prev) == cleanText {
+		w.mu.Unlock()
+		w.publishPipelineStatusContext(ctx, sessionID, PipelineStatusData{Component: "ready_gate", Status: "skipped", Trigger: "zai_ready_gate:final", Detail: "duplicate final matches latest client text"})
+		return
+	}
 	if !isFinal && len([]rune(cleanText))-len([]rune(prev)) < w.minSellerGrowth() && !endsSellerSentence(cleanText) {
 		w.mu.Unlock()
 		return
@@ -201,7 +221,7 @@ func (w *SellerWorker) maybeStartFromStage(ctx context.Context, sessionID string
 	if stage == previous {
 		return
 	}
-	w.startGeneration(ctx, sessionID, mem, "stage_changed:"+trigger, "stage="+stage)
+	w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "skipped", Trigger: "stage_changed:" + trigger, Detail: "stage metadata updated; waiting for client text before generating"})
 }
 
 func (w *SellerWorker) startGeneration(parent context.Context, sessionID string, mem *sessionMemory, trigger, text string) {
@@ -272,6 +292,17 @@ func (w *SellerWorker) prepareAutoGenerationLocked(parent context.Context, sessi
 }
 
 func (w *SellerWorker) runGeneration(run sellerGenerationRun) {
+	spanCtx, span := StartSpan(
+		run.ctx,
+		"seller.reply_generation",
+		attribute.String("session.id_hash", shortHash(run.sessionID)),
+		attribute.String("generation.id_hash", shortHash(run.generationID)),
+		attribute.String("trigger", run.trigger),
+		attribute.String("component", run.component),
+		attribute.Bool("manual", run.manual),
+	)
+	var spanErr error
+	defer func() { EndSpan(span, spanErr) }()
 	defer func() {
 		if run.manual {
 			w.finishManualGeneration(run)
@@ -291,31 +322,44 @@ func (w *SellerWorker) runGeneration(run sellerGenerationRun) {
 		currentDraft = ""
 	}
 	started := time.Now()
-	w.publishPipelineStatus(run.sessionID, PipelineStatusData{Component: run.component, Status: "sent", Trigger: run.trigger, GenerationID: run.generationID, Detail: run.sentDetail})
-	suggestion, err := w.llm.LiveSellerSuggestion(run.ctx, run.sessionID, contextText, currentDraft, true)
+	IncCounter("seller_generation_started_total", map[string]string{"trigger": run.trigger, "component": run.component})
+	w.publishPipelineStatusContext(spanCtx, run.sessionID, PipelineStatusData{Component: run.component, Status: "sent", Trigger: run.trigger, GenerationID: run.generationID, Detail: run.sentDetail})
+	suggestion, err := w.llm.LiveSellerSuggestion(spanCtx, run.sessionID, contextText, currentDraft, true)
 	if run.ctx.Err() != nil {
 		return
 	}
 	if err != nil {
-		w.publishPipelineStatus(run.sessionID, PipelineStatusData{Component: run.component, Status: "error", Trigger: run.trigger, GenerationID: run.generationID, Detail: err.Error(), ElapsedMS: time.Since(started).Milliseconds()})
-		_ = w.publish(NewEvent(run.sessionID, EventError, "seller-worker", ErrorData{Where: "seller", Message: err.Error()}))
+		spanErr = err
+		elapsed := time.Since(started).Milliseconds()
+		ObserveHistogram("seller_llm_total_ms", float64(elapsed), map[string]string{"component": run.component, "provider": "error", "model": "unknown"})
+		IncCounter("seller_generation_error_total", map[string]string{"trigger": run.trigger, "component": run.component, "error_type": "request"})
+		w.publishPipelineStatusContext(spanCtx, run.sessionID, PipelineStatusData{Component: run.component, Status: "error", Trigger: run.trigger, GenerationID: run.generationID, Detail: err.Error(), ElapsedMS: elapsed})
+		_ = w.publishWithContext(spanCtx, NewEvent(run.sessionID, EventError, "seller-worker", ErrorData{Where: "seller", Message: err.Error()}))
 		return
 	}
 	if suggestion.Action == "skip" {
-		w.publishPipelineStatus(run.sessionID, PipelineStatusData{Component: run.component, Status: "skipped", Trigger: run.trigger, GenerationID: run.generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "LLM решила оставить текущую реплику"})
+		elapsed := time.Since(started).Milliseconds()
+		ObserveHistogram("seller_llm_total_ms", float64(elapsed), map[string]string{"component": run.component, "provider": suggestion.Provider, "model": suggestion.Model})
+		w.publishPipelineStatusContext(spanCtx, run.sessionID, PipelineStatusData{Component: run.component, Status: "skipped", Trigger: run.trigger, GenerationID: run.generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: elapsed, Detail: "LLM решила оставить текущую реплику"})
 		w.logger.Info("seller force generation skipped", "session_id", run.sessionID, "generation_id", run.generationID, "elapsed_ms", time.Since(started).Milliseconds(), "provider", suggestion.Provider, "model", suggestion.Model)
 		return
 	}
 	if suggestion.Text == "" {
-		w.publishPipelineStatus(run.sessionID, PipelineStatusData{Component: run.component, Status: "error", Trigger: run.trigger, GenerationID: run.generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "empty seller suggestion"})
-		_ = w.publish(NewEvent(run.sessionID, EventError, "seller-worker", ErrorData{Where: "seller", Message: "empty seller suggestion"}))
+		elapsed := time.Since(started).Milliseconds()
+		IncCounter("seller_generation_error_total", map[string]string{"trigger": run.trigger, "component": run.component, "error_type": "empty"})
+		w.publishPipelineStatusContext(spanCtx, run.sessionID, PipelineStatusData{Component: run.component, Status: "error", Trigger: run.trigger, GenerationID: run.generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: elapsed, Detail: "empty seller suggestion"})
+		_ = w.publishWithContext(spanCtx, NewEvent(run.sessionID, EventError, "seller-worker", ErrorData{Where: "seller", Message: "empty seller suggestion"}))
 		return
 	}
-	_ = w.publish(NewEvent(run.sessionID, EventSellerStarted, "seller-worker", SellerStartedData{GenerationID: run.generationID, Trigger: run.trigger}))
-	_ = w.publish(NewEvent(run.sessionID, EventSellerDelta, "seller-worker", SellerDeltaData{GenerationID: run.generationID, Delta: suggestion.Text}))
+	_ = w.publishWithContext(spanCtx, NewEvent(run.sessionID, EventSellerStarted, "seller-worker", SellerStartedData{GenerationID: run.generationID, Trigger: run.trigger}))
+	_ = w.publishWithContext(spanCtx, NewEvent(run.sessionID, EventSellerDelta, "seller-worker", SellerDeltaData{GenerationID: run.generationID, Delta: suggestion.Text}))
 	w.logger.Info("seller generation done", "session_id", run.sessionID, "generation_id", run.generationID, "trigger", run.trigger, "elapsed_ms", time.Since(started).Milliseconds(), "provider", suggestion.Provider, "model", suggestion.Model)
-	w.publishPipelineStatus(run.sessionID, PipelineStatusData{Component: run.component, Status: "received", Trigger: run.trigger, GenerationID: run.generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: time.Since(started).Milliseconds(), Detail: "новая реплика готова"})
-	_ = w.publish(NewEvent(run.sessionID, EventSellerDone, "seller-worker", SellerDoneData{GenerationID: run.generationID, Text: suggestion.Text, Provider: suggestion.Provider, Model: suggestion.Model}))
+	elapsed := time.Since(started).Milliseconds()
+	ObserveHistogram("seller_llm_total_ms", float64(elapsed), map[string]string{"component": run.component, "provider": suggestion.Provider, "model": suggestion.Model})
+	ObserveHistogram("seller_time_to_first_usable_reply_ms", float64(elapsed), map[string]string{"trigger": run.trigger, "provider": suggestion.Provider, "model": suggestion.Model})
+	IncCounter("seller_generation_done_total", map[string]string{"trigger": run.trigger, "component": run.component, "provider": suggestion.Provider, "model": suggestion.Model})
+	w.publishPipelineStatusContext(spanCtx, run.sessionID, PipelineStatusData{Component: run.component, Status: "received", Trigger: run.trigger, GenerationID: run.generationID, Provider: suggestion.Provider, Model: suggestion.Model, Action: suggestion.Action, ElapsedMS: elapsed, Detail: "новая реплика готова"})
+	_ = w.publishWithContext(spanCtx, NewEvent(run.sessionID, EventSellerDone, "seller-worker", SellerDoneData{GenerationID: run.generationID, Text: suggestion.Text, Provider: suggestion.Provider, Model: suggestion.Model}))
 }
 
 func sellerGenerationKey(sessionID, component string) string {
@@ -330,6 +374,18 @@ func (w *SellerWorker) startReadyGate(parent context.Context, sessionID string, 
 	w.mu.Unlock()
 
 	go func() {
+		spanCtx, span := StartSpan(
+			ctx,
+			"seller.ready_gate",
+			attribute.String("session.id_hash", shortHash(sessionID)),
+			attribute.String("gate.id_hash", shortHash(gateID)),
+			attribute.Int64("client.revision", revision),
+			attribute.String("text.finality", gateTriggerFinality(trigger)),
+			attribute.Bool("current_reply_exists", strings.TrimSpace(currentDraft) != ""),
+			attribute.Int("latest_text_len", len([]rune(text))),
+		)
+		var spanErr error
+		defer func() { EndSpan(span, spanErr) }()
 		defer func() {
 			w.mu.Lock()
 			delete(w.gateCancels, gateID)
@@ -342,19 +398,25 @@ func (w *SellerWorker) startReadyGate(parent context.Context, sessionID string, 
 			contextText += "\n--- Text finality ---\n" + gateTriggerFinality(trigger) + "\n"
 		}
 		started := time.Now()
-		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "ready_gate", Status: "sent", Trigger: trigger, GenerationID: gateID, Detail: "ZAI решает, пора ли запускать Gemini"})
-		result, err := w.llm.ReadySellerGate(ctx, sessionID, contextText, currentDraft, revision)
+		w.publishPipelineStatusContext(spanCtx, sessionID, PipelineStatusData{Component: "ready_gate", Status: "sent", Trigger: trigger, GenerationID: gateID, GateID: gateID, Revision: revision, Detail: "ZAI решает, пора ли запускать Gemini"})
+		result, err := w.llm.ReadySellerGate(spanCtx, sessionID, contextText, currentDraft, revision)
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
-			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "ready_gate", Status: "error", Trigger: trigger, GenerationID: gateID, Detail: err.Error(), ElapsedMS: time.Since(started).Milliseconds()})
-			_ = w.publish(NewEvent(sessionID, EventError, "seller-worker", ErrorData{Where: "seller.gate", Message: err.Error()}))
+			spanErr = err
+			elapsed := time.Since(started).Milliseconds()
+			ObserveHistogram("seller_ready_gate_latency_ms", float64(elapsed), map[string]string{"status": "error"})
+			IncCounter("seller_ready_gate_decisions_total", map[string]string{"action": "ERROR", "semantic_type": "error"})
+			w.publishPipelineStatusContext(spanCtx, sessionID, PipelineStatusData{Component: "ready_gate", Status: "error", Trigger: trigger, GenerationID: gateID, GateID: gateID, Revision: revision, Detail: err.Error(), ElapsedMS: elapsed})
+			_ = w.publishWithContext(spanCtx, NewEvent(sessionID, EventError, "seller-worker", ErrorData{Where: "seller.gate", Message: err.Error()}))
 			return
 		}
 		elapsedMS := time.Since(started).Milliseconds()
 		if result.ClientRevision != revision || !w.gateStillCurrent(sessionID, revision, expectedGenerationSeq, expectedGenerationID) {
-			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "ready_gate", Status: "skipped", Trigger: trigger, GenerationID: gateID, Provider: result.Provider, Model: result.Model, Action: sellerActionOrDefault(result.Action, "stale"), ElapsedMS: elapsedMS, Detail: "устаревший ready gate result отброшен"})
+			ObserveHistogram("seller_ready_gate_latency_ms", float64(elapsedMS), map[string]string{"status": "stale"})
+			IncCounter("seller_stale_gate_discarded_total", map[string]string{"gate_type": "ready"})
+			w.publishPipelineStatusContext(spanCtx, sessionID, PipelineStatusData{Component: "ready_gate", Status: "skipped", Trigger: trigger, GenerationID: gateID, GateID: gateID, Provider: result.Provider, Model: result.Model, Action: sellerActionOrDefault(result.Action, "stale"), Revision: revision, ElapsedMS: elapsedMS, Detail: "устаревший ready gate result отброшен"})
 			return
 		}
 		shouldGenerate := readyGateShouldGenerate(result, currentDraft)
@@ -364,12 +426,29 @@ func (w *SellerWorker) startReadyGate(parent context.Context, sessionID string, 
 			status = "skipped"
 			detail = "ready gate решил подождать или оставить текущую реплику"
 		}
-		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "ready_gate", Status: status, Trigger: trigger, GenerationID: gateID, Provider: result.Provider, Model: result.Model, Action: result.Action, ElapsedMS: elapsedMS, Detail: detail})
-		w.logger.Info("seller ready gate done", "session_id", sessionID, "action", result.Action, "confidence", result.Confidence, "elapsed_ms", elapsedMS, "provider", result.Provider, "model", result.Model, "current_chars", len([]rune(currentDraft)), "trigger_chars", len([]rune(text)))
+		ObserveHistogram("seller_ready_gate_latency_ms", float64(elapsedMS), map[string]string{"status": status, "action": result.Action})
+		IncCounter("seller_ready_gate_decisions_total", map[string]string{"action": sellerActionOrDefault(result.Action, "unknown"), "semantic_type": strings.TrimSpace(result.SemanticType)})
+		span.SetAttributes(
+			attribute.String("gate.action", result.Action),
+			attribute.Float64("gate.confidence", result.Confidence),
+			attribute.String("gate.semantic_type", result.SemanticType),
+			attribute.String("gate.readiness", result.Readiness),
+			attribute.String("provider", result.Provider),
+			attribute.String("model", result.Model),
+		)
+		w.publishPipelineStatusContext(spanCtx, sessionID, PipelineStatusData{Component: "ready_gate", Status: status, Trigger: trigger, GenerationID: gateID, GateID: gateID, Provider: result.Provider, Model: result.Model, Action: result.Action, Revision: revision, ElapsedMS: elapsedMS, Detail: detail})
+		w.logger.Info("seller ready gate done", "session_id", sessionID, "trace_id", traceIDFromContext(spanCtx), "gate_id", gateID, "revision", revision, "action", result.Action, "confidence", result.Confidence, "semantic_type", result.SemanticType, "elapsed_ms", elapsedMS, "provider", result.Provider, "model", result.Model, "current_chars", len([]rune(currentDraft)), "trigger_chars", len([]rune(text)))
 		if !shouldGenerate {
 			return
 		}
-		w.startGeneration(parent, sessionID, mem, trigger, text)
+		if brief := strings.TrimSpace(result.GenerationBrief); brief != "" {
+			text = strings.TrimSpace(text)
+			if text != "" {
+				text += "\n\n"
+			}
+			text += "--- Ready gate brief ---\n" + brief
+		}
+		w.startGeneration(spanCtx, sessionID, mem, trigger, text)
 	}()
 }
 
@@ -381,6 +460,19 @@ func (w *SellerWorker) startPivotGate(parent context.Context, sessionID string, 
 	w.mu.Unlock()
 
 	go func() {
+		spanCtx, span := StartSpan(
+			ctx,
+			"seller.pivot_gate",
+			attribute.String("session.id_hash", shortHash(sessionID)),
+			attribute.String("gate.id_hash", shortHash(pivotID)),
+			attribute.String("active_generation.id_hash", shortHash(expectedGenerationID)),
+			attribute.Int64("base.revision", activeBaseRevision),
+			attribute.Int64("latest.revision", revision),
+			attribute.Int("base_text_len", len([]rune(activeBaseText))),
+			attribute.Int("latest_text_len", len([]rune(text))),
+		)
+		var spanErr error
+		defer func() { EndSpan(span, spanErr) }()
 		defer func() {
 			w.mu.Lock()
 			delete(w.gateCancels, pivotID)
@@ -396,14 +488,18 @@ func (w *SellerWorker) startPivotGate(parent context.Context, sessionID string, 
 		contextText += "\n--- Text finality ---\n" + gateTriggerFinality(trigger) + "\n"
 		contextText += "\n--- Existing pending replan state ---\n" + w.pendingReplanStateString(sessionID) + "\n"
 		started := time.Now()
-		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "pivot_gate", Status: "sent", Trigger: trigger, GenerationID: pivotID, Detail: "ZAI проверяет hard semantic pivot, пока Gemini генерирует"})
-		result, err := w.llm.PivotSellerGate(ctx, sessionID, contextText, currentDraft, expectedGenerationID, activeBaseText, w.pendingReplanStateString(sessionID), revision)
+		w.publishPipelineStatusContext(spanCtx, sessionID, PipelineStatusData{Component: "pivot_gate", Status: "sent", Trigger: trigger, GenerationID: pivotID, GateID: pivotID, Revision: revision, Detail: "ZAI проверяет hard semantic pivot, пока Gemini генерирует"})
+		result, err := w.llm.PivotSellerGate(spanCtx, sessionID, contextText, currentDraft, expectedGenerationID, activeBaseText, w.pendingReplanStateString(sessionID), revision)
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
-			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "pivot_gate", Status: "error", Trigger: trigger, GenerationID: pivotID, Detail: err.Error(), ElapsedMS: time.Since(started).Milliseconds()})
-			_ = w.publish(NewEvent(sessionID, EventError, "seller-worker", ErrorData{Where: "seller.pivot_gate", Message: err.Error()}))
+			spanErr = err
+			elapsed := time.Since(started).Milliseconds()
+			ObserveHistogram("seller_pivot_gate_latency_ms", float64(elapsed), map[string]string{"status": "error"})
+			IncCounter("seller_pivot_gate_decisions_total", map[string]string{"status": "ERROR", "pivot_type": "error"})
+			w.publishPipelineStatusContext(spanCtx, sessionID, PipelineStatusData{Component: "pivot_gate", Status: "error", Trigger: trigger, GenerationID: pivotID, GateID: pivotID, Revision: revision, Detail: err.Error(), ElapsedMS: elapsed})
+			_ = w.publishWithContext(spanCtx, NewEvent(sessionID, EventError, "seller-worker", ErrorData{Where: "seller.pivot_gate", Message: err.Error()}))
 			return
 		}
 		elapsedMS := time.Since(started).Milliseconds()
@@ -427,6 +523,11 @@ func (w *SellerWorker) startPivotGate(parent context.Context, sessionID string, 
 				state.pendingReplanLevel = "soft"
 				if w.cfg.AutoReplanOnSoft {
 					w.queueAutoReplanLocked(state, mem, trigger, text, "soft", false)
+				} else {
+					state.pendingReplan = false
+					state.pendingText = ""
+					state.pendingTrigger = ""
+					state.pendingMem = nil
 				}
 			case "WAIT_NOISE":
 				// Intentionally no state change. Noise must not clear an older hard pivot.
@@ -434,12 +535,32 @@ func (w *SellerWorker) startPivotGate(parent context.Context, sessionID string, 
 		}
 		w.mu.Unlock()
 		if stale {
-			w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "pivot_gate", Status: "skipped", Trigger: trigger, GenerationID: pivotID, Provider: result.Provider, Model: result.Model, Action: sellerActionOrDefault(result.Status, "stale"), ElapsedMS: elapsedMS, Detail: "устаревший pivot gate result отброшен"})
+			ObserveHistogram("seller_pivot_gate_latency_ms", float64(elapsedMS), map[string]string{"status": "stale"})
+			IncCounter("seller_stale_gate_discarded_total", map[string]string{"gate_type": "pivot"})
+			w.publishPipelineStatusContext(spanCtx, sessionID, PipelineStatusData{Component: "pivot_gate", Status: "skipped", Trigger: trigger, GenerationID: pivotID, GateID: pivotID, Provider: result.Provider, Model: result.Model, Action: sellerActionOrDefault(result.Status, "stale"), Revision: revision, ElapsedMS: elapsedMS, Detail: "устаревший pivot gate result отброшен"})
 			return
 		}
 		status := pivotPipelineStatus(result.Status)
 		detail := pivotPipelineDetail(result.Status)
-		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "pivot_gate", Status: status, Trigger: trigger, GenerationID: pivotID, Provider: result.Provider, Model: result.Model, Action: result.Status, ElapsedMS: elapsedMS, Detail: detail})
+		ObserveHistogram("seller_pivot_gate_latency_ms", float64(elapsedMS), map[string]string{"status": result.Status})
+		IncCounter("seller_pivot_gate_decisions_total", map[string]string{"status": sellerActionOrDefault(result.Status, "unknown"), "pivot_type": strings.TrimSpace(result.PivotType)})
+		if result.SetsPendingReplan {
+			IncCounter("seller_pending_replan_set_total", map[string]string{"level": result.ReplanLevel, "pivot_type": result.PivotType})
+		}
+		if result.ClearsPendingReplan {
+			IncCounter("seller_pending_replan_clear_total", nil)
+		}
+		span.SetAttributes(
+			attribute.String("pivot.status", result.Status),
+			attribute.Float64("pivot.confidence", result.Confidence),
+			attribute.String("pivot.type", result.PivotType),
+			attribute.Bool("pivot.sets_pending_replan", result.SetsPendingReplan),
+			attribute.Bool("pivot.clears_pending_replan", result.ClearsPendingReplan),
+			attribute.String("pivot.replan_level", result.ReplanLevel),
+			attribute.String("provider", result.Provider),
+			attribute.String("model", result.Model),
+		)
+		w.publishPipelineStatusContext(spanCtx, sessionID, PipelineStatusData{Component: "pivot_gate", Status: status, Trigger: trigger, GenerationID: pivotID, GateID: pivotID, Provider: result.Provider, Model: result.Model, Action: result.Status, Revision: revision, ElapsedMS: elapsedMS, Detail: detail})
 	}()
 }
 

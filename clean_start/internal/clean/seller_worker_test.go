@@ -113,6 +113,15 @@ func (h *sellerWorkerHarness) nextCall(t *testing.T) *sellerLiveCall {
 	}
 }
 
+func (h *sellerWorkerHarness) assertNoCall(t *testing.T, window time.Duration) {
+	t.Helper()
+	select {
+	case call := <-h.calls:
+		t.Fatalf("unexpected LLM call kind=%s content=%q", call.kind, call.content)
+	case <-time.After(window):
+	}
+}
+
 func (h *sellerWorkerHarness) forceCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -433,6 +442,141 @@ func TestSellerWorkerWaitNoiseKeepsPendingReplan(t *testing.T) {
 
 	cancel()
 	_ = firstGemini
+}
+
+func TestSellerWorkerAdaptSoftClearsHardPendingWhenSoftReplanDisabled(t *testing.T) {
+	h := newSellerWorkerHarness(t)
+	defer h.close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessionID := "sess-soft-clears-hard"
+	firstPartial := strings.Repeat("а", 16)
+	secondPartial := firstPartial + strings.Repeat("б", 16)
+	thirdPartial := secondPartial + strings.Repeat("в", 16)
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), firstPartial)
+	ready := h.nextCall(t)
+	ready.respond <- readyGateResponse{ClientRevision: 1, Action: "GENERATE", Confidence: 1, Provider: "zai", Model: "gate"}
+	firstGemini := h.nextCall(t)
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), secondPartial)
+	hardPivot := h.nextCall(t)
+	hardPivot.respond <- pivotGateResponse{ClientRevision: 2, Status: "CHANGE_HARD", Confidence: 1, Provider: "zai", Model: "pivot"}
+	waitForSellerWorker(t, func() bool {
+		h.worker.mu.Lock()
+		defer h.worker.mu.Unlock()
+		state := h.worker.autoStates[sessionID]
+		return state != nil && state.pendingReplan && state.pendingReplanLevel == "hard"
+	})
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), thirdPartial)
+	softPivot := h.nextCall(t)
+	softPivot.respond <- pivotGateResponse{ClientRevision: 3, Status: "ADAPT_SOFT", Confidence: 1, Provider: "zai", Model: "pivot"}
+	waitForSellerWorker(t, func() bool {
+		return h.hasPipelineStatus("pivot_gate", "skipped", "ADAPT_SOFT", "soft context drift")
+	})
+
+	h.worker.mu.Lock()
+	state := h.worker.autoStates[sessionID]
+	pending := state != nil && state.pendingReplan
+	level := ""
+	if state != nil {
+		level = state.pendingReplanLevel
+	}
+	h.worker.mu.Unlock()
+	if pending || level != "soft" {
+		t.Fatalf("ADAPT_SOFT should clear hard pending when soft replan disabled; pending=%v level=%q", pending, level)
+	}
+
+	cancel()
+	_ = firstGemini
+}
+
+func TestSellerWorkerStageChangeDoesNotOverwriteLatestClientTextWhileInflight(t *testing.T) {
+	h := newSellerWorkerHarness(t)
+	defer h.close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessionID := "sess-stage-does-not-pollute"
+	firstPartial := strings.Repeat("а", 16)
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), firstPartial)
+	ready := h.nextCall(t)
+	ready.respond <- readyGateResponse{ClientRevision: 1, Action: "GENERATE", Confidence: 1, Provider: "zai", Model: "gate"}
+	firstGemini := h.nextCall(t)
+	if firstGemini.kind != "generate" {
+		t.Fatalf("first call kind=%q, want generate", firstGemini.kind)
+	}
+
+	mem := sellerTestMem("")
+	mem.CurrentStage = "S2.2"
+	h.worker.maybeStartFromStage(ctx, sessionID, mem, EventStageCommitted, "S2.2")
+	h.assertNoCall(t, 80*time.Millisecond)
+
+	h.worker.mu.Lock()
+	state := h.worker.autoStates[sessionID]
+	latestText := ""
+	activeBaseText := ""
+	pending := false
+	if state != nil {
+		latestText = state.latestText
+		activeBaseText = state.activeBaseText
+		pending = state.pendingReplan
+	}
+	h.worker.mu.Unlock()
+	if latestText != firstPartial || activeBaseText != firstPartial || pending {
+		t.Fatalf("stage change polluted state: latest=%q activeBase=%q pending=%v", latestText, activeBaseText, pending)
+	}
+
+	cancel()
+	_ = firstGemini
+}
+
+func TestSellerWorkerDuplicateFinalDoesNotTriggerGate(t *testing.T) {
+	h := newSellerWorkerHarness(t)
+	defer h.close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessionID := "sess-duplicate-final"
+	text := strings.Repeat("а", 16)
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), text)
+	ready := h.nextCall(t)
+	ready.respond <- readyGateResponse{ClientRevision: 1, Action: "WAIT", Confidence: 1, Provider: "zai", Model: "gate"}
+	waitForSellerWorker(t, func() bool {
+		return h.hasPipelineStatus("ready_gate", "skipped", "WAIT", "оставить")
+	})
+
+	h.worker.maybeStartFromClientText(ctx, sessionID, sellerTestMem(""), text, "final")
+	h.assertNoCall(t, 80*time.Millisecond)
+	waitForSellerWorker(t, func() bool {
+		return h.hasPipelineStatus("ready_gate", "skipped", "", "duplicate final")
+	})
+}
+
+func TestSellerWorkerReadyGateBriefIsPassedToGemini(t *testing.T) {
+	h := newSellerWorkerHarness(t)
+	defer h.close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessionID := "sess-ready-brief"
+	text := strings.Repeat("а", 16)
+	brief := "Ответь на прямое возражение и верни к боли клиента."
+
+	h.worker.maybeStartFromPartial(ctx, sessionID, sellerTestMem(""), text)
+	ready := h.nextCall(t)
+	ready.respond <- readyGateResponse{ClientRevision: 1, Action: "GENERATE", Confidence: 1, GenerationBrief: brief, Provider: "zai", Model: "gate"}
+	gemini := h.nextCall(t)
+	if gemini.kind != "generate" || !strings.Contains(gemini.content, "--- Ready gate brief ---\n"+brief) {
+		t.Fatalf("Gemini content missing ready brief: kind=%s content=%s", gemini.kind, gemini.content)
+	}
+
+	cancel()
+	_ = gemini
 }
 
 func (h *sellerWorkerHarness) hasSellerDoneText(text string) bool {

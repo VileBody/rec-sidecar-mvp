@@ -54,23 +54,26 @@ func (w *StageWorker) Run(ctx context.Context) error {
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
 			return
 		}
+		event = EventWithNATSHeaders(event, msg.Header)
+		handleCtx, span := StartEventSpan(ctx, event, "stage_worker.handle_event")
+		defer EndSpan(span, nil)
 		mem := w.memory.apply(event)
 		switch event.Type {
 		case EventClientPartial:
 			data, _ := DecodeData[TextData](event)
-			w.scheduleDetect(ctx, event.SessionID, mem, EventStageCandidate, data.Text, false)
+			w.scheduleDetect(handleCtx, event.SessionID, mem, EventStageCandidate, data.Text, false)
 		case EventClientFinal:
 			data, _ := DecodeData[TextData](event)
-			w.scheduleDetect(ctx, event.SessionID, mem, EventStageCommitted, data.Text, true)
+			w.scheduleDetect(handleCtx, event.SessionID, mem, EventStageCommitted, data.Text, true)
 		case EventSTTPartial:
 			data, _ := DecodeData[SpeechData](event)
 			if data.Role == "client" {
-				w.scheduleDetect(ctx, event.SessionID, mem, EventStageCandidate, data.Text, false)
+				w.scheduleDetect(handleCtx, event.SessionID, mem, EventStageCandidate, data.Text, false)
 			}
 		case EventSTTFinal:
 			data, _ := DecodeData[SpeechData](event)
 			if data.Role == "client" {
-				w.scheduleDetect(ctx, event.SessionID, mem, EventStageCommitted, data.Text, true)
+				w.scheduleDetect(handleCtx, event.SessionID, mem, EventStageCommitted, data.Text, true)
 			}
 		}
 	})

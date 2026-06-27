@@ -28,6 +28,7 @@ from .schemas import (
     StudentTranslateRequest,
     StudentTranslateResponse,
 )
+from .telemetry import setup_observability
 
 
 settings = Settings.from_env()
@@ -43,6 +44,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="rec-sidecar LLM service", version="0.1.0", lifespan=lifespan)
+setup_observability(app)
 
 
 async def require_service_token(authorization: str | None = Header(default=None)) -> None:

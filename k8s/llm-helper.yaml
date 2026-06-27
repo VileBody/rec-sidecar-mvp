@@ -18,6 +18,10 @@ spec:
       app.kubernetes.io/name: llm-helper
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8088"
       labels:
         app.kubernetes.io/name: llm-helper
         app.kubernetes.io/part-of: rec-sidecar
@@ -32,6 +36,8 @@ spec:
             - name: http
               containerPort: 8088
           envFrom:
+            - configMapRef:
+                name: clean-start-observability-env
             - secretRef:
                 name: llm-helper-env
           env:
@@ -41,6 +47,8 @@ spec:
               value: /root/.config/gcloud/application_default_credentials.json
             - name: VERTEX_THINKING_LEVEL
               value: low
+            - name: OTEL_SERVICE_NAME
+              value: llm-sidecar
           volumeMounts:
             - name: gcloud-adc
               mountPath: /root/.config/gcloud/application_default_credentials.json

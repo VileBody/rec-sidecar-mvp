@@ -59,9 +59,27 @@ func (s *PostgresAuthStore) EnsureSchema(ctx context.Context) error {
 			type TEXT NOT NULL,
 			source TEXT NOT NULL,
 			generation_id TEXT NOT NULL DEFAULT '',
+			gate_id TEXT NOT NULL DEFAULT '',
+			trace_id TEXT NOT NULL DEFAULT '',
+			span_id TEXT NOT NULL DEFAULT '',
+			parent_span_id TEXT NOT NULL DEFAULT '',
+			traceparent TEXT NOT NULL DEFAULT '',
+			parent_event_id TEXT NOT NULL DEFAULT '',
+			causation_id TEXT NOT NULL DEFAULT '',
+			correlation_id TEXT NOT NULL DEFAULT '',
+			revision BIGINT NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL,
 			data JSONB NULL
 		)`,
+		`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS gate_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS trace_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS span_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS parent_span_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS traceparent TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS parent_event_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS causation_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS correlation_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_events ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0`,
 		`CREATE INDEX IF NOT EXISTS app_events_session_created_idx ON app_events(session_id, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS prompt_configs (
 			id TEXT PRIMARY KEY,
@@ -185,14 +203,28 @@ func (s *PostgresAuthStore) SaveAppEvent(ctx context.Context, event Event) error
 	}
 	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO app_events (id, session_id, type, source, generation_id, created_at, data)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO app_events (
+			id, session_id, type, source, generation_id, gate_id,
+			trace_id, span_id, parent_span_id, traceparent,
+			parent_event_id, causation_id, correlation_id, revision,
+			created_at, data
+		 )
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		 ON CONFLICT (id) DO NOTHING`,
 		event.ID,
 		event.SessionID,
 		event.Type,
 		event.Source,
 		event.GenerationID,
+		event.GateID,
+		event.TraceID,
+		event.SpanID,
+		event.ParentSpanID,
+		event.TraceParent,
+		event.ParentEventID,
+		event.CausationID,
+		event.CorrelationID,
+		event.Revision,
 		event.CreatedAt,
 		data,
 	)
@@ -200,7 +232,12 @@ func (s *PostgresAuthStore) SaveAppEvent(ctx context.Context, event Event) error
 }
 
 func (s *PostgresAuthStore) AppEvents(ctx context.Context, sessionID string) ([]Event, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, type, source, generation_id, created_at, data FROM app_events WHERE session_id = $1 ORDER BY created_at, id`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		id, session_id, type, source, generation_id, gate_id,
+		trace_id, span_id, parent_span_id, traceparent,
+		parent_event_id, causation_id, correlation_id, revision,
+		created_at, data
+		FROM app_events WHERE session_id = $1 ORDER BY created_at, id`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +246,24 @@ func (s *PostgresAuthStore) AppEvents(ctx context.Context, sessionID string) ([]
 	for rows.Next() {
 		var event Event
 		var data sql.NullString
-		if err := rows.Scan(&event.ID, &event.SessionID, &event.Type, &event.Source, &event.GenerationID, &event.CreatedAt, &data); err != nil {
+		if err := rows.Scan(
+			&event.ID,
+			&event.SessionID,
+			&event.Type,
+			&event.Source,
+			&event.GenerationID,
+			&event.GateID,
+			&event.TraceID,
+			&event.SpanID,
+			&event.ParentSpanID,
+			&event.TraceParent,
+			&event.ParentEventID,
+			&event.CausationID,
+			&event.CorrelationID,
+			&event.Revision,
+			&event.CreatedAt,
+			&data,
+		); err != nil {
 			return nil, err
 		}
 		if data.Valid && data.String != "" {

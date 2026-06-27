@@ -59,6 +59,10 @@ type Config struct {
 	AudioS3SecretKey          string
 	AudioS3Prefix             string
 	AudioS3PathStyle          bool
+	DeployEnv                 string
+	GitSHA                    string
+	OTelServiceName           string
+	MetricsAddr               string
 }
 
 func ConfigFromEnv() Config {
@@ -113,6 +117,10 @@ func ConfigFromEnv() Config {
 		AudioS3SecretKey:          env("CLEAN_START_AUDIO_S3_SECRET_KEY", ""),
 		AudioS3Prefix:             strings.Trim(env("CLEAN_START_AUDIO_S3_PREFIX", "rec-audio"), "/"),
 		AudioS3PathStyle:          envBool("CLEAN_START_AUDIO_S3_PATH_STYLE", true),
+		DeployEnv:                 env("DEPLOY_ENV", "local"),
+		GitSHA:                    env("GIT_SHA", "dev"),
+		OTelServiceName:           env("OTEL_SERVICE_NAME", "clean-start-"+env("CLEAN_START_ROLE", "gateway")),
+		MetricsAddr:               env("CLEAN_START_METRICS_ADDR", ""),
 	}
 }
 

@@ -40,12 +40,15 @@ func (w *AssistWorker) Run(ctx context.Context) error {
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
 			return
 		}
+		event = EventWithNATSHeaders(event, msg.Header)
+		handleCtx, span := StartEventSpan(ctx, event, "assist_worker.handle_event")
+		defer EndSpan(span, nil)
 		mem := w.memory.apply(event)
 		if event.Type != EventAssistRequest {
 			return
 		}
 		data, _ := DecodeData[AssistRequestData](event)
-		w.startAssist(ctx, event.SessionID, mem, data.Trigger, data.Text)
+		w.startAssist(handleCtx, event.SessionID, mem, data.Trigger, data.Text)
 	})
 	if err != nil {
 		return err

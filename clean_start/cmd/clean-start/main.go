@@ -23,10 +23,33 @@ func main() {
 	if *roleFlag != "" {
 		cfg.Role = *roleFlag
 	}
+	if cfg.OTelServiceName == "" || cfg.OTelServiceName == "clean-start-gateway" {
+		cfg.OTelServiceName = "clean-start-" + cfg.Role
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	shutdownTelemetry, err := clean.InitTelemetry(ctx, cfg, logger)
+	if err != nil {
+		logger.Error("otel init failed", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(shutdownCtx); err != nil {
+			logger.Warn("otel shutdown failed", "error", err)
+		}
+	}()
+	shutdownMetrics := clean.StartMetricsServer(ctx, cfg, logger)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownMetrics(shutdownCtx); err != nil {
+			logger.Warn("metrics shutdown failed", "error", err)
+		}
+	}()
 
 	llm := clean.NewLLMClient(cfg, logger)
 	inworld := clean.NewInworldClient(cfg)

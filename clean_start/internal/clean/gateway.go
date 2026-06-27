@@ -91,6 +91,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 			g.logger.Warn("bad event payload", "subject", msg.Subject, "error", err)
 			return
 		}
+		event = EventWithNATSHeaders(event, msg.Header)
 		if event.SessionID == "" {
 			if sessionID, _, ok := ParseSubject(g.cfg.SubjectPrefix, msg.Subject); ok {
 				event.SessionID = sessionID
@@ -126,13 +127,15 @@ func (g *Gateway) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /v1/sessions/{session_id}", g.getSession)
 	mux.HandleFunc("POST /v1/sessions/{session_id}/events", g.postEvent)
 	mux.HandleFunc("POST /v1/sessions/{session_id}/audio/log", g.logBrowserAudio)
+	mux.HandleFunc("POST /v1/sessions/{session_id}/telemetry/client-log", g.logClientTelemetry)
 	mux.HandleFunc("POST /v1/sessions/{session_id}/stt/transcribe", g.transcribePCM)
 	mux.HandleFunc("GET /v1/sessions/{session_id}/stt/live", g.streamSTT)
 	mux.HandleFunc("GET /v1/sessions/{session_id}/stream", g.streamSession)
+	mux.Handle("GET /metrics", MetricsHandler())
 
 	g.server = &http.Server{
 		Addr:              g.cfg.HTTPAddr,
-		Handler:           mux,
+		Handler:           InstrumentHTTP("clean_start.http", mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

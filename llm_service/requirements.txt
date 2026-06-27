@@ -1,6 +1,12 @@
 certifi==2025.4.26
 fastapi==0.115.6
 httpx[socks]==0.28.1
+opentelemetry-api==1.29.0
+opentelemetry-sdk==1.29.0
+opentelemetry-exporter-otlp==1.29.0
+opentelemetry-instrumentation-fastapi==0.50b0
+opentelemetry-instrumentation-httpx==0.50b0
+prometheus-client==0.21.1
 pydantic==2.10.4
 pytest==8.3.4
 uvicorn[standard]==0.34.0

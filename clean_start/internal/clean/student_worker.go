@@ -41,19 +41,22 @@ func (w *StudentWorker) Run(ctx context.Context) error {
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
 			return
 		}
+		event = EventWithNATSHeaders(event, msg.Header)
+		handleCtx, span := StartEventSpan(ctx, event, "student_worker.handle_event")
+		defer EndSpan(span, nil)
 		mem := w.memory.apply(event)
 		switch event.Type {
 		case EventStudentInput:
 			data, _ := DecodeData[StudentInputData](event)
-			w.startTranslation(ctx, event.SessionID, event.ID, data.Text, effectiveStudentDirection(data.Direction, mem))
+			w.startTranslation(handleCtx, event.SessionID, event.ID, data.Text, effectiveStudentDirection(data.Direction, mem))
 		case EventSTTFinal:
 			data, _ := DecodeData[SpeechData](event)
 			if data.Role == "student_original" {
-				w.startTranslation(ctx, event.SessionID, event.ID, data.Text, effectiveStudentDirection("", mem))
+				w.startTranslation(handleCtx, event.SessionID, event.ID, data.Text, effectiveStudentDirection("", mem))
 			}
 		case EventStudentAnswerRequest:
 			data, _ := DecodeData[StudentAnswerRequestData](event)
-			w.startAnswer(ctx, event.SessionID, mem, data.Trigger, data.Text)
+			w.startAnswer(handleCtx, event.SessionID, mem, data.Trigger, data.Text)
 		}
 	})
 	if err != nil {

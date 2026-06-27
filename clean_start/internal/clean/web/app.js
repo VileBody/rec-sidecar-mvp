@@ -94,6 +94,86 @@ let adminState = {
   newSeq: 0,
 };
 
+const telemetry = {
+  clientEventSeq: 0,
+  lastSnapshotPerf: 0,
+  lastSnapshotWall: 0,
+  lastStateVersion: 0,
+  lastAutoGenerationId: "",
+  lastManualGenerationId: "",
+  loggedVisibleGenerations: new Set(),
+  now() {
+    return performance.now();
+  },
+  wallNow() {
+    return Date.now();
+  },
+  newClientEventId(prefix) {
+    this.clientEventSeq += 1;
+    return `${prefix}_${this.clientEventSeq}`;
+  },
+  log(event, data = {}) {
+    if (!sessionId) return;
+    const payload = {
+      event,
+      source: data.source || "",
+      role: data.role || "",
+      mode: data.mode || "",
+      generation_id: data.generation_id || "",
+      state_version: Number(data.state_version || this.lastStateVersion || 0),
+      duration_ms: Number(data.duration_ms || 0),
+      detail: data.detail || "",
+      data: data.data || {},
+    };
+    fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/telemetry/client-log`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      keepalive: true,
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  },
+  noteSnapshotReceived(raw = "") {
+    this.lastSnapshotPerf = this.now();
+    this.lastSnapshotWall = this.wallNow();
+    this.lastStateVersion += 1;
+    this.log("snapshot_received", {
+      state_version: this.lastStateVersion,
+      data: { bytes: raw.length },
+    });
+  },
+  noteRendered() {
+    const snapshotPerf = this.lastSnapshotPerf || this.now();
+    requestAnimationFrame(() => {
+      const renderLatency = Math.max(0, this.now() - snapshotPerf);
+      const autoGenerationId = state?.seller_generation_id || "";
+      const manualGenerationId = state?.seller_immediate_generation_id || "";
+      this.log("reply_render_done", {
+        state_version: this.lastStateVersion,
+        generation_id: manualGenerationId || autoGenerationId,
+        duration_ms: renderLatency,
+        data: {
+          seller_streaming: Boolean(state?.seller_streaming),
+          immediate_streaming: Boolean(state?.seller_immediate_streaming),
+        },
+      });
+      this.noteVisibleGeneration(autoGenerationId, state?.seller_draft, "auto");
+      this.noteVisibleGeneration(manualGenerationId, state?.seller_draft_immediate, "manual");
+    });
+  },
+  noteVisibleGeneration(generationId, text, source) {
+    if (!generationId || !text || this.loggedVisibleGenerations.has(generationId)) return;
+    this.loggedVisibleGenerations.add(generationId);
+    this.log("reply_visible", {
+      source,
+      generation_id: generationId,
+      state_version: this.lastStateVersion,
+      duration_ms: Math.max(0, this.now() - (this.lastSnapshotPerf || this.now())),
+      data: { text_len: String(text || "").length },
+    });
+  },
+};
+
 function sessionStorageKey() {
   const identity = currentUser?.id || currentUser?.email || "dev";
   const role = currentRole();
@@ -122,10 +202,12 @@ function currentRole() {
 }
 
 async function boot() {
+  telemetry.log("session_boot_started");
   initAudioControls();
   initSpeakerMap();
   const ok = await loadMe();
   if (ok) await enterCurrentApp();
+  telemetry.log("session_boot_done");
 }
 
 async function loadMe() {
@@ -339,11 +421,17 @@ async function createSession() {
 function connectStream() {
   events = new EventSource(`/v1/sessions/${sessionId}/stream`);
   setStreamStatus("streaming");
+  telemetry.log("sse_connected");
   events.addEventListener("snapshot", (event) => {
+    telemetry.noteSnapshotReceived(event.data || "");
     state = JSON.parse(event.data);
     render();
+    telemetry.noteRendered();
   });
-  events.onerror = () => setStreamStatus("reconnecting...");
+  events.onerror = () => {
+    telemetry.log("sse_disconnected", { detail: "eventsource error" });
+    setStreamStatus("reconnecting...");
+  };
 }
 
 function startStatePolling() {
@@ -358,14 +446,17 @@ function startStatePolling() {
         return;
       }
       if (!res.ok) return;
+      telemetry.noteSnapshotReceived("");
       state = await res.json();
       render();
+      telemetry.noteRendered();
     } catch (_) {
       // EventSource remains the primary live path; polling only smooths over proxy hiccups.
     }
   };
   pollTimer = setInterval(poll, 2000);
   setTimeout(poll, 700);
+  telemetry.log("polling_fallback_started");
 }
 
 async function postEvent(payload) {
@@ -1424,6 +1515,7 @@ function targetLanguageForDirection(direction) {
 async function copyReply() {
   const text = state?.seller_draft || "";
   if (!text) return;
+  telemetry.log("copy_reply_clicked", { source: "auto", generation_id: state?.seller_generation_id || "", data: { text_len: text.length } });
   await navigator.clipboard.writeText(text);
   showToast("Реплика скопирована");
 }
@@ -1431,6 +1523,7 @@ async function copyReply() {
 async function copyImmediateReply() {
   const text = state?.seller_draft_immediate || "";
   if (!text) return;
+  telemetry.log("copy_reply_clicked", { source: "manual", generation_id: state?.seller_immediate_generation_id || "", data: { text_len: text.length } });
   await navigator.clipboard.writeText(text);
   showToast("Немедленная реплика скопирована");
 }
@@ -1456,6 +1549,7 @@ async function openReplyPip() {
     width: 560,
     height: 380,
   });
+  telemetry.log("pip_opened");
   replyPipWindow.addEventListener("pagehide", () => {
     replyPipWindow = null;
   });
@@ -1537,6 +1631,13 @@ function syncReplyPip() {
 }
 
 function generateReply() {
+  telemetry.log("manual_generate_clicked", {
+    generation_id: state?.seller_immediate_generation_id || "",
+    data: {
+      auto_generation_id: state?.seller_generation_id || "",
+      has_auto_reply: Boolean(state?.seller_draft),
+    },
+  });
   return postEvent({
     type: "seller.request",
     trigger: "manual_generate",
@@ -1590,6 +1691,7 @@ async function startCapture({ automatic = false, student = false } = {}) {
   }
   try {
     setCaptureStatus("warn", automatic ? "запрашиваю доступ" : "выберите вкладку/экран со звуком");
+    telemetry.log("system_capture_requested", { source: student ? "student-system-audio" : "remote_audio", mode: "system" });
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     const audioTracks = stream.getAudioTracks();
     if (!audioTracks.length) throw new Error("audio track не выбран");
@@ -1600,12 +1702,14 @@ async function startCapture({ automatic = false, student = false } = {}) {
       direction: student ? ($("studentDirection").value || "en-ru") : "",
       language: student ? sourceLanguageForDirection($("studentDirection").value || "en-ru") : "",
     });
+    telemetry.log("system_capture_started", { source: student ? "student-system-audio" : "remote_audio", mode: "system" });
     setCaptureStatus("on", "захват включен");
     $("captureToggle").textContent = "Стоп";
     $("studentCaptureToggle").textContent = "Стоп";
     updateBothStatus();
     return true;
   } catch (error) {
+    telemetry.log("system_capture_failed", { source: student ? "student-system-audio" : "remote_audio", mode: "system", detail: error.message });
     setCaptureStatus("warn", automatic ? "нужен клик для захвата" : error.message);
     $("captureToggle").textContent = "Включить";
     $("studentCaptureToggle").textContent = "Включить";
@@ -1633,6 +1737,7 @@ async function startMicTest() {
   }
   try {
     setMicStatus("warn", "запрашиваю микрофон");
+    telemetry.log("mic_capture_requested", { source: "seller_mic", mode: "microphone" });
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: { ideal: true },
@@ -1645,6 +1750,7 @@ async function startMicTest() {
       mode: "microphone",
       sourceLabel: "seller_mic",
     });
+    telemetry.log("mic_capture_started", { source: "seller_mic", mode: "microphone" });
     const settings = stream.getAudioTracks()[0]?.getSettings?.() || {};
     captureState.micSettings = settings;
     logAudioEvent(captureState, "mic_settings", JSON.stringify({
@@ -1660,6 +1766,7 @@ async function startMicTest() {
     updateBothStatus();
     return true;
   } catch (error) {
+    telemetry.log("mic_capture_failed", { source: "seller_mic", mode: "microphone", detail: error.message });
     setMicStatus("err", error.message);
     $("micToggle").textContent = "Проверить микрофон";
     updateBothStatus();
@@ -1889,9 +1996,15 @@ function processPCMForSTT(captureState, pcm, { now = Date.now(), rms = pcm16Rms(
     audioEchoState.lastLagMs = echo.lagMs;
     if (echo.echoOnly) {
       audioEchoState.suppressedFrames += 1;
-      isVoice = false;
       maybeLogEchoStats(captureState);
       setAudioStatus(captureState.mode, "on", "микрофон · эхо клиента подавлено");
+      if (captureState.speechOpen && now - captureState.lastVoiceAt >= 650) {
+        sendStreamEndTurn(captureState);
+        captureState.speechOpen = false;
+        setAudioStatus(captureState.mode, "on", "микрофон · эхо подавлено · жду финал");
+      }
+      renderEchoStatus();
+      return;
     } else if (echo.doubleTalk) {
       audioEchoState.doubleTalkFrames += 1;
     }
@@ -2494,6 +2607,12 @@ function otherSpeaker(speaker) {
 
 function logAudioEvent(captureState, event, detail = "") {
   if (!sessionId || !captureState) return;
+  telemetry.log(event === "echo_stats" ? "audio_stream_stats" : event, {
+    source: captureState.sourceLabel,
+    role: captureState.role,
+    mode: captureState.mode,
+    detail,
+  });
   fetch(`/v1/sessions/${sessionId}/audio/log`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

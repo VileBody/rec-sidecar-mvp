@@ -43,17 +43,29 @@ const (
 	EventStageCommitted                = "stage.committed"
 	EventScorecardUpdate               = "scorecard.update"
 	EventPipelineStatus                = "pipeline.status"
+	EventClientTelemetry               = "telemetry.client"
 	EventError                         = "error"
 )
 
 type Event struct {
-	ID           string          `json:"id"`
-	SessionID    string          `json:"session_id"`
-	Type         string          `json:"type"`
-	Source       string          `json:"source"`
-	GenerationID string          `json:"generation_id,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	Data         json.RawMessage `json:"data,omitempty"`
+	ID            string          `json:"id"`
+	SessionID     string          `json:"session_id"`
+	Type          string          `json:"type"`
+	Source        string          `json:"source"`
+	GenerationID  string          `json:"generation_id,omitempty"`
+	GateID        string          `json:"gate_id,omitempty"`
+	TraceID       string          `json:"trace_id,omitempty"`
+	SpanID        string          `json:"span_id,omitempty"`
+	ParentSpanID  string          `json:"parent_span_id,omitempty"`
+	TraceParent   string          `json:"traceparent,omitempty"`
+	ParentEventID string          `json:"parent_event_id,omitempty"`
+	CausationID   string          `json:"causation_id,omitempty"`
+	CorrelationID string          `json:"correlation_id,omitempty"`
+	Revision      int64           `json:"revision,omitempty"`
+	AudioStreamID string          `json:"audio_stream_id,omitempty"`
+	AudioChunkSeq int64           `json:"audio_chunk_seq,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Data          json.RawMessage `json:"data,omitempty"`
 }
 
 type TextData struct {
@@ -217,10 +229,13 @@ type PipelineStatusData struct {
 	Trigger      string `json:"trigger,omitempty"`
 	Detail       string `json:"detail,omitempty"`
 	GenerationID string `json:"generation_id,omitempty"`
+	GateID       string `json:"gate_id,omitempty"`
 	Provider     string `json:"provider,omitempty"`
 	Model        string `json:"model,omitempty"`
 	Action       string `json:"action,omitempty"`
 	ElapsedMS    int64  `json:"elapsed_ms,omitempty"`
+	Revision     int64  `json:"revision,omitempty"`
+	TraceID      string `json:"trace_id,omitempty"`
 }
 
 type ErrorData struct {
@@ -228,15 +243,36 @@ type ErrorData struct {
 	Where   string `json:"where,omitempty"`
 }
 
+type ClientTelemetryData struct {
+	Event        string         `json:"event"`
+	Source       string         `json:"source,omitempty"`
+	Role         string         `json:"role,omitempty"`
+	Mode         string         `json:"mode,omitempty"`
+	GenerationID string         `json:"generation_id,omitempty"`
+	StateVersion int64          `json:"state_version,omitempty"`
+	DurationMS   float64        `json:"duration_ms,omitempty"`
+	Detail       string         `json:"detail,omitempty"`
+	Data         map[string]any `json:"data,omitempty"`
+}
+
 func NewEvent(sessionID, typ, source string, data any) Event {
 	raw, _ := json.Marshal(data)
+	var ids struct {
+		GenerationID string `json:"generation_id"`
+		GateID       string `json:"gate_id"`
+		Revision     int64  `json:"revision"`
+	}
+	_ = json.Unmarshal(raw, &ids)
 	return Event{
-		ID:        NewID("evt"),
-		SessionID: sessionID,
-		Type:      typ,
-		Source:    source,
-		CreatedAt: time.Now().UTC(),
-		Data:      raw,
+		ID:           NewID("evt"),
+		SessionID:    sessionID,
+		Type:         typ,
+		Source:       source,
+		GenerationID: ids.GenerationID,
+		GateID:       ids.GateID,
+		Revision:     ids.Revision,
+		CreatedAt:    time.Now().UTC(),
+		Data:         raw,
 	}
 }
 

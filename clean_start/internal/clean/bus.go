@@ -36,7 +36,15 @@ func PublishEvent(nc *nats.Conn, cfg Config, event Event) error {
 		return err
 	}
 	subject := Subject(cfg.SubjectPrefix, event.SessionID, event.Type)
-	if err := nc.Publish(subject, payload); err != nil {
+	msg := nats.NewMsg(subject)
+	msg.Data = payload
+	if event.TraceParent != "" {
+		msg.Header.Set("traceparent", event.TraceParent)
+	}
+	if event.TraceID != "" {
+		msg.Header.Set("x-trace-id", event.TraceID)
+	}
+	if err := nc.PublishMsg(msg); err != nil {
 		return fmt.Errorf("publish %s: %w", subject, err)
 	}
 	return nil

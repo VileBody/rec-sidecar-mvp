@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var sttWSUpgrader = websocket.Upgrader{
@@ -47,6 +48,9 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 	if _, ok := g.requireSessionOwner(w, r, sessionID); !ok {
 		return
 	}
+	ctx, span := StartSpan(r.Context(), "stt.transcribe_pcm", attribute.String("session.id_hash", shortHash(sessionID)))
+	var spanErr error
+	defer func() { EndSpan(span, spanErr) }()
 	var req STTTranscribeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -77,11 +81,13 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 		g.audioSink.RecordPCMAsync(sessionID, role, source, raw)
 	}
 	started := time.Now()
-	stream, provider, err := g.connectSTTWithLanguage(r.Context(), language)
+	stream, provider, err := g.connectSTTWithLanguage(ctx, language)
 	if err != nil {
+		spanErr = err
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	}
+	span.SetAttributes(attribute.String("stt.provider", provider), attribute.String("role", role), attribute.String("source", source))
 	defer stream.Close()
 	g.logger.Info("browser audio stt received", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw))
 	text, err := transcribePCMWithStream(stream, provider, raw)
@@ -93,6 +99,7 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		g.logger.Warn("browser audio stt failed", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw), "elapsed_ms", elapsedMS, "error", err)
+		ObserveHistogram("seller_stt_partial_latency_ms", float64(elapsedMS), map[string]string{"provider": provider, "source": source, "role": role, "status": "error"})
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
@@ -107,7 +114,9 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.logger.Info("browser audio stt final", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw), "elapsed_ms", elapsedMS, "text_len", len([]rune(text)), "text", text)
-	event := NewEvent(sessionID, EventSTTFinal, "gateway-stt", SpeechData{
+	ObserveHistogram("seller_stt_partial_latency_ms", float64(elapsedMS), map[string]string{"provider": provider, "source": source, "role": role, "status": "ok"})
+	IncCounter("seller_stt_final_total", map[string]string{"provider": provider, "source": source, "role": role})
+	event := NewEventFromContext(ctx, sessionID, EventSTTFinal, "gateway-stt", SpeechData{
 		Role:       role,
 		RoleReason: roleReason,
 		Text:       text,
@@ -127,6 +136,9 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	if _, ok := g.requireSessionOwner(w, r, sessionID); !ok {
 		return
 	}
+	ctx, span := StartSpan(r.Context(), "stt.websocket_stream", attribute.String("session.id_hash", shortHash(sessionID)))
+	var spanErr error
+	defer func() { EndSpan(span, spanErr) }()
 	role := strings.TrimSpace(r.URL.Query().Get("role"))
 	if role == "" {
 		role = "client"
@@ -154,12 +166,19 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	}
 	defer browserConn.Close()
 
-	stream, provider, err := g.connectSTTWithLanguage(r.Context(), language)
+	stream, provider, err := g.connectSTTWithLanguage(ctx, language)
 	if err != nil {
 		g.logger.Warn("browser stt provider connect failed", "session_id", sessionID, "role", role, "source", source, "provider", provider, "error", err)
 		_ = browserConn.WriteJSON(map[string]any{"type": "error", "error": err.Error()})
+		spanErr = err
 		return
 	}
+	span.SetAttributes(
+		attribute.String("stt.provider", provider),
+		attribute.String("source", source),
+		attribute.String("role", role),
+		attribute.String("language", language),
+	)
 	defer stream.Close()
 	unregisterMicStream := g.registerMicStream(sessionID, source)
 	defer unregisterMicStream()
@@ -233,6 +252,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 				}
 				if suppressSystemSellerSegment(g.hasActiveMicStream(sessionID), source, segmentRole) {
 					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", "system_seller_suppressed_by_active_mic", "text", segment.Text)
+					IncCounter("seller_text_echo_rejected_total", map[string]string{"reason": "system_seller_suppressed_by_active_mic", "source": source, "role": segmentRole})
 					if err := writeBrowserReject(segment, segmentID, segmentRole, roleReason, "system_seller_suppressed_by_active_mic", 1, transcript.Final); err != nil {
 						done <- err
 						return
@@ -241,6 +261,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 				}
 				if reason := browserTranscriptRejectReason(segment.Text); reason != "" {
 					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
+					IncCounter("seller_text_echo_rejected_total", map[string]string{"reason": reason, "source": source, "role": segmentRole})
 					if err := writeBrowserReject(segment, segmentID, segmentRole, roleReason, reason, 0, transcript.Final); err != nil {
 						done <- err
 						return
@@ -250,6 +271,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 				if segmentRole == "client" || segmentRole == "seller" {
 					if match := g.crossSourceEchoRejectMatch(sessionID, segmentRole, source, segment.Text); match.Found() {
 						g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", match.Reason, "echo_score", match.Score, "text", segment.Text)
+						IncCounter("seller_text_echo_rejected_total", map[string]string{"reason": match.Reason, "source": source, "role": segmentRole})
 						if err := writeBrowserReject(segment, segmentID, segmentRole, roleReason, match.Reason, match.Score, transcript.Final); err != nil {
 							done <- err
 							return
@@ -257,7 +279,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 				}
-				event := NewEvent(sessionID, eventType, "gateway-stt-live", SpeechData{
+				event := NewEventFromContext(ctx, sessionID, eventType, "gateway-stt-live", SpeechData{
 					Role:       segmentRole,
 					RoleReason: roleReason,
 					Text:       segment.Text,
@@ -270,6 +292,11 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 				if err := g.emit(event); err != nil {
 					done <- err
 					return
+				}
+				if transcript.Final {
+					IncCounter("seller_stt_final_total", map[string]string{"provider": provider, "source": source, "role": segmentRole})
+				} else {
+					IncCounter("seller_stt_partial_total", map[string]string{"provider": provider, "source": source, "role": segmentRole})
 				}
 				g.logger.Info("browser audio stt stream transcript", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "final", transcript.Final, "created_at", event.CreatedAt.Format(time.RFC3339Nano), "text_len", len([]rune(segment.Text)), "text", segment.Text)
 				if err := writeBrowserJSON(map[string]any{
