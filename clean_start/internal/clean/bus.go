@@ -1,6 +1,7 @@
 package clean
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -48,4 +49,8 @@ func PublishEvent(nc *nats.Conn, cfg Config, event Event) error {
 		return fmt.Errorf("publish %s: %w", subject, err)
 	}
 	return nil
+}
+
+func PublishEventWithContext(ctx context.Context, nc *nats.Conn, cfg Config, event Event) error {
+	return PublishEvent(nc, cfg, EventWithTraceContext(ctx, event))
 }

@@ -81,7 +81,7 @@ func (w *AssistWorker) startAssist(parent context.Context, sessionID string, mem
 	w.cancels[sessionID] = cancel
 	w.activeGen[sessionID] = generationID
 	w.mu.Unlock()
-	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventAssistStarted, "assist-worker", AssistStartedData{GenerationID: generationID, Trigger: trigger}))
+	_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventAssistStarted, "assist-worker", AssistStartedData{GenerationID: generationID, Trigger: trigger}))
 
 	go func() {
 		defer func() {
@@ -101,14 +101,14 @@ func (w *AssistWorker) startAssist(parent context.Context, sessionID string, mem
 		started := time.Now()
 		fastText, fastModel, fallback, err := w.llm.HelpOpener(ctx, sessionID, contextText)
 		if ctx.Err() != nil {
-			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventAssistCanceled, "assist-worker", AssistStartedData{GenerationID: generationID, Trigger: trigger}))
+			_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventAssistCanceled, "assist-worker", AssistStartedData{GenerationID: generationID, Trigger: trigger}))
 			return
 		}
 		if err != nil {
-			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "assist-worker", ErrorData{Where: "assist.fast", Message: err.Error()}))
+			_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventError, "assist-worker", ErrorData{Where: "assist.fast", Message: err.Error()}))
 			return
 		}
-		_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventAssistFastDone, "assist-worker", AssistFastDoneData{
+		_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventAssistFastDone, "assist-worker", AssistFastDoneData{
 			GenerationID: generationID,
 			Text:         fastText,
 			Model:        fastModel,
@@ -118,18 +118,18 @@ func (w *AssistWorker) startAssist(parent context.Context, sessionID string, mem
 		var slowText string
 		var slowModel string
 		slowText, slowModel, err = w.llm.StreamHelpConstructive(ctx, sessionID, contextText, func(delta string) error {
-			return PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventAssistDelta, "assist-worker", AssistDeltaData{GenerationID: generationID, Delta: delta}))
+			return PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventAssistDelta, "assist-worker", AssistDeltaData{GenerationID: generationID, Delta: delta}))
 		})
 		if ctx.Err() != nil {
-			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventAssistCanceled, "assist-worker", AssistStartedData{GenerationID: generationID, Trigger: trigger}))
+			_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventAssistCanceled, "assist-worker", AssistStartedData{GenerationID: generationID, Trigger: trigger}))
 			return
 		}
 		if err != nil {
-			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "assist-worker", ErrorData{Where: "assist.slow", Message: err.Error()}))
+			_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventError, "assist-worker", ErrorData{Where: "assist.slow", Message: err.Error()}))
 			return
 		}
 		w.logger.Info("assist generation done", "session_id", sessionID, "generation_id", generationID, "elapsed_ms", time.Since(started).Milliseconds(), "fast_model", fastModel, "slow_model", slowModel)
-		_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventAssistDone, "assist-worker", AssistDoneData{
+		_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventAssistDone, "assist-worker", AssistDoneData{
 			GenerationID: generationID,
 			FastText:     fastText,
 			SlowText:     slowText,

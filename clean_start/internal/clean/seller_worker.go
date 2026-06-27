@@ -221,7 +221,7 @@ func (w *SellerWorker) maybeStartFromStage(ctx context.Context, sessionID string
 	if stage == previous {
 		return
 	}
-	w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "skipped", Trigger: "stage_changed:" + trigger, Detail: "stage metadata updated; waiting for client text before generating"})
+	w.publishPipelineStatusContext(ctx, sessionID, PipelineStatusData{Component: "seller_reply", Status: "skipped", Trigger: "stage_changed:" + trigger, Detail: "stage metadata updated; waiting for client text before generating"})
 }
 
 func (w *SellerWorker) startGeneration(parent context.Context, sessionID string, mem *sessionMemory, trigger, text string) {
@@ -236,7 +236,7 @@ func (w *SellerWorker) startGeneration(parent context.Context, sessionID string,
 	if state.inflight {
 		w.queueAutoReplanLocked(state, mem, trigger, text, "hard", true)
 		w.mu.Unlock()
-		w.publishPipelineStatus(sessionID, PipelineStatusData{Component: "seller_reply", Status: "skipped", Trigger: trigger, Detail: "Gemini уже генерирует реплику, поставили обновление в очередь"})
+		w.publishPipelineStatusContext(parent, sessionID, PipelineStatusData{Component: "seller_reply", Status: "skipped", Trigger: trigger, Detail: "Gemini уже генерирует реплику, поставили обновление в очередь"})
 		return
 	}
 	run := w.prepareAutoGenerationLocked(parent, sessionID, mem, trigger, text)

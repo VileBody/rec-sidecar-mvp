@@ -33,12 +33,15 @@ func (w *ScorecardWorker) Run(ctx context.Context) error {
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
 			return
 		}
+		event = EventWithNATSHeaders(event, msg.Header)
+		handleCtx, span := StartEventSpan(ctx, event, "scorecard_worker.handle_event")
+		defer EndSpan(span, nil)
 		stage, err := DecodeData[StageData](event)
 		if err != nil {
 			return
 		}
 		scorecard := scorecardFromStage(stage)
-		_ = PublishEvent(w.nc, w.cfg, NewEvent(event.SessionID, EventScorecardUpdate, "scorecard-worker", scorecard))
+		_ = PublishEventWithContext(handleCtx, w.nc, w.cfg, NewEvent(event.SessionID, EventScorecardUpdate, "scorecard-worker", scorecard))
 	})
 	if err != nil {
 		return err

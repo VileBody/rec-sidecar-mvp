@@ -102,7 +102,7 @@ func (w *StudentWorker) startTranslation(parent context.Context, sessionID, sour
 		direction = StudentDirectionEnRu
 	}
 	generationID := NewID("trn")
-	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventStudentTranslateStarted, "student-worker", StudentTranslateStartedData{
+	_ = PublishEventWithContext(parent, w.nc, w.cfg, NewEvent(sessionID, EventStudentTranslateStarted, "student-worker", StudentTranslateStartedData{
 		GenerationID:  generationID,
 		SourceEventID: sourceEventID,
 		Direction:     direction,
@@ -113,11 +113,11 @@ func (w *StudentWorker) startTranslation(parent context.Context, sessionID, sour
 		defer cancel()
 		translated, provider, model, err := w.llm.StudentTranslate(ctx, sessionID, text, direction)
 		if err != nil {
-			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "student-worker", ErrorData{Where: "student.translate", Message: err.Error()}))
+			_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventError, "student-worker", ErrorData{Where: "student.translate", Message: err.Error()}))
 			return
 		}
 		w.logger.Info("student translation done", "session_id", sessionID, "direction", direction, "provider", provider, "model", model, "elapsed_ms", time.Since(started).Milliseconds())
-		_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventStudentTranslateDone, "student-worker", StudentTranslateDoneData{
+		_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventStudentTranslateDone, "student-worker", StudentTranslateDoneData{
 			GenerationID:  generationID,
 			SourceEventID: sourceEventID,
 			SourceText:    text,
@@ -139,7 +139,7 @@ func (w *StudentWorker) startAnswer(parent context.Context, sessionID string, me
 	w.cancels[sessionID] = cancel
 	w.activeGen[sessionID] = generationID
 	w.mu.Unlock()
-	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerStarted, "student-worker", StudentAnswerStartedData{GenerationID: generationID, Trigger: trigger}))
+	_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerStarted, "student-worker", StudentAnswerStartedData{GenerationID: generationID, Trigger: trigger}))
 
 	go func() {
 		defer func() {
@@ -153,18 +153,18 @@ func (w *StudentWorker) startAnswer(parent context.Context, sessionID string, me
 		started := time.Now()
 		contextText := mem.studentContextBlock()
 		answer, model, err := w.llm.StreamStudentAnswer(ctx, sessionID, contextText, strings.TrimSpace(question), func(delta string) error {
-			return PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerDelta, "student-worker", StudentAnswerDeltaData{GenerationID: generationID, Delta: delta}))
+			return PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerDelta, "student-worker", StudentAnswerDeltaData{GenerationID: generationID, Delta: delta}))
 		})
 		if ctx.Err() != nil {
-			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerCanceled, "student-worker", StudentAnswerStartedData{GenerationID: generationID, Trigger: trigger}))
+			_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerCanceled, "student-worker", StudentAnswerStartedData{GenerationID: generationID, Trigger: trigger}))
 			return
 		}
 		if err != nil {
-			_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventError, "student-worker", ErrorData{Where: "student.answer", Message: err.Error()}))
+			_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventError, "student-worker", ErrorData{Where: "student.answer", Message: err.Error()}))
 			return
 		}
 		w.logger.Info("student answer done", "session_id", sessionID, "generation_id", generationID, "model", model, "elapsed_ms", time.Since(started).Milliseconds())
-		_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerDone, "student-worker", StudentAnswerDoneData{
+		_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerDone, "student-worker", StudentAnswerDoneData{
 			GenerationID: generationID,
 			Text:         answer,
 			Model:        model,
@@ -179,7 +179,7 @@ func (w *StudentWorker) startAnswerTranslation(parent context.Context, sessionID
 		return
 	}
 	direction := StudentDirectionRuEn
-	_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerTranslateStarted, "student-worker", StudentAnswerTranslateStartedData{
+	_ = PublishEventWithContext(parent, w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerTranslateStarted, "student-worker", StudentAnswerTranslateStartedData{
 		GenerationID: generationID,
 		Direction:    direction,
 	}))
@@ -193,7 +193,7 @@ func (w *StudentWorker) startAnswerTranslation(parent context.Context, sessionID
 			return
 		}
 		w.logger.Info("student answer translation done", "session_id", sessionID, "generation_id", generationID, "direction", direction, "provider", provider, "model", model, "elapsed_ms", time.Since(started).Milliseconds())
-		_ = PublishEvent(w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerTranslateDone, "student-worker", StudentAnswerTranslateDoneData{
+		_ = PublishEventWithContext(ctx, w.nc, w.cfg, NewEvent(sessionID, EventStudentAnswerTranslateDone, "student-worker", StudentAnswerTranslateDoneData{
 			GenerationID: generationID,
 			Text:         translated,
 			Direction:    direction,
