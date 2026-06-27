@@ -10,8 +10,8 @@ data:
   DEPLOY_ENV: prod
   GIT_SHA: main
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-  OTEL_TRACES_SAMPLER: parentbased_traceidratio
-  OTEL_TRACES_SAMPLER_ARG: "0.1"
+  OTEL_TRACES_SAMPLER: always_on
+  OTEL_TRACES_SAMPLER_ARG: ""
   OTEL_PYTHON_FASTAPI_EXCLUDED_URLS: /healthz,/metrics
   CLEAN_START_METRICS_ADDR: :9090
 ---
