@@ -19,7 +19,6 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -77,8 +76,8 @@ func InitTelemetry(ctx context.Context, cfg Config, logger *slog.Logger) (func(c
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(cfg.OTelServiceName),
+			"",
+			attribute.String("service.name", cfg.OTelServiceName),
 			attribute.String("deployment.environment", cfg.DeployEnv),
 			attribute.String("service.version", cfg.GitSHA),
 			attribute.String("clean_start.role", cfg.Role),
