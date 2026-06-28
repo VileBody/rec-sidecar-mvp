@@ -266,6 +266,17 @@ data:
       encode zstd gzip
       reverse_proxy clean-start-gateway.rec-sidecar.svc.cluster.local:80
     }
+
+    suffleur.teamgenius.ru {
+      tls {
+        issuer acme {
+          disable_http_challenge
+        }
+      }
+
+      encode zstd gzip
+      reverse_proxy pulseplus-copilot.rec-sidecar.svc.cluster.local:80
+    }
 ---
 apiVersion: apps/v1
 kind: Deployment
