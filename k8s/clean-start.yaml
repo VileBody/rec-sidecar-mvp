@@ -288,6 +288,17 @@ data:
       encode zstd gzip
       reverse_proxy vietnest.vietnam-rent.svc.cluster.local:80
     }
+
+    klukhanova.teamgenius.ru {
+      tls {
+        issuer acme {
+          disable_http_challenge
+        }
+      }
+
+      encode zstd gzip
+      reverse_proxy klukhanova-static.rec-sidecar.svc.cluster.local:80
+    }
 ---
 apiVersion: apps/v1
 kind: Deployment
