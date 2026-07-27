@@ -169,7 +169,11 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	stream, provider, err := g.connectSTTWithLanguage(ctx, language)
 	if err != nil {
 		g.logger.Warn("browser stt provider connect failed", "session_id", sessionID, "role", role, "source", source, "provider", provider, "error", err)
-		_ = browserConn.WriteJSON(map[string]any{"type": "error", "error": err.Error()})
+		_ = browserConn.WriteJSON(map[string]any{
+			"type":      "error",
+			"error":     err.Error(),
+			"retryable": sttProviderErrorRetryable(err),
+		})
 		spanErr = err
 		return
 	}
@@ -395,10 +399,34 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	err = <-done
 	if err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
 		g.logger.Warn("browser audio stt stream closed", "session_id", sessionID, "role", role, "source", source, "error", err)
-		_ = writeBrowserJSON(map[string]any{"type": "error", "error": err.Error()})
+		_ = writeBrowserJSON(map[string]any{
+			"type":      "error",
+			"error":     err.Error(),
+			"retryable": sttProviderErrorRetryable(err),
+		})
 		return
 	}
 	g.logger.Info("browser audio stt stream closed", "session_id", sessionID, "role", role, "source", source)
+}
+
+func sttProviderErrorRetryable(err error) bool {
+	if err == nil {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"balance exhausted",
+		"insufficient balance",
+		"insufficient credits",
+		"payment required",
+		"invalid api key",
+		"invalid api_key",
+	} {
+		if strings.Contains(message, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *Gateway) sttStatus() (string, bool) {

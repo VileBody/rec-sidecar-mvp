@@ -1,6 +1,7 @@
 package clean
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"net/url"
@@ -578,6 +579,25 @@ func TestSelectedSTTProvider(t *testing.T) {
 			t.Fatalf("provider=%q configured=%v, want soniox false", provider, configured)
 		}
 	})
+}
+
+func TestSTTProviderErrorRetryable(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		retryable bool
+	}{
+		{name: "network error", err: errors.New("connection reset by peer"), retryable: true},
+		{name: "balance exhausted", err: errors.New("Organization balance exhausted. Please add funds."), retryable: false},
+		{name: "invalid key", err: errors.New("invalid API key"), retryable: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sttProviderErrorRetryable(test.err); got != test.retryable {
+				t.Fatalf("retryable = %v, want %v", got, test.retryable)
+			}
+		})
+	}
 }
 
 func TestParseSonioxTranscriptDedupesFinalTokens(t *testing.T) {

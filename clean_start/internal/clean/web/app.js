@@ -2242,6 +2242,8 @@ function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direct
     sentChunks: 0,
     reconnectAttempts: 0,
     reconnectTimer: null,
+    reconnectDisabled: false,
+    fatalSTTError: "",
     signalProbeTimer: null,
     observedFrames: 0,
     voicedFrames: 0,
@@ -2347,7 +2349,9 @@ function probeCapturePipeline(captureState) {
   const contextState = captureState.context?.state || "missing";
   const wsState = webSocketStateLabel(captureState.ws);
   let reasonCode = "pcm_flowing";
-  if (contextState !== "running") {
+  if (captureState.reconnectDisabled) {
+    reasonCode = "stt_non_retryable_error";
+  } else if (contextState !== "running") {
     reasonCode = "audio_context_not_running";
   } else if (captureState.observedFrames === 0) {
     reasonCode = "pcm_frames_missing";
@@ -2368,7 +2372,9 @@ function probeCapturePipeline(captureState) {
     ...captureStreamDiagnostics(captureState.stream),
   };
   logAudioEvent(captureState, "capture_pipeline_probe", reasonCode, diagnosticData);
-  if (reasonCode === "audio_context_not_running") {
+  if (reasonCode === "stt_non_retryable_error") {
+    setAudioStatus(captureState.mode, "err", captureState.fatalSTTError || "STT недоступен");
+  } else if (reasonCode === "audio_context_not_running") {
     setAudioStatus(captureState.mode, "err", captureState.mode === "microphone" ? "микрофон: AudioContext не работает" : "аудиотрек есть · AudioContext не работает");
   } else if (reasonCode === "pcm_frames_missing") {
     setAudioStatus(captureState.mode, "err", captureState.mode === "microphone" ? "микрофон есть, но PCM не приходит" : "аудиотрек есть, но PCM не приходит");
@@ -2397,10 +2403,18 @@ function connectSTTWebSocket(captureState) {
     if (captureStates[mode] !== captureState) return;
     const data = JSON.parse(event.data || "{}");
     if (data.type === "error") {
-      logAudioEvent(captureState, "stt_stream_error", data.error || "STT stream error", {
-        server_message: data.error || "",
+      const serverError = String(data.error || "STT stream error");
+      const retryable = data.retryable !== false && !isNonRetryableSTTError(serverError);
+      const displayError = sttDisplayError(serverError);
+      if (!retryable) {
+        captureState.reconnectDisabled = true;
+        captureState.fatalSTTError = displayError;
+      }
+      logAudioEvent(captureState, "stt_stream_error", serverError, {
+        server_message: serverError,
+        retryable,
       });
-      setAudioStatus(mode, "err", data.error || "STT stream error");
+      setAudioStatus(mode, "err", displayError);
     } else if (data.type === "stt.rejected") {
       recordSTTRejection(captureState, data);
       const reason = data.reason ? ` · ${data.reason}` : "";
@@ -2417,7 +2431,11 @@ function connectSTTWebSocket(captureState) {
       logAudioEvent(captureState, "ws_error", "", {
         ws_state: webSocketStateLabel(ws),
       });
-      setAudioStatus(mode, "warn", "STT stream error · переподключаю");
+      if (captureState.reconnectDisabled) {
+        setAudioStatus(mode, "err", captureState.fatalSTTError || "STT недоступен");
+      } else {
+        setAudioStatus(mode, "warn", "STT stream error · переподключаю");
+      }
     }
   };
   ws.onclose = (event) => {
@@ -2428,13 +2446,43 @@ function connectSTTWebSocket(captureState) {
       clean_close: Boolean(event.wasClean),
       ws_lifetime_ms: Math.round(Math.max(0, telemetry.now() - captureState.wsConnectStartedAt)),
     });
+    if (captureState.reconnectDisabled) {
+      setAudioStatus(mode, "err", captureState.fatalSTTError || "STT недоступен");
+      return;
+    }
     scheduleSTTReconnect(captureState);
   };
 }
 
+function isNonRetryableSTTError(message) {
+  const lower = String(message || "").toLowerCase();
+  return [
+    "balance exhausted",
+    "insufficient balance",
+    "insufficient credits",
+    "payment required",
+    "invalid api key",
+    "invalid api_key",
+  ].some((marker) => lower.includes(marker));
+}
+
+function sttDisplayError(message) {
+  const lower = String(message || "").toLowerCase();
+  if (lower.includes("balance exhausted") || lower.includes("insufficient balance") || lower.includes("insufficient credits")) {
+    return "Soniox: закончился баланс";
+  }
+  if (lower.includes("payment required")) {
+    return "STT: требуется оплата";
+  }
+  if (lower.includes("invalid api key") || lower.includes("invalid api_key")) {
+    return "STT: неверный API-ключ";
+  }
+  return String(message || "STT stream error");
+}
+
 function reconnectCaptureSTT(mode, reason) {
   const captureState = captureStates[mode];
-  if (!captureState?.active) return;
+  if (!captureState?.active || captureState.reconnectDisabled) return;
   logAudioEvent(captureState, "ws_reconnect_requested", reason);
   setAudioStatus(mode, "warn", mode === "microphone" ? "микрофон · переподключаю STT" : "захват · переподключаю STT");
   if (captureState.reconnectTimer) {
@@ -2455,6 +2503,10 @@ function reconnectCaptureSTT(mode, reason) {
 
 function scheduleSTTReconnect(captureState) {
   const mode = captureState.mode;
+  if (captureState.reconnectDisabled) {
+    setAudioStatus(mode, "err", captureState.fatalSTTError || "STT недоступен");
+    return;
+  }
   const hasLiveTrack = Array.from(captureState.stream?.getAudioTracks?.() || []).some((track) => track.readyState === "live");
   if (!hasLiveTrack) {
     stopCapture(mode, mode === "microphone" ? "микрофон STT закрыт" : "захват STT закрыт");
@@ -2720,6 +2772,8 @@ function emptyCaptureState(mode) {
     sentChunks: 0,
     reconnectAttempts: 0,
     reconnectTimer: null,
+    reconnectDisabled: false,
+    fatalSTTError: "",
     signalProbeTimer: null,
     observedFrames: 0,
     voicedFrames: 0,
