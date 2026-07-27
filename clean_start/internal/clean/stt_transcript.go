@@ -12,9 +12,11 @@ import (
 )
 
 const (
-	CaptureSourceSellerMic   = "seller_mic"
-	CaptureSourceRemoteAudio = "remote_audio"
-	CaptureSourceMixedAudio  = "mixed_audio"
+	CaptureSourceSellerMic          = "seller_mic"
+	CaptureSourceRemoteAudio        = "remote_audio"
+	CaptureSourceMixedAudio         = "mixed_audio"
+	CaptureSourceStudentMic         = "student_mic"
+	CaptureSourceStudentSystemAudio = "student_system_audio"
 )
 
 func transcribePCMWithStream(stream STTStream, provider string, pcm []byte) (string, error) {
@@ -93,6 +95,17 @@ func browserTranscriptRejectReason(text string) string {
 		return "mostly_non_russian_script"
 	}
 	return ""
+}
+
+func browserTranscriptRejectReasonForRole(text, role string) string {
+	reason := browserTranscriptRejectReason(text)
+	if reason == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.TrimSpace(role), "student_") && reason == "no_cyrillic" {
+		return ""
+	}
+	return reason
 }
 
 func latinPhraseLooksIntentional(text string) bool {
@@ -185,6 +198,10 @@ func normalizeCaptureSource(source string) string {
 		return CaptureSourceRemoteAudio
 	case "browser-audio":
 		return CaptureSourceMixedAudio
+	case "student-mic", "student_microphone":
+		return CaptureSourceStudentMic
+	case "student-system-audio", "student_system":
+		return CaptureSourceStudentSystemAudio
 	default:
 		return strings.TrimSpace(source)
 	}
@@ -196,6 +213,10 @@ func roleForCaptureSource(source string) (string, bool) {
 		return "seller", true
 	case CaptureSourceRemoteAudio:
 		return "client", true
+	case CaptureSourceStudentMic:
+		return "student_self", true
+	case CaptureSourceStudentSystemAudio:
+		return "student_original", true
 	default:
 		return "", false
 	}

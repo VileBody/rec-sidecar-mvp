@@ -1,6 +1,7 @@
 package clean
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -228,5 +229,36 @@ func TestLatestSessionHydratesPersistedEvents(t *testing.T) {
 	}
 	if len(latest.State.Messages) != 1 || latest.State.Messages[0].Text != "Здравствуйте" {
 		t.Fatalf("hydrated messages = %#v", latest.State.Messages)
+	}
+}
+
+func TestAppStateEventsExcludeClientTelemetry(t *testing.T) {
+	store := NewMemoryAuthStore().(*memoryAuthStore)
+	sessionID := "sess-state-events"
+	created := NewEvent(sessionID, EventSessionCreated, "test", map[string]any{})
+	telemetryEvent := NewEvent(sessionID, EventClientTelemetry, "browser", ClientTelemetryData{
+		Event: "snapshot_received",
+	})
+	if err := store.SaveAppEvent(context.Background(), created); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAppEvent(context.Background(), telemetryEvent); err != nil {
+		t.Fatal(err)
+	}
+
+	allEvents, err := store.AppEvents(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allEvents) != 2 {
+		t.Fatalf("all events = %d, want 2", len(allEvents))
+	}
+
+	stateEvents, err := store.AppStateEvents(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stateEvents) != 1 || stateEvents[0].Type != EventSessionCreated {
+		t.Fatalf("state events = %#v, want only session.created", stateEvents)
 	}
 }

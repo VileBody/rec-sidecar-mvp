@@ -415,6 +415,18 @@ func (s *memoryAuthStore) AppEvents(_ context.Context, sessionID string) ([]Even
 	return events, nil
 }
 
+func (s *memoryAuthStore) AppStateEvents(_ context.Context, sessionID string) ([]Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := make([]Event, 0, len(s.appEvents[sessionID]))
+	for _, event := range s.appEvents[sessionID] {
+		if event.Type != EventClientTelemetry {
+			events = append(events, event)
+		}
+	}
+	return events, nil
+}
+
 func (s *memoryAuthStore) ListAppSessionSummaries(_ context.Context, limit int) ([]AdminSessionSummary, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

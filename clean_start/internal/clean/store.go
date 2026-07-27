@@ -65,6 +65,7 @@ type StudentAnswerItem struct {
 type StudentState struct {
 	Direction               string                   `json:"direction"`
 	Originals               []TranscriptItem         `json:"originals"`
+	Self                    []TranscriptItem         `json:"self"`
 	Translations            []StudentTranslationItem `json:"translations"`
 	AnswerItems             []StudentAnswerItem      `json:"answer_items"`
 	TranslationStreaming    bool                     `json:"translation_streaming"`
@@ -83,9 +84,11 @@ type SessionState struct {
 	Transcript                  []TranscriptItem `json:"transcript"`
 	ClientPartial               string           `json:"client_partial"`
 	SellerDraft                 string           `json:"seller_draft"`
+	SellerDraftBuffer           string           `json:"-"`
 	SellerStreaming             bool             `json:"seller_streaming"`
 	SellerGenerationID          string           `json:"seller_generation_id"`
 	SellerDraftImmediate        string           `json:"seller_draft_immediate"`
+	SellerDraftImmediateBuffer  string           `json:"-"`
 	SellerImmediateStreaming    bool             `json:"seller_immediate_streaming"`
 	SellerImmediateGenerationID string           `json:"seller_immediate_generation_id"`
 	Assist                      AssistState      `json:"assist"`
@@ -127,6 +130,9 @@ func (s *Store) Apply(event Event) SessionState {
 	defer s.mu.Unlock()
 
 	state := s.ensureLocked(event.SessionID)
+	if event.Type == EventClientTelemetry {
+		return cloneState(*state)
+	}
 	if _, ok := s.seen[event.ID]; ok {
 		return cloneState(*state)
 	}
@@ -164,8 +170,11 @@ func (s *Store) Apply(event Event) SessionState {
 			}
 			item := transcriptItemFromSpeech(event, data, false)
 			state.Transcript = appendTranscript(state.Transcript, item)
-			if data.Role == "student_original" {
+			switch data.Role {
+			case "student_original":
 				state.Student.Originals = appendTranscript(state.Student.Originals, item)
+			case "student_self":
+				state.Student.Self = appendTranscript(state.Student.Self, item)
 			}
 		}
 	case EventSTTFinal:
@@ -180,18 +189,22 @@ func (s *Store) Apply(event Event) SessionState {
 			}
 			item := transcriptItemFromSpeech(event, data, true)
 			state.Transcript = appendTranscript(state.Transcript, item)
-			if data.Role == "student_original" {
+			switch data.Role {
+			case "student_original":
 				state.Student.Originals = appendTranscript(state.Student.Originals, item)
+			case "student_self":
+				state.Student.Self = appendTranscript(state.Student.Self, item)
 			}
 		}
 	case EventSellerStarted:
 		if data, err := DecodeData[SellerStartedData](event); err == nil {
 			if isManualSellerTrigger(data.Trigger) {
 				state.SellerDraftImmediate = ""
+				state.SellerDraftImmediateBuffer = ""
 				state.SellerImmediateStreaming = true
 				state.SellerImmediateGenerationID = data.GenerationID
 			} else {
-				state.SellerDraft = ""
+				state.SellerDraftBuffer = ""
 				state.SellerStreaming = true
 				state.SellerGenerationID = data.GenerationID
 			}
@@ -200,10 +213,12 @@ func (s *Store) Apply(event Event) SessionState {
 		if data, err := DecodeData[SellerDeltaData](event); err == nil {
 			switch data.GenerationID {
 			case state.SellerImmediateGenerationID:
-				state.SellerDraftImmediate += data.Delta
+				state.SellerDraftImmediateBuffer += data.Delta
+				state.SellerDraftImmediate = state.SellerDraftImmediateBuffer
 				state.SellerImmediateStreaming = true
 			case state.SellerGenerationID:
-				state.SellerDraft += data.Delta
+				state.SellerDraftBuffer += data.Delta
+				state.SellerDraft = state.SellerDraftBuffer
 				state.SellerStreaming = true
 			}
 		}
@@ -212,9 +227,11 @@ func (s *Store) Apply(event Event) SessionState {
 			switch data.GenerationID {
 			case state.SellerImmediateGenerationID:
 				state.SellerDraftImmediate = data.Text
+				state.SellerDraftImmediateBuffer = ""
 				state.SellerImmediateStreaming = false
 			case state.SellerGenerationID:
 				state.SellerDraft = data.Text
+				state.SellerDraftBuffer = ""
 				state.SellerStreaming = false
 			}
 		}

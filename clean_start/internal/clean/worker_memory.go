@@ -13,6 +13,7 @@ type sessionMemory struct {
 	CurrentStageData            *StageData
 	CurrentScorecard            *ScorecardData
 	SellerDraft                 string
+	SellerDraftBuffer           string
 	SellerGenerationID          string
 	SellerImmediateGenerationID string
 	LastSellerInput             string
@@ -269,13 +270,14 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 			if isManualSellerTrigger(data.Trigger) {
 				mem.SellerImmediateGenerationID = data.GenerationID
 			} else {
-				mem.SellerDraft = ""
+				mem.SellerDraftBuffer = ""
 				mem.SellerGenerationID = data.GenerationID
 			}
 		}
 	case EventSellerDelta:
 		if data, err := DecodeData[SellerDeltaData](event); err == nil && data.GenerationID == mem.SellerGenerationID {
-			mem.SellerDraft += data.Delta
+			mem.SellerDraftBuffer += data.Delta
+			mem.SellerDraft = mem.SellerDraftBuffer
 		}
 	case EventSellerDone:
 		if data, err := DecodeData[SellerDoneData](event); err == nil {
@@ -284,6 +286,7 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 				mem.SellerImmediateGenerationID = ""
 			case mem.SellerGenerationID:
 				mem.SellerDraft = data.Text
+				mem.SellerDraftBuffer = ""
 				mem.SellerGenerationID = ""
 			}
 		}

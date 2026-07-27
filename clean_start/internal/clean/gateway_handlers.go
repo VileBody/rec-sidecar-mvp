@@ -323,12 +323,6 @@ func (g *Gateway) logClientTelemetry(w http.ResponseWriter, r *http.Request) {
 	if req.Detail != "" && len([]rune(req.Detail)) > 160 {
 		req.Detail = string([]rune(req.Detail)[:160])
 	}
-	event := NewEventFromContext(r.Context(), sessionID, EventClientTelemetry, "browser", req)
-	event.GenerationID = strings.TrimSpace(req.GenerationID)
-	if err := g.emit(event); err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
 	labels := map[string]string{"event": req.Event, "source": strings.TrimSpace(req.Source)}
 	IncCounter("seller_client_events_total", labels)
 	if req.DurationMS > 0 {
@@ -337,8 +331,6 @@ func (g *Gateway) logClientTelemetry(w http.ResponseWriter, r *http.Request) {
 	g.logger.Info(
 		"browser telemetry client event",
 		"session_id", sessionID,
-		"trace_id", event.TraceID,
-		"span_id", event.SpanID,
 		"event", req.Event,
 		"source", strings.TrimSpace(req.Source),
 		"role", strings.TrimSpace(req.Role),
@@ -347,6 +339,7 @@ func (g *Gateway) logClientTelemetry(w http.ResponseWriter, r *http.Request) {
 		"state_version", req.StateVersion,
 		"duration_ms", req.DurationMS,
 		"detail", req.Detail,
+		"data", req.Data,
 	)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -1,9 +1,11 @@
 package clean
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,6 +58,40 @@ func TestGatewayCreateSessionRejectsMalformedJSON(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGatewayClientTelemetryLogsStructuredDiagnostics(t *testing.T) {
+	g := newHTTPTestGateway(Config{})
+	sessionID := "sess-client-telemetry"
+	g.store.Apply(NewEvent(sessionID, EventSessionCreated, "test", map[string]any{}))
+
+	var logs bytes.Buffer
+	g.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/sessions/"+sessionID+"/telemetry/client-log",
+		strings.NewReader(`{
+			"event":"system_capture_failed",
+			"source":"remote_audio",
+			"detail":"audio_track_missing",
+			"data":{"reason_code":"audio_track_missing","audio_track_count":0}
+		}`),
+	)
+	req.SetPathValue("session_id", sessionID)
+	rec := httptest.NewRecorder()
+
+	g.logClientTelemetry(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, `"reason_code":"audio_track_missing"`) {
+		t.Fatalf("structured diagnostic missing from log: %s", logged)
+	}
+	if !strings.Contains(logged, `"audio_track_count":0`) {
+		t.Fatalf("track count missing from log: %s", logged)
 	}
 }
 

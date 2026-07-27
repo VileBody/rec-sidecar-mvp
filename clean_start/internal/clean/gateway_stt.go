@@ -103,7 +103,7 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	if reason := browserTranscriptRejectReason(text); reason != "" {
+	if reason := browserTranscriptRejectReasonForRole(text, role); reason != "" {
 		g.logger.Info("browser audio stt rejected", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw), "elapsed_ms", elapsedMS, "reason", reason, "text", text)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -259,7 +259,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 					}
 					continue
 				}
-				if reason := browserTranscriptRejectReason(segment.Text); reason != "" {
+				if reason := browserTranscriptRejectReasonForRole(segment.Text, segmentRole); reason != "" {
 					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
 					IncCounter("seller_text_echo_rejected_total", map[string]string{"reason": reason, "source": source, "role": segmentRole})
 					if err := writeBrowserReject(segment, segmentID, segmentRole, roleReason, reason, 0, transcript.Final); err != nil {

@@ -66,6 +66,29 @@ func TestStudentMemoryIncludesHelpHistoryInContext(t *testing.T) {
 	}
 }
 
+func TestStudentHelpContextUsesOnlyInterlocutorOriginals(t *testing.T) {
+	book := newMemoryBook()
+	sessionID := "sess-student-audio-split"
+	book.apply(NewEvent(sessionID, EventSTTFinal, "test", SpeechData{
+		Role:   "student_self",
+		Source: CaptureSourceStudentMic,
+		Text:   "Let me ask a follow-up question.",
+	}))
+	mem := book.apply(NewEvent(sessionID, EventSTTFinal, "test", SpeechData{
+		Role:   "student_original",
+		Source: CaptureSourceStudentSystemAudio,
+		Text:   "Can you explain the difference between TCP and UDP?",
+	}))
+
+	context := mem.studentContextBlock()
+	if strings.Contains(context, "Let me ask a follow-up question") {
+		t.Fatalf("student self mic leaked into help context:\n%s", context)
+	}
+	if !strings.Contains(context, "Can you explain the difference between TCP and UDP?") {
+		t.Fatalf("interlocutor system audio missing from help context:\n%s", context)
+	}
+}
+
 func TestSalesMemoryIncludesStageAgendaAndScorecardInContext(t *testing.T) {
 	book := newMemoryBook()
 	sessionID := "sess-sales-guidance"

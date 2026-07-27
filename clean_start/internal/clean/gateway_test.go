@@ -34,6 +34,41 @@ func TestBrowserTranscriptRejectReason(t *testing.T) {
 	}
 }
 
+func TestBrowserTranscriptRejectReasonForStudentRole(t *testing.T) {
+	if got := browserTranscriptRejectReasonForRole("Yes.", "student_self"); got != "" {
+		t.Fatalf("student mic text rejected as %q", got)
+	}
+	if got := browserTranscriptRejectReasonForRole("Yes.", "student_original"); got != "" {
+		t.Fatalf("student original text rejected as %q", got)
+	}
+	if got := browserTranscriptRejectReasonForRole("Yes.", "client"); got != "no_cyrillic" {
+		t.Fatalf("client latin text reject reason = %q, want no_cyrillic", got)
+	}
+}
+
+func TestStudentCaptureSourcesMapToStudentRoles(t *testing.T) {
+	tests := []struct {
+		source string
+		role   string
+	}{
+		{source: CaptureSourceStudentSystemAudio, role: "student_original"},
+		{source: "student-system-audio", role: "student_original"},
+		{source: CaptureSourceStudentMic, role: "student_self"},
+		{source: "student-mic", role: "student_self"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.source, func(t *testing.T) {
+			role, ok := roleForCaptureSource(tt.source)
+			if !ok {
+				t.Fatalf("source %q did not map to a role", tt.source)
+			}
+			if role != tt.role {
+				t.Fatalf("role = %q, want %q", role, tt.role)
+			}
+		})
+	}
+}
+
 func TestSellerEchoRejectReason(t *testing.T) {
 	sessionID := "sess-test"
 	g := &Gateway{store: NewStore()}
@@ -134,8 +169,8 @@ func TestRoleForSTTSourceOverridesDiarizedSpeakers(t *testing.T) {
 	if got := roleForSTTSource("mixed", "browser-microphone-test", "3", roles); got != "seller" {
 		t.Fatalf("microphone role = %q, want seller", got)
 	}
-	if got := roleForSTTSource("mixed", "student-system-audio", "3", roles); got != "speaker_3" {
-		t.Fatalf("student/source-neutral role = %q, want speaker_3", got)
+	if got := roleForSTTSource("mixed", "student-system-audio", "3", roles); got != "student_original" {
+		t.Fatalf("student system role = %q, want student_original", got)
 	}
 }
 
@@ -148,6 +183,12 @@ func TestNormalizeLegacyCaptureSources(t *testing.T) {
 	}
 	if got := normalizeCaptureSource("remote_audio"); got != CaptureSourceRemoteAudio {
 		t.Fatalf("native remote source = %q, want %q", got, CaptureSourceRemoteAudio)
+	}
+	if got := normalizeCaptureSource("student-system-audio"); got != CaptureSourceStudentSystemAudio {
+		t.Fatalf("student system source = %q, want %q", got, CaptureSourceStudentSystemAudio)
+	}
+	if got := normalizeCaptureSource("student-mic"); got != CaptureSourceStudentMic {
+		t.Fatalf("student mic source = %q, want %q", got, CaptureSourceStudentMic)
 	}
 }
 

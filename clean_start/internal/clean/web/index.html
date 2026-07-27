@@ -201,6 +201,11 @@
         <div id="studentOriginal" class="student-list"></div>
       </section>
 
+      <section class="card section">
+        <p class="eyebrow">мы / микрофон</p>
+        <div id="studentSelf" class="student-list"></div>
+      </section>
+
       <footer class="card audio-card">
         <div class="audio-row">
           <div>
@@ -216,12 +221,31 @@
         </div>
         <div class="audio-row">
           <div>
-            <div class="title" style="font-size:15px">Захват звука</div>
-            <div id="studentCaptureStatus" class="sub">нажми «Включить» и выбери вкладку/экран</div>
+            <div class="title" style="font-size:15px">Системный звук</div>
+            <div id="studentCaptureStatus" class="sub">собеседник · нажми «Включить» и выбери вкладку/экран</div>
           </div>
           <div class="capture-row">
             <span id="studentCapturePill" class="status-pill warn">ожидание</span>
-            <button id="studentCaptureToggle" class="blue">Включить</button>
+            <button id="studentCaptureToggle" class="blue">Включить system</button>
+          </div>
+        </div>
+        <div class="audio-row">
+          <div>
+            <div class="title" style="font-size:15px">Микрофон</div>
+            <div id="studentMicStatus" class="sub">мы · не попадает в «Помоги»</div>
+          </div>
+          <div class="capture-row">
+            <span id="studentMicPill" class="status-pill warn">ожидание</span>
+            <button id="studentMicToggle" class="ghost">Включить mic</button>
+          </div>
+        </div>
+        <div class="audio-row">
+          <div>
+            <div class="title" style="font-size:15px">Звонок</div>
+            <div id="studentBothStatus" class="sub">system audio = собеседник, микрофон = мы</div>
+          </div>
+          <div class="capture-row">
+            <button id="studentBothToggle" class="blue">Включить всё</button>
           </div>
         </div>
       </footer>

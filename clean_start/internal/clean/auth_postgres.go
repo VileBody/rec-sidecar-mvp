@@ -232,12 +232,27 @@ func (s *PostgresAuthStore) SaveAppEvent(ctx context.Context, event Event) error
 }
 
 func (s *PostgresAuthStore) AppEvents(ctx context.Context, sessionID string) ([]Event, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT
+	return s.queryAppEvents(ctx, sessionID, false)
+}
+
+func (s *PostgresAuthStore) AppStateEvents(ctx context.Context, sessionID string) ([]Event, error) {
+	return s.queryAppEvents(ctx, sessionID, true)
+}
+
+func (s *PostgresAuthStore) queryAppEvents(ctx context.Context, sessionID string, stateOnly bool) ([]Event, error) {
+	query := `SELECT
 		id, session_id, type, source, generation_id, gate_id,
 		trace_id, span_id, parent_span_id, traceparent,
 		parent_event_id, causation_id, correlation_id, revision,
 		created_at, data
-		FROM app_events WHERE session_id = $1 ORDER BY created_at, id`, sessionID)
+		FROM app_events WHERE session_id = $1`
+	args := []any{sessionID}
+	if stateOnly {
+		query += ` AND type <> $2`
+		args = append(args, EventClientTelemetry)
+	}
+	query += ` ORDER BY created_at, id`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

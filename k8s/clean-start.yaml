@@ -35,10 +35,10 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 64Mi
+              memory: 128Mi
             limits:
-              cpu: 300m
-              memory: 256Mi
+              cpu: 500m
+              memory: 1Gi
 ---
 apiVersion: v1
 kind: Service
@@ -177,6 +177,11 @@ spec:
         app.kubernetes.io/name: clean-start-gateway
         app.kubernetes.io/part-of: rec-sidecar
     spec:
+      # The CI node currently blackholes TLS payloads to Soniox while the
+      # system node has a working external route. Keep the STT gateway on the
+      # verified egress node until the provider repairs the CI node route.
+      nodeSelector:
+        kubernetes.io/hostname: worker-192.168.73.9
       imagePullSecrets:
         - name: ghcr-pull
       containers:

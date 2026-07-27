@@ -194,6 +194,11 @@ func (g *Gateway) hydrateSession(ctx context.Context, sessionID string) (Session
 		return SessionState{}, false, nil
 	}
 	events, err := g.authStore.AppEvents(ctx, sessionID)
+	if loader, ok := g.authStore.(interface {
+		AppStateEvents(context.Context, string) ([]Event, error)
+	}); ok {
+		events, err = loader.AppStateEvents(ctx, sessionID)
+	}
 	if err != nil {
 		return SessionState{}, false, err
 	}

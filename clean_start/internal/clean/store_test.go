@@ -74,6 +74,27 @@ func TestStoreApplyIgnoresMismatchedGenerationEvents(t *testing.T) {
 	}
 }
 
+func TestStoreApplyKeepsPreviousSellerDraftUntilNextDelta(t *testing.T) {
+	store := NewStore()
+	sessionID := "sess-preserve-draft"
+	store.Apply(NewEvent(sessionID, EventSessionCreated, "test", map[string]any{}))
+	store.Apply(NewEvent(sessionID, EventSellerStarted, "test", SellerStartedData{GenerationID: "gen-opener", Trigger: "opener"}))
+	state := store.Apply(NewEvent(sessionID, EventSellerDone, "test", SellerDoneData{GenerationID: "gen-opener", Text: "Открывашка"}))
+	if state.SellerDraft != "Открывашка" {
+		t.Fatalf("seller draft = %q, want opener", state.SellerDraft)
+	}
+
+	state = store.Apply(NewEvent(sessionID, EventSellerStarted, "test", SellerStartedData{GenerationID: "gen-next", Trigger: "client_final"}))
+	if state.SellerDraft != "Открывашка" || !state.SellerStreaming {
+		t.Fatalf("start should preserve visible draft while streaming: %#v", state)
+	}
+
+	state = store.Apply(NewEvent(sessionID, EventSellerDelta, "test", SellerDeltaData{GenerationID: "gen-next", Delta: "Новая"}))
+	if state.SellerDraft != "Новая" {
+		t.Fatalf("first delta should replace visible draft, got %q", state.SellerDraft)
+	}
+}
+
 func TestStoreApplySeparatesImmediateSellerDraft(t *testing.T) {
 	store := NewStore()
 	sessionID := "sess-immediate-generation"
@@ -213,6 +234,28 @@ func TestStoreApplyStudentOriginalFinalReplacesEquivalentPartial(t *testing.T) {
 	}
 	if len(state.Transcript) != 1 || !state.Transcript[0].Final {
 		t.Fatalf("transcript final should replace equivalent partial: %#v", state.Transcript)
+	}
+}
+
+func TestStoreApplyStudentSelfIsSeparateFromOriginals(t *testing.T) {
+	store := NewStore()
+	sessionID := "sess-student-self"
+	store.Apply(NewEvent(sessionID, EventSessionCreated, "test", map[string]any{}))
+
+	state := store.Apply(NewEvent(sessionID, EventSTTFinal, "test", SpeechData{
+		Role:      "student_self",
+		Text:      "Здравствуйте, меня зовут Кирилл.",
+		Source:    CaptureSourceStudentMic,
+		SegmentID: "mic-turn-1",
+		Direction: StudentDirectionEnRu,
+		Language:  "ru",
+	}))
+
+	if len(state.Student.Self) != 1 || state.Student.Self[0].Text != "Здравствуйте, меня зовут Кирилл." {
+		t.Fatalf("student self transcript = %#v", state.Student.Self)
+	}
+	if len(state.Student.Originals) != 0 {
+		t.Fatalf("student self should not enter originals: %#v", state.Student.Originals)
 	}
 }
 

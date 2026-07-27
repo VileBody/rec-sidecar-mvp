@@ -19,6 +19,7 @@ let pendingStudentDirection = "";
 let studentAnswerLanguage = {};
 let replyPipWindow = null;
 let audioAdvancedVisible = false;
+let manualGenerateInFlight = false;
 const audioAec3State = {
   url: localStorage.getItem(AEC3_URL_STORAGE_KEY) || "ws://127.0.0.1:8122",
   ws: null,
@@ -98,6 +99,9 @@ const telemetry = {
   clientEventSeq: 0,
   lastSnapshotPerf: 0,
   lastSnapshotWall: 0,
+  lastSnapshotLogPerf: 0,
+  lastReplyRenderLogPerf: 0,
+  lastReplyRenderSignature: "",
   lastStateVersion: 0,
   lastAutoGenerationId: "",
   lastManualGenerationId: "",
@@ -113,7 +117,10 @@ const telemetry = {
     return `${prefix}_${this.clientEventSeq}`;
   },
   log(event, data = {}) {
-    if (!sessionId) return;
+    this.logForSession(sessionId, event, data);
+  },
+  logForSession(targetSessionId, event, data = {}) {
+    if (!targetSessionId) return;
     const payload = {
       event,
       source: data.source || "",
@@ -125,7 +132,7 @@ const telemetry = {
       detail: data.detail || "",
       data: data.data || {},
     };
-    fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/telemetry/client-log`, {
+    fetch(`/v1/sessions/${encodeURIComponent(targetSessionId)}/telemetry/client-log`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
@@ -137,10 +144,13 @@ const telemetry = {
     this.lastSnapshotPerf = this.now();
     this.lastSnapshotWall = this.wallNow();
     this.lastStateVersion += 1;
-    this.log("snapshot_received", {
-      state_version: this.lastStateVersion,
-      data: { bytes: raw.length },
-    });
+    if (this.lastSnapshotPerf - this.lastSnapshotLogPerf >= 2000) {
+      this.lastSnapshotLogPerf = this.lastSnapshotPerf;
+      this.log("snapshot_received", {
+        state_version: this.lastStateVersion,
+        data: { bytes: raw.length },
+      });
+    }
   },
   noteRendered() {
     const snapshotPerf = this.lastSnapshotPerf || this.now();
@@ -148,15 +158,28 @@ const telemetry = {
       const renderLatency = Math.max(0, this.now() - snapshotPerf);
       const autoGenerationId = state?.seller_generation_id || "";
       const manualGenerationId = state?.seller_immediate_generation_id || "";
-      this.log("reply_render_done", {
-        state_version: this.lastStateVersion,
-        generation_id: manualGenerationId || autoGenerationId,
-        duration_ms: renderLatency,
-        data: {
-          seller_streaming: Boolean(state?.seller_streaming),
-          immediate_streaming: Boolean(state?.seller_immediate_streaming),
-        },
-      });
+      const signature = [
+        autoGenerationId,
+        manualGenerationId,
+        state?.seller_streaming ? "auto:1" : "auto:0",
+        state?.seller_immediate_streaming ? "manual:1" : "manual:0",
+      ].join("|");
+      const shouldLogRender =
+        signature !== this.lastReplyRenderSignature ||
+        this.now() - this.lastReplyRenderLogPerf >= 3000;
+      if (shouldLogRender) {
+        this.lastReplyRenderSignature = signature;
+        this.lastReplyRenderLogPerf = this.now();
+        this.log("reply_render_done", {
+          state_version: this.lastStateVersion,
+          generation_id: manualGenerationId || autoGenerationId,
+          duration_ms: renderLatency,
+          data: {
+            seller_streaming: Boolean(state?.seller_streaming),
+            immediate_streaming: Boolean(state?.seller_immediate_streaming),
+          },
+        });
+      }
       this.noteVisibleGeneration(autoGenerationId, state?.seller_draft, "auto");
       this.noteVisibleGeneration(manualGenerationId, state?.seller_draft_immediate, "manual");
     });
@@ -185,7 +208,41 @@ function rememberSession(id) {
   localStorage.setItem(sessionStorageKey(), id);
 }
 
+function sessionStateStorageKey(id = sessionId) {
+  return `${sessionStorageKey()}:state:${id || "none"}`;
+}
+
+function rememberSessionState(id = sessionId, nextState = state) {
+  if (!id || !nextState) return;
+  try {
+    localStorage.setItem(sessionStateStorageKey(id), JSON.stringify({
+      session_id: id,
+      saved_at: new Date().toISOString(),
+      state: nextState,
+    }));
+  } catch (_) {
+    // Local snapshots are a reload convenience only; server state remains source of truth.
+  }
+}
+
+function readSessionState(id) {
+  if (!id) return null;
+  try {
+    const cached = JSON.parse(localStorage.getItem(sessionStateStorageKey(id)) || "null");
+    if (cached?.session_id !== id || !cached.state) return null;
+    return cached.state;
+  } catch (_) {
+    return null;
+  }
+}
+
+function forgetSessionState(id = sessionId) {
+  if (!id) return;
+  localStorage.removeItem(sessionStateStorageKey(id));
+}
+
 function forgetSession() {
+  forgetSessionState();
   localStorage.removeItem(sessionStorageKey());
 }
 
@@ -322,13 +379,24 @@ function stopSessionLive() {
   pollTimer = null;
 }
 
+function stopCapturesForSessionChange(nextSessionId) {
+  for (const mode of ["system", "microphone"]) {
+    const captureState = captureStates[mode];
+    if (!captureState?.active) continue;
+    if (captureState.sessionId === nextSessionId) continue;
+    stopCapture(mode, "остановлен при смене сессии");
+  }
+}
+
 function applySession(data) {
+  stopCapturesForSessionChange(data.session_id || "");
   stopSessionLive();
   sessionId = data.session_id;
   $("session").textContent = sessionId;
   $("studentSession").textContent = sessionId;
   state = data.state;
   rememberSession(sessionId);
+  rememberSessionState(sessionId, state);
   connectStream();
   startStatePolling();
   render();
@@ -347,6 +415,14 @@ async function restoreSessionOrCreate() {
 
 async function resumeSession(id) {
   if (!id) return false;
+  const cachedState = readSessionState(id);
+  if (cachedState) {
+    sessionId = id;
+    state = cachedState;
+    $("session").textContent = sessionId;
+    $("studentSession").textContent = sessionId;
+    render();
+  }
   const res = await fetch(`/v1/sessions/${encodeURIComponent(id)}`, {
     cache: "no-store",
     credentials: "same-origin",
@@ -361,6 +437,7 @@ async function resumeSession(id) {
     return true;
   }
   if (res.status === 403 || res.status === 404) {
+    forgetSessionState(id);
     forgetSession();
     return false;
   }
@@ -397,6 +474,7 @@ async function resumeLatestSession() {
 
 async function createSession() {
   stopSessionLive();
+  forgetSessionState();
   state = null;
   render();
   const res = await fetch("/v1/sessions", {
@@ -425,6 +503,7 @@ function connectStream() {
   events.addEventListener("snapshot", (event) => {
     telemetry.noteSnapshotReceived(event.data || "");
     state = JSON.parse(event.data);
+    rememberSessionState(sessionId, state);
     render();
     telemetry.noteRendered();
   });
@@ -448,6 +527,7 @@ function startStatePolling() {
       if (!res.ok) return;
       telemetry.noteSnapshotReceived("");
       state = await res.json();
+      rememberSessionState(sessionId, state);
       render();
       telemetry.noteRendered();
     } catch (_) {
@@ -1134,7 +1214,8 @@ function dialogBubbleHTML(item) {
 function roleLabel(role) {
   if (role === "seller") return "мы";
   if (role === "client") return "клиент";
-  if (role === "student_original") return "оригинал";
+  if (role === "student_original") return "собеседник";
+  if (role === "student_self") return "мы";
   if (String(role || "").startsWith("speaker_")) {
     const speaker = String(role).replace("speaker_", "");
     if (sellerSpeaker && speaker === sellerSpeaker) return `мы · speaker ${speaker}`;
@@ -1145,8 +1226,8 @@ function roleLabel(role) {
 }
 
 function sourceLabel(source) {
-  if (source === "remote_audio" || source === "browser-system-audio") return "system";
-  if (source === "seller_mic" || source === "browser-microphone-test") return "mic";
+  if (source === "remote_audio" || source === "browser-system-audio" || source === "student_system_audio" || source === "student-system-audio") return "system";
+  if (source === "seller_mic" || source === "browser-microphone-test" || source === "student_mic" || source === "student-mic") return "mic";
   if (source === "mixed_audio") return "mixed";
   return source;
 }
@@ -1263,6 +1344,7 @@ function renderManualReplyStatus() {
 }
 
 function manualReplyPending() {
+  if (manualGenerateInFlight) return true;
   if (state?.seller_immediate_streaming) return true;
   const event = latestPipelineStatus("manual_reply");
   const status = eventData(event).status || "";
@@ -1393,6 +1475,7 @@ function renderAssist() {
 function renderStudent() {
   if (!state) {
     $("studentOriginal").innerHTML = `<div class="empty">Создаю диалог...</div>`;
+    $("studentSelf").innerHTML = `<div class="empty">Микрофон появится здесь.</div>`;
     $("studentTranslated").innerHTML = `<div class="empty">Перевод появится после первой финальной фразы.</div>`;
     $("studentAssistLog").innerHTML = `<div class="empty">Нажми «Помоги» или задай вопрос ниже.</div>`;
     return;
@@ -1412,6 +1495,11 @@ function renderStudent() {
   $("studentOriginal").innerHTML = originals.length
     ? originals.slice(-80).map((item) => studentItemHTML(item.text, `${sourceLanguageForDirection(direction).toUpperCase()} · ${formatTime(item.created_at)}${item.final ? "" : " · partial"}`)).join("")
     : `<div class="empty">Пока пусто. Включи захват звука или вставь фразу вручную.</div>`;
+
+  const selfItems = Array.isArray(student.self) ? student.self : [];
+  $("studentSelf").innerHTML = selfItems.length
+    ? selfItems.slice(-60).map((item) => studentItemHTML(item.text, `${targetLanguageForDirection(direction).toUpperCase()} · ${formatTime(item.created_at)}${item.final ? "" : " · partial"}`)).join("")
+    : `<div class="empty">Микрофон пока пуст. Это не попадает в «Помоги».</div>`;
 
   const translations = Array.isArray(student.translations) ? student.translations : [];
   $("studentTranslated").innerHTML = translations.length
@@ -1630,19 +1718,31 @@ function syncReplyPip() {
   generateLabel.textContent = generating ? "Ушел думать" : "Сгенерить сейчас";
 }
 
-function generateReply() {
-  telemetry.log("manual_generate_clicked", {
-    generation_id: state?.seller_immediate_generation_id || "",
-    data: {
-      auto_generation_id: state?.seller_generation_id || "",
-      has_auto_reply: Boolean(state?.seller_draft),
-    },
-  });
-  return postEvent({
-    type: "seller.request",
-    trigger: "manual_generate",
-    text: "Сгенерируй реплику продавца немедленно под текущий момент разговора. Не валидируй текущую подсказку, дай новый вариант.",
-  });
+async function generateReply() {
+  if (!state || manualReplyPending()) return;
+  manualGenerateInFlight = true;
+  syncGenerateReplyButton();
+  syncReplyPip();
+  try {
+    telemetry.log("manual_generate_clicked", {
+      generation_id: state?.seller_immediate_generation_id || "",
+      data: {
+        auto_generation_id: state?.seller_generation_id || "",
+        has_auto_reply: Boolean(state?.seller_draft),
+      },
+    });
+    await postEvent({
+      type: "seller.request",
+      trigger: "manual_generate",
+      text: "Сгенерируй реплику продавца немедленно под текущий момент разговора. Не валидируй текущую подсказку, дай новый вариант.",
+    });
+  } finally {
+    setTimeout(() => {
+      manualGenerateInFlight = false;
+      syncGenerateReplyButton();
+      syncReplyPip();
+    }, 1200);
+  }
 }
 
 async function requestAssist(trigger, text = "") {
@@ -1662,10 +1762,16 @@ async function updateStudentDirection() {
 }
 
 function applyStudentDirectionToCapture(direction) {
-  const captureState = captureStates.system;
-  if (!captureState?.active || captureState.role !== "student_original") return;
-  captureState.direction = direction;
-  captureState.language = sourceLanguageForDirection(direction);
+  const systemState = captureStates.system;
+  if (systemState?.active && systemState.role === "student_original") {
+    systemState.direction = direction;
+    systemState.language = sourceLanguageForDirection(direction);
+  }
+  const micState = captureStates.microphone;
+  if (micState?.active && micState.role === "student_self") {
+    micState.direction = direction;
+    micState.language = targetLanguageForDirection(direction);
+  }
 }
 
 async function sendStudentOriginal() {
@@ -1677,7 +1783,15 @@ async function sendStudentOriginal() {
 
 async function startCapture({ automatic = false, student = false } = {}) {
   if (captureStates.system.active) {
-    stopCapture("system");
+    if (captureStates.system.sessionId !== sessionId) {
+      stopCapture("system", "перезапускаю захват для текущей сессии");
+    } else {
+      stopCapture("system");
+      return false;
+    }
+  }
+  if (!sessionId) {
+    setCaptureStatus("err", "сессия еще не готова");
     return false;
   }
   if (!window.isSecureContext && !["127.0.0.1", "localhost"].includes(location.hostname)) {
@@ -1689,42 +1803,323 @@ async function startCapture({ automatic = false, student = false } = {}) {
     setCaptureStatus("err", "браузер не поддерживает захват");
     return false;
   }
+  const captureSource = student ? "student_system_audio" : "remote_audio";
+  const requestStartedAt = telemetry.now();
+  const clientDiagnostics = captureClientDiagnostics();
+  let pickerDiagnostics = {};
+  let pickerPendingTimer = null;
   try {
     setCaptureStatus("warn", automatic ? "запрашиваю доступ" : "выберите вкладку/экран со звуком");
-    telemetry.log("system_capture_requested", { source: student ? "student-system-audio" : "remote_audio", mode: "system" });
-    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-    const audioTracks = stream.getAudioTracks();
-    if (!audioTracks.length) throw new Error("audio track не выбран");
-    startAudioStream(stream, {
+    telemetry.log("system_capture_requested", {
+      source: captureSource,
       mode: "system",
-      sourceLabel: student ? "student-system-audio" : "remote_audio",
+      data: clientDiagnostics,
+    });
+    pickerPendingTimer = setTimeout(() => {
+      pickerPendingTimer = null;
+      const pendingDurationMs = Math.max(0, telemetry.now() - requestStartedAt);
+      telemetry.log("system_capture_picker_pending", {
+        source: captureSource,
+        mode: "system",
+        duration_ms: pendingDurationMs,
+        detail: "picker_open_or_waiting_for_user",
+        data: {
+          ...captureClientDiagnostics(),
+          reason_code: "picker_open_or_waiting_for_user",
+          request_duration_ms: Math.round(pendingDurationMs),
+        },
+      });
+      setCaptureStatus("warn", "окно выбора открыто · выбери источник или нажми «Отмена»");
+    }, 8000);
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    if (pickerPendingTimer) {
+      clearTimeout(pickerPendingTimer);
+      pickerPendingTimer = null;
+    }
+    pickerDiagnostics = captureStreamDiagnostics(stream);
+    const pickerDurationMs = Math.max(0, telemetry.now() - requestStartedAt);
+    telemetry.log("system_capture_picker_result", {
+      source: captureSource,
+      mode: "system",
+      duration_ms: pickerDurationMs,
+      data: pickerDiagnostics,
+    });
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length) {
+      const missingTrackError = missingSystemAudioTrackError(pickerDiagnostics);
+      for (const track of stream.getTracks()) track.stop();
+      throw missingTrackError;
+    }
+    const captureState = startAudioStream(stream, {
+      mode: "system",
+      sourceLabel: captureSource,
       roleOverride: student ? "student_original" : "client",
       direction: student ? ($("studentDirection").value || "en-ru") : "",
       language: student ? sourceLanguageForDirection($("studentDirection").value || "en-ru") : "",
     });
-    telemetry.log("system_capture_started", { source: student ? "student-system-audio" : "remote_audio", mode: "system" });
-    setCaptureStatus("on", "захват включен");
+    telemetry.log("system_capture_started", {
+      source: captureSource,
+      mode: "system",
+      duration_ms: Math.max(0, telemetry.now() - requestStartedAt),
+      data: {
+        ...pickerDiagnostics,
+        audio_context_state: captureState.context?.state || "",
+      },
+    });
+    setCaptureStatus("on", student ? "system · собеседник стримится" : "захват включен");
     $("captureToggle").textContent = "Стоп";
-    $("studentCaptureToggle").textContent = "Стоп";
+    $("studentCaptureToggle").textContent = "Стоп system";
     updateBothStatus();
     return true;
   } catch (error) {
-    telemetry.log("system_capture_failed", { source: student ? "student-system-audio" : "remote_audio", mode: "system", detail: error.message });
-    setCaptureStatus("warn", automatic ? "нужен клик для захвата" : error.message);
+    if (pickerPendingTimer) {
+      clearTimeout(pickerPendingTimer);
+      pickerPendingTimer = null;
+    }
+    const diagnosis = classifySystemCaptureError(error);
+    const captureErrorText = diagnosis.message;
+    const durationMs = Math.max(0, telemetry.now() - requestStartedAt);
+    telemetry.log("system_capture_failed", {
+      source: captureSource,
+      mode: "system",
+      duration_ms: durationMs,
+      detail: `${diagnosis.code}: ${captureErrorText}`,
+      data: {
+        ...clientDiagnostics,
+        ...pickerDiagnostics,
+        ...(error?.captureDiagnostics || {}),
+        reason_code: diagnosis.code,
+        error_name: error?.name || "",
+        error_message: error?.message || "",
+        constraint: error?.constraint || "",
+        request_duration_ms: Math.round(durationMs),
+      },
+    });
+    const needsClick = automatic && diagnosis.code === "invalid_user_gesture_or_focus";
+    setCaptureStatus("err", needsClick ? "нужен клик для захвата" : captureErrorText);
+    if (!automatic) showToast(captureErrorText, 7000);
     $("captureToggle").textContent = "Включить";
-    $("studentCaptureToggle").textContent = "Включить";
+    $("studentCaptureToggle").textContent = "Включить system";
     updateBothStatus();
     return false;
   }
+}
+
+function captureClientDiagnostics() {
+  const ua = String(navigator.userAgent || "");
+  const brands = Array.from(navigator.userAgentData?.brands || [])
+    .map((item) => String(item?.brand || "").trim())
+    .filter(Boolean);
+  const supportedConstraints = navigator.mediaDevices?.getSupportedConstraints?.() || {};
+  const relevantConstraints = {};
+  for (const key of [
+    "channelCount",
+    "deviceId",
+    "echoCancellation",
+    "noiseSuppression",
+    "sampleRate",
+    "sampleSize",
+    "suppressLocalAudioPlayback",
+  ]) {
+    if (supportedConstraints[key]) relevantConstraints[key] = true;
+  }
+  return {
+    browser: brands.join(", ") || captureBrowserFamily(ua),
+    platform: navigator.userAgentData?.platform || navigator.platform || "",
+    mobile: Boolean(navigator.userAgentData?.mobile),
+    secure_context: Boolean(window.isSecureContext),
+    document_focused: typeof document.hasFocus === "function" ? document.hasFocus() : null,
+    visibility_state: document.visibilityState || "",
+    display_capture_supported: Boolean(navigator.mediaDevices?.getDisplayMedia),
+    supported_audio_constraints: relevantConstraints,
+  };
+}
+
+function captureBrowserFamily(userAgent) {
+  if (/Edg\//i.test(userAgent)) return "Edge";
+  if (/OPR\//i.test(userAgent)) return "Opera";
+  if (/Firefox\//i.test(userAgent)) return "Firefox";
+  if (/CriOS\//i.test(userAgent)) return "Chrome iOS";
+  if (/Chrome\//i.test(userAgent)) return "Chrome/Chromium";
+  if (/Safari\//i.test(userAgent)) return "Safari";
+  return "unknown";
+}
+
+function captureTrackDiagnostics(track) {
+  if (!track) return {};
+  let settings = {};
+  try {
+    settings = track.getSettings?.() || {};
+  } catch (_) {
+    settings = {};
+  }
+  const safeSettings = {};
+  for (const key of [
+    "displaySurface",
+    "logicalSurface",
+    "cursor",
+    "channelCount",
+    "sampleRate",
+    "sampleSize",
+    "echoCancellation",
+    "noiseSuppression",
+    "autoGainControl",
+    "suppressLocalAudioPlayback",
+  ]) {
+    if (settings[key] !== undefined) safeSettings[key] = settings[key];
+  }
+  return {
+    kind: track.kind || "",
+    ready_state: track.readyState || "",
+    muted: Boolean(track.muted),
+    enabled: Boolean(track.enabled),
+    content_hint: track.contentHint || "",
+    settings: safeSettings,
+  };
+}
+
+function captureStreamDiagnostics(stream) {
+  const audioTracks = Array.from(stream?.getAudioTracks?.() || []);
+  const videoTracks = Array.from(stream?.getVideoTracks?.() || []);
+  const audioDiagnostics = audioTracks.map(captureTrackDiagnostics);
+  const videoDiagnostics = videoTracks.map(captureTrackDiagnostics);
+  return {
+    audio_track_count: audioTracks.length,
+    video_track_count: videoTracks.length,
+    display_surface: videoDiagnostics[0]?.settings?.displaySurface || "",
+    stream_active: Boolean(stream?.active),
+    audio_tracks: audioDiagnostics,
+    video_tracks: videoDiagnostics,
+  };
+}
+
+function createSystemCaptureError(code, message, captureDiagnostics = {}) {
+  const error = new Error(message);
+  error.name = "SystemCaptureError";
+  error.captureCode = code;
+  error.captureDiagnostics = captureDiagnostics;
+  return error;
+}
+
+function missingSystemAudioTrackError(diagnostics) {
+  const surface = String(diagnostics?.display_surface || "");
+  if (surface === "browser") {
+    return createSystemCaptureError(
+      "tab_audio_not_shared",
+      "Вкладка выбрана без аудио. В окне шаринга включи «Поделиться аудио вкладки» и выбери вкладку, где реально играет звук.",
+      diagnostics,
+    );
+  }
+  if (surface === "window") {
+    return createSystemCaptureError(
+      "window_audio_unavailable",
+      "Окно выбрано без аудиодорожки. На macOS выбери вкладку Chrome/Arc со включённым «Поделиться аудио вкладки».",
+      diagnostics,
+    );
+  }
+  if (surface === "monitor") {
+    return createSystemCaptureError(
+      "screen_audio_unavailable",
+      "Весь экран выбран без системной аудиодорожки. Попробуй вкладку Chrome/Arc со включённым «Поделиться аудио вкладки».",
+      diagnostics,
+    );
+  }
+  return createSystemCaptureError(
+    "audio_track_missing",
+    "Браузер отдал экран, но не отдал аудиотрек. Выбери вкладку со звуком и включи «Поделиться аудио вкладки».",
+    diagnostics,
+  );
+}
+
+function classifySystemCaptureError(error) {
+  if (error?.captureCode) {
+    return {
+      code: String(error.captureCode),
+      message: String(error.message || "Не удалось включить системный звук."),
+    };
+  }
+  const name = String(error?.name || "");
+  const message = String(error?.message || "");
+  const lower = `${name} ${message}`.toLowerCase();
+  if (lower.includes("permission denied by system")) {
+    return {
+      code: "os_permission_denied",
+      message: "macOS запретила захват для браузера. Разреши Screen & System Audio Recording / Screen Recording и полностью перезапусти браузер.",
+    };
+  }
+  if (lower.includes("notallowederror") || lower.includes("permission denied")) {
+    return {
+      code: "picker_cancelled_or_permission_denied",
+      message: "Окно выбора закрыто или браузеру не выдан доступ. Выбери источник заново и проверь разрешение записи экрана в macOS.",
+    };
+  }
+  if (lower.includes("aborterror")) {
+    return {
+      code: "picker_aborted",
+      message: "Браузер прервал выбор источника. Закрой другие окна шаринга и попробуй ещё раз.",
+    };
+  }
+  if (lower.includes("invalidstateerror")) {
+    return {
+      code: "invalid_user_gesture_or_focus",
+      message: "Захват нужно запустить кликом в активной вкладке. Вернись на REC и нажми «Включить» ещё раз.",
+    };
+  }
+  if (lower.includes("notreadableerror")) {
+    return {
+      code: "source_not_readable",
+      message: "Источник выбран, но браузер не может его прочитать. Останови другие записи экрана и перезапусти браузер.",
+    };
+  }
+  if (lower.includes("audio track")) {
+    return {
+      code: "audio_track_missing",
+      message: "Источник выбран без звука. Включи «Поделиться аудио вкладки» или выбери вкладку со звуком.",
+    };
+  }
+  if (lower.includes("notfounderror")) {
+    return {
+      code: "source_not_found",
+      message: "Браузер не нашёл доступный источник. Попробуй Chrome/Arc и вкладку со звуком вместо всего экрана.",
+    };
+  }
+  if (lower.includes("overconstrainederror")) {
+    return {
+      code: "constraints_unsupported",
+      message: "Браузер не поддерживает запрошенные параметры захвата. Обнови Chrome/Arc и попробуй снова.",
+    };
+  }
+  if (lower.includes("typeerror")) {
+    return {
+      code: "capture_api_invalid_or_unsupported",
+      message: "Этот браузер или контекст страницы не поддерживает такой захват. Открой REC по HTTPS в актуальном Chrome/Arc.",
+    };
+  }
+  return {
+    code: "capture_failed",
+    message: message || "Не удалось включить системный звук.",
+  };
+}
+
+function systemCaptureErrorMessage(error) {
+  return classifySystemCaptureError(error).message;
 }
 
 async function startStudentCapture() {
   return startCapture({ automatic: false, student: true });
 }
 
-async function startMicTest() {
+async function startMicTest({ student = false } = {}) {
   if (captureStates.microphone.active) {
-    stopCapture("microphone");
+    if (captureStates.microphone.sessionId !== sessionId) {
+      stopCapture("microphone", "перезапускаю микрофон для текущей сессии");
+    } else {
+      stopCapture("microphone");
+      return false;
+    }
+  }
+  if (!sessionId) {
+    setMicStatus("err", "сессия еще не готова");
     return false;
   }
   if (!window.isSecureContext && !["127.0.0.1", "localhost"].includes(location.hostname)) {
@@ -1737,7 +2132,8 @@ async function startMicTest() {
   }
   try {
     setMicStatus("warn", "запрашиваю микрофон");
-    telemetry.log("mic_capture_requested", { source: "seller_mic", mode: "microphone" });
+    const captureSource = student ? "student_mic" : "seller_mic";
+    telemetry.log("mic_capture_requested", { source: captureSource, mode: "microphone" });
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: { ideal: true },
@@ -1748,9 +2144,12 @@ async function startMicTest() {
     });
     const captureState = startAudioStream(stream, {
       mode: "microphone",
-      sourceLabel: "seller_mic",
+      sourceLabel: captureSource,
+      roleOverride: student ? "student_self" : "seller",
+      direction: student ? ($("studentDirection").value || "en-ru") : "",
+      language: student ? targetLanguageForDirection($("studentDirection").value || "en-ru") : "",
     });
-    telemetry.log("mic_capture_started", { source: "seller_mic", mode: "microphone" });
+    telemetry.log("mic_capture_started", { source: captureSource, mode: "microphone" });
     const settings = stream.getAudioTracks()[0]?.getSettings?.() || {};
     captureState.micSettings = settings;
     logAudioEvent(captureState, "mic_settings", JSON.stringify({
@@ -1761,21 +2160,25 @@ async function startMicTest() {
       sampleRate: settings.sampleRate ?? null,
     }));
     renderEchoStatus();
-    setMicStatus("on", "микрофон включен · скажи фразу");
+    setMicStatus("on", student ? "микрофон · мы стримимся" : "микрофон включен · скажи фразу");
     $("micToggle").textContent = "Стоп микрофон";
+    $("studentMicToggle").textContent = "Стоп mic";
     updateBothStatus();
     return true;
   } catch (error) {
-    telemetry.log("mic_capture_failed", { source: "seller_mic", mode: "microphone", detail: error.message });
+    telemetry.log("mic_capture_failed", { source: student ? "student_mic" : "seller_mic", mode: "microphone", detail: error.message });
     setMicStatus("err", error.message);
     $("micToggle").textContent = "Проверить микрофон";
+    $("studentMicToggle").textContent = "Включить mic";
     updateBothStatus();
     return false;
   }
 }
 
 async function startBothAudio() {
-  if (captureStates.system.active && captureStates.microphone.active) {
+  const systemCurrent = captureStates.system.active && captureStates.system.sessionId === sessionId;
+  const micCurrent = captureStates.microphone.active && captureStates.microphone.sessionId === sessionId;
+  if (systemCurrent && micCurrent) {
     stopCapture("system");
     stopCapture("microphone");
     updateBothStatus("оба источника остановлены");
@@ -1784,15 +2187,36 @@ async function startBothAudio() {
   $("bothToggle").disabled = true;
   updateBothStatus("включаю звонок");
   try {
-    if (!captureStates.microphone.active) await startMicTest();
-    if (!captureStates.system.active) await startCapture({ automatic: false });
+    if (!micCurrent) await startMicTest();
+    if (!systemCurrent) await startCapture({ automatic: false });
   } finally {
     $("bothToggle").disabled = false;
     updateBothStatus();
   }
 }
 
+async function startStudentBothAudio() {
+  const systemCurrent = captureStates.system.active && captureStates.system.sessionId === sessionId;
+  const micCurrent = captureStates.microphone.active && captureStates.microphone.sessionId === sessionId;
+  if (systemCurrent && micCurrent) {
+    stopCapture("system");
+    stopCapture("microphone");
+    updateBothStatus("оба источника остановлены");
+    return;
+  }
+  $("studentBothToggle").disabled = true;
+  updateBothStatus("включаю student audio");
+  try {
+    if (!systemCurrent) await startCapture({ automatic: false, student: true });
+    if (!micCurrent) await startMicTest({ student: true });
+  } finally {
+    $("studentBothToggle").disabled = false;
+    updateBothStatus();
+  }
+}
+
 function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direction = "", language = "" }) {
+  const streamSessionId = sessionId;
   const context = new AudioContext();
   const source = context.createMediaStreamSource(stream);
   const processor = context.createScriptProcessor(2048, 1, 1);
@@ -1809,6 +2233,7 @@ function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direct
     mode,
     role,
     sourceLabel,
+    sessionId: streamSessionId,
     direction,
     language,
     speechOpen: false,
@@ -1817,36 +2242,82 @@ function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direct
     sentChunks: 0,
     reconnectAttempts: 0,
     reconnectTimer: null,
+    signalProbeTimer: null,
+    observedFrames: 0,
+    voicedFrames: 0,
+    maxObservedRms: 0,
+    startedAt: telemetry.now(),
+    wsConnectStartedAt: 0,
     stopping: false,
   };
   captureStates[mode] = nextState;
-  logAudioEvent(nextState, "start");
+  logAudioEvent(nextState, "start", "", {
+    ...captureStreamDiagnostics(stream),
+    audio_context_state: context.state,
+    audio_context_sample_rate: context.sampleRate,
+  });
   sink.gain.value = 0;
   processor.onaudioprocess = (event) => {
-    if (captureStates[mode] !== nextState || nextState.ws?.readyState !== WebSocket.OPEN) return;
+    if (captureStates[mode] !== nextState) return;
     const input = event.inputBuffer.getChannelData(0);
+    observeCaptureSignal(nextState, input);
+    if (nextState.ws?.readyState !== WebSocket.OPEN) return;
     streamAudioFrame(nextState, input);
   };
-  connectSTTWebSocket(nextState);
+  context.onstatechange = () => {
+    if (captureStates[mode] !== nextState) return;
+    logAudioEvent(nextState, "audio_context_state", context.state, {
+      audio_context_state: context.state,
+    });
+    if (context.state === "suspended") {
+      setAudioStatus(mode, "warn", mode === "microphone" ? "микрофон · AudioContext приостановлен" : "аудиотрек есть · AudioContext приостановлен");
+    }
+  };
   source.connect(processor);
   processor.connect(sink);
   sink.connect(context.destination);
+  if (context.state === "suspended") {
+    logAudioEvent(nextState, "audio_context_resume_requested", context.state);
+    context.resume()
+      .then(() => {
+        if (captureStates[mode] === nextState) {
+          logAudioEvent(nextState, "audio_context_resumed", context.state);
+        }
+      })
+      .catch((error) => {
+        if (captureStates[mode] !== nextState) return;
+        logAudioEvent(nextState, "audio_context_resume_failed", error?.message || "", {
+          error_name: error?.name || "",
+          error_message: error?.message || "",
+          audio_context_state: context.state,
+        });
+        setAudioStatus(mode, "err", mode === "microphone" ? "микрофон: AudioContext не запустился" : "аудиотрек есть, но AudioContext не запустился");
+      });
+  }
+  connectSTTWebSocket(nextState);
+  nextState.signalProbeTimer = setTimeout(() => probeCapturePipeline(nextState), 3000);
   for (const track of stream.getAudioTracks()) {
     track.onended = () => {
       if (captureStates[mode] === nextState) {
-        logAudioEvent(nextState, "track_ended", track.readyState);
+        logAudioEvent(nextState, "track_ended", track.readyState, {
+          track: captureTrackDiagnostics(track),
+        });
         stopCapture(mode, mode === "microphone" ? "микрофон завершен браузером" : "захват завершен браузером");
       }
     };
     track.onmute = () => {
       if (captureStates[mode] === nextState) {
-        logAudioEvent(nextState, "track_mute", track.readyState);
+        logAudioEvent(nextState, "track_mute", track.readyState, {
+          track: captureTrackDiagnostics(track),
+        });
         setAudioStatus(mode, "warn", mode === "microphone" ? "микрофон без сигнала" : "захват без сигнала");
       }
     };
     track.onunmute = () => {
       if (captureStates[mode] === nextState) {
-        logAudioEvent(nextState, "track_unmute", track.readyState);
+        logAudioEvent(nextState, "track_unmute", track.readyState, {
+          track: captureTrackDiagnostics(track),
+        });
         setAudioStatus(mode, "on", mode === "microphone" ? "микрофон включен" : "захват включен");
       }
     };
@@ -1854,15 +2325,71 @@ function startAudioStream(stream, { mode, sourceLabel, roleOverride = "", direct
   return nextState;
 }
 
+function observeCaptureSignal(captureState, samples) {
+  const rms = float32Rms(samples);
+  captureState.observedFrames += 1;
+  captureState.maxObservedRms = Math.max(captureState.maxObservedRms, rms);
+  if (rms >= audioEchoState.thresholds.vadRms) captureState.voicedFrames += 1;
+}
+
+function webSocketStateLabel(ws) {
+  if (!ws) return "missing";
+  if (ws.readyState === WebSocket.CONNECTING) return "connecting";
+  if (ws.readyState === WebSocket.OPEN) return "open";
+  if (ws.readyState === WebSocket.CLOSING) return "closing";
+  if (ws.readyState === WebSocket.CLOSED) return "closed";
+  return String(ws.readyState);
+}
+
+function probeCapturePipeline(captureState) {
+  if (captureStates[captureState.mode] !== captureState || captureState.stopping) return;
+  captureState.signalProbeTimer = null;
+  const contextState = captureState.context?.state || "missing";
+  const wsState = webSocketStateLabel(captureState.ws);
+  let reasonCode = "pcm_flowing";
+  if (contextState !== "running") {
+    reasonCode = "audio_context_not_running";
+  } else if (captureState.observedFrames === 0) {
+    reasonCode = "pcm_frames_missing";
+  } else if (wsState !== "open") {
+    reasonCode = "stt_websocket_not_open";
+  } else if (captureState.maxObservedRms < 0.0001) {
+    reasonCode = "audio_track_silent";
+  }
+  const diagnosticData = {
+    reason_code: reasonCode,
+    elapsed_ms: Math.round(Math.max(0, telemetry.now() - captureState.startedAt)),
+    audio_context_state: contextState,
+    observed_frames: captureState.observedFrames,
+    voiced_frames: captureState.voicedFrames,
+    max_rms: Number(captureState.maxObservedRms.toFixed(6)),
+    ws_state: wsState,
+    sent_chunks: captureState.sentChunks,
+    ...captureStreamDiagnostics(captureState.stream),
+  };
+  logAudioEvent(captureState, "capture_pipeline_probe", reasonCode, diagnosticData);
+  if (reasonCode === "audio_context_not_running") {
+    setAudioStatus(captureState.mode, "err", captureState.mode === "microphone" ? "микрофон: AudioContext не работает" : "аудиотрек есть · AudioContext не работает");
+  } else if (reasonCode === "pcm_frames_missing") {
+    setAudioStatus(captureState.mode, "err", captureState.mode === "microphone" ? "микрофон есть, но PCM не приходит" : "аудиотрек есть, но PCM не приходит");
+  } else if (reasonCode === "stt_websocket_not_open") {
+    setAudioStatus(captureState.mode, "warn", captureState.mode === "microphone" ? "PCM идёт · STT не подключён" : "системный PCM идёт · STT не подключён");
+  }
+}
+
 function connectSTTWebSocket(captureState) {
   if (!captureState?.active) return;
-  const { mode, role, sourceLabel, direction, language } = captureState;
-  const ws = new WebSocket(sttStreamURL({ role, sourceLabel, direction, language }));
+  const { mode, role, sourceLabel, direction, language, sessionId: streamSessionId } = captureState;
+  captureState.wsConnectStartedAt = telemetry.now();
+  const ws = new WebSocket(sttStreamURL({ sessionId: streamSessionId, role, sourceLabel, direction, language }));
   captureState.ws = ws;
   ws.onopen = () => {
     if (captureStates[mode] === captureState) {
       captureState.reconnectAttempts = 0;
-      logAudioEvent(captureState, "ws_open");
+      logAudioEvent(captureState, "ws_open", "", {
+        connect_duration_ms: Math.round(Math.max(0, telemetry.now() - captureState.wsConnectStartedAt)),
+        ws_state: webSocketStateLabel(ws),
+      });
       setAudioStatus(mode, "on", mode === "microphone" ? "микрофон стримится" : "захват стримится");
     }
   };
@@ -1870,6 +2397,9 @@ function connectSTTWebSocket(captureState) {
     if (captureStates[mode] !== captureState) return;
     const data = JSON.parse(event.data || "{}");
     if (data.type === "error") {
+      logAudioEvent(captureState, "stt_stream_error", data.error || "STT stream error", {
+        server_message: data.error || "",
+      });
       setAudioStatus(mode, "err", data.error || "STT stream error");
     } else if (data.type === "stt.rejected") {
       recordSTTRejection(captureState, data);
@@ -1884,13 +2414,20 @@ function connectSTTWebSocket(captureState) {
   };
   ws.onerror = () => {
     if (captureStates[mode] === captureState) {
-      logAudioEvent(captureState, "ws_error");
+      logAudioEvent(captureState, "ws_error", "", {
+        ws_state: webSocketStateLabel(ws),
+      });
       setAudioStatus(mode, "warn", "STT stream error · переподключаю");
     }
   };
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     if (captureStates[mode] !== captureState || captureState.stopping) return;
-    logAudioEvent(captureState, "ws_close");
+    logAudioEvent(captureState, "ws_close", `${event.code}${event.reason ? `: ${event.reason}` : ""}`, {
+      close_code: event.code,
+      close_reason: event.reason || "",
+      clean_close: Boolean(event.wasClean),
+      ws_lifetime_ms: Math.round(Math.max(0, telemetry.now() - captureState.wsConnectStartedAt)),
+    });
     scheduleSTTReconnect(captureState);
   };
 }
@@ -1945,8 +2482,13 @@ function stopCapture(mode, stoppedText = "") {
     clearTimeout(captureState.reconnectTimer);
     captureState.reconnectTimer = null;
   }
+  if (captureState.signalProbeTimer) {
+    clearTimeout(captureState.signalProbeTimer);
+    captureState.signalProbeTimer = null;
+  }
   captureStates[mode] = emptyCaptureState(mode);
   logAudioEvent(captureState, "stop", stoppedText);
+  if (captureState.context) captureState.context.onstatechange = null;
   if (captureState.processor) captureState.processor.disconnect();
   if (captureState.sink) captureState.sink.disconnect();
   if (captureState.source) captureState.source.disconnect();
@@ -1961,10 +2503,11 @@ function stopCapture(mode, stoppedText = "") {
   if (mode === "microphone") {
     setMicStatus("warn", stoppedText || "микрофон остановлен");
     $("micToggle").textContent = "Проверить микрофон";
+    $("studentMicToggle").textContent = "Включить mic";
   } else {
     setCaptureStatus("warn", stoppedText || "захват остановлен");
     $("captureToggle").textContent = "Включить";
-    $("studentCaptureToggle").textContent = "Включить";
+    $("studentCaptureToggle").textContent = "Включить system";
   }
   updateBothStatus();
   if (!captureStates.system.active && !captureStates.microphone.active) {
@@ -2145,7 +2688,7 @@ function sendStreamEndTurn(captureState) {
   captureState.lastEndTurnAt = now;
 }
 
-function sttStreamURL({ role, sourceLabel, direction = "", language = "" }) {
+function sttStreamURL({ sessionId: targetSessionId, role, sourceLabel, direction = "", language = "" }) {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({ role, source: sourceLabel });
   if (role === "mixed" && sellerSpeaker) {
@@ -2153,7 +2696,7 @@ function sttStreamURL({ role, sourceLabel, direction = "", language = "" }) {
   }
   if (direction) params.set("direction", direction);
   if (language) params.set("language", language);
-  return `${scheme}//${location.host}/v1/sessions/${sessionId}/stt/live?${params}`;
+  return `${scheme}//${location.host}/v1/sessions/${encodeURIComponent(targetSessionId)}/stt/live?${params}`;
 }
 
 function emptyCaptureState(mode) {
@@ -2168,6 +2711,7 @@ function emptyCaptureState(mode) {
     mode,
     role: mode === "microphone" ? "seller" : "client",
     sourceLabel: mode === "microphone" ? "seller_mic" : "remote_audio",
+    sessionId: "",
     direction: "",
     language: "",
     speechOpen: false,
@@ -2176,6 +2720,12 @@ function emptyCaptureState(mode) {
     sentChunks: 0,
     reconnectAttempts: 0,
     reconnectTimer: null,
+    signalProbeTimer: null,
+    observedFrames: 0,
+    voicedFrames: 0,
+    maxObservedRms: 0,
+    startedAt: 0,
+    wsConnectStartedAt: 0,
     stopping: false,
   };
 }
@@ -2245,6 +2795,9 @@ function setMicStatus(kind, text) {
   $("micStatus").textContent = text;
   $("micPill").textContent = kind === "on" ? "вкл" : kind === "err" ? "ошибка" : "ожидание";
   $("micPill").className = `status-pill ${kind}`;
+  $("studentMicStatus").textContent = text;
+  $("studentMicPill").textContent = kind === "on" ? "вкл" : kind === "err" ? "ошибка" : "ожидание";
+  $("studentMicPill").className = `status-pill ${kind}`;
 }
 
 function setAudioStatus(mode, kind, text) {
@@ -2261,16 +2814,22 @@ function updateBothStatus(text = "") {
   const micOn = captureStates.microphone.active;
   if (text) {
     $("bothStatus").textContent = text;
+    $("studentBothStatus").textContent = text;
   } else if (systemOn && micOn) {
     $("bothStatus").textContent = "звонок пишется: system=клиент, mic=мы";
+    $("studentBothStatus").textContent = "student пишется: system=собеседник, mic=мы";
   } else if (systemOn) {
     $("bothStatus").textContent = "включен системный звук · клиент";
+    $("studentBothStatus").textContent = "включен system · собеседник";
   } else if (micOn) {
     $("bothStatus").textContent = "включен только микрофон";
+    $("studentBothStatus").textContent = "включен только mic · мы";
   } else {
     $("bothStatus").textContent = "system audio = клиент, микрофон = мы";
+    $("studentBothStatus").textContent = "system audio = собеседник, микрофон = мы";
   }
   $("bothToggle").textContent = systemOn && micOn ? "Стоп всё" : "Включить всё";
+  $("studentBothToggle").textContent = systemOn && micOn ? "Стоп всё" : "Включить всё";
 }
 
 function initAudioControls() {
@@ -2374,6 +2933,8 @@ function normalizeClientCaptureSource(source) {
   if (value === "browser-microphone-test") return "seller_mic";
   if (value === "browser-system-audio") return "remote_audio";
   if (value === "browser-audio") return "mixed_audio";
+  if (value === "student-system-audio") return "student_system_audio";
+  if (value === "student-mic") return "student_mic";
   return value;
 }
 
@@ -2605,15 +3166,17 @@ function otherSpeaker(speaker) {
   return "";
 }
 
-function logAudioEvent(captureState, event, detail = "") {
-  if (!sessionId || !captureState) return;
-  telemetry.log(event === "echo_stats" ? "audio_stream_stats" : event, {
+function logAudioEvent(captureState, event, detail = "", data = {}) {
+  const targetSessionId = captureState?.sessionId || sessionId;
+  if (!targetSessionId || !captureState) return;
+  telemetry.logForSession(targetSessionId, event === "echo_stats" ? "audio_stream_stats" : event, {
     source: captureState.sourceLabel,
     role: captureState.role,
     mode: captureState.mode,
     detail,
+    data,
   });
-  fetch(`/v1/sessions/${sessionId}/audio/log`, {
+  fetch(`/v1/sessions/${encodeURIComponent(targetSessionId)}/audio/log`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
@@ -2647,12 +3210,12 @@ function signalColor(value) {
   return "";
 }
 
-function showToast(text) {
+function showToast(text, durationMs = 1600) {
   const toast = $("toast");
   toast.textContent = text;
   toast.classList.add("show");
   clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => toast.classList.remove("show"), 1600);
+  showToast.timer = setTimeout(() => toast.classList.remove("show"), durationMs);
 }
 
 function escapeHtml(value) {
@@ -2736,6 +3299,8 @@ $("bothToggle").onclick = startBothAudio;
 $("captureToggle").onclick = () => startCapture({ automatic: false });
 $("studentCaptureToggle").onclick = startStudentCapture;
 $("micToggle").onclick = startMicTest;
+$("studentMicToggle").onclick = () => startMicTest({ student: true });
+$("studentBothToggle").onclick = startStudentBothAudio;
 $("openReplyPip").onclick = () => openReplyPip().catch((error) => showToast(error.message));
 $("copyReply").onclick = copyReply;
 $("replyText").onclick = copyReply;
