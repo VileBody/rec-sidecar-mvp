@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: botamin-voice
+  labels:
+    app.kubernetes.io/part-of: botamin-voice
+    ai-native-paas.io/scope: legacy-quarantine
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"

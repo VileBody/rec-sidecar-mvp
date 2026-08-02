@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clean-start-edge-caddy-data
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-edge
+    app.kubernetes.io/part-of: rec-sidecar
+    ai-native-paas.io/scope: legacy-quarantine
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nvme.network-drives.csi.timeweb.cloud
+  resources:
+    requests:
+      storage: 1Gi

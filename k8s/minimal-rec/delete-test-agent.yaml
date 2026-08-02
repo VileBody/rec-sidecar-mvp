@@ -1,0 +1,13 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-test-agent
+  namespace: rec-sidecar
+$patch: delete
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clean-start-test-agent
+  namespace: rec-sidecar
+$patch: delete

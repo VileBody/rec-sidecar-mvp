@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: botamin-postgres
+  namespace: botamin-voice
+  labels:
+    app.kubernetes.io/name: botamin-postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: botamin-voice
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  serviceName: botamin-postgres
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: botamin-postgres
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: botamin-postgres
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: botamin-voice
+    spec:
+      serviceAccountName: botamin-voice
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: craas-ai-native-paas-registry
+      nodeSelector:
+        ai-native-paas.io/pool: ci
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: ai-native-paas-registry.registry.twcstorage.ru/mirror/postgres@sha256:79950da386bda7fcc9d57aa9aa9be6c6d7407596a9b8f68014b09a778a9ab316
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_USER
+              value: botamin
+            - name: POSTGRES_DB
+              value: botamin_voice
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: botamin-voice-secrets
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          startupProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - botamin
+                - -d
+                - botamin_voice
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - botamin
+                - -d
+                - botamin_voice
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - botamin
+                - -d
+                - botamin_voice
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: botamin-postgres-data
+        - name: postgres-run
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      terminationGracePeriodSeconds: 60

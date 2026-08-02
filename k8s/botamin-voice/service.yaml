@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: botamin-voice
+  namespace: botamin-voice
+  labels:
+    app.kubernetes.io/name: botamin-voice
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: botamin-voice
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: botamin-voice
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

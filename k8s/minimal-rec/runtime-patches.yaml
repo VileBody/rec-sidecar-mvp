@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-nats
+  namespace: rec-sidecar
+spec:
+  template:
+    spec:
+      nodeSelector:
+        $patch: replace
+        ai-native-paas.io/pool: ci
+      imagePullSecrets:
+        - name: craas-ai-native-paas-registry
+      containers:
+        - name: nats
+          image: ai-native-paas-registry.registry.twcstorage.ru/mirror/legacy/nats@sha256:a7d440bf0240e664ed74fc17c70d616e6ff4bb9890dc26f7276589daedd1e196
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-postgres
+  namespace: rec-sidecar
+spec:
+  template:
+    spec:
+      nodeSelector:
+        ai-native-paas.io/pool: ci
+      imagePullSecrets:
+        - name: craas-ai-native-paas-registry
+      containers:
+        - name: postgres
+          image: ai-native-paas-registry.registry.twcstorage.ru/mirror/postgres@sha256:79950da386bda7fcc9d57aa9aa9be6c6d7407596a9b8f68014b09a778a9ab316
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-gateway
+  namespace: rec-sidecar
+spec:
+  template:
+    spec:
+      nodeSelector:
+        $patch: replace
+        ai-native-paas.io/pool: ci
+      containers:
+        - name: gateway
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:1874168301c349377b50de3aa7d9446ccdeb1a4c
+          imagePullPolicy: IfNotPresent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-seller-worker
+  namespace: rec-sidecar
+spec:
+  template:
+    spec:
+      nodeSelector:
+        ai-native-paas.io/pool: ci
+      containers:
+        - name: seller-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:a7ef7663aa1a508c9cf8bc17e3711a90266db454
+          imagePullPolicy: IfNotPresent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-assist-worker
+  namespace: rec-sidecar
+spec:
+  template:
+    spec:
+      nodeSelector:
+        ai-native-paas.io/pool: ci
+      containers:
+        - name: assist-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:a7ef7663aa1a508c9cf8bc17e3711a90266db454
+          imagePullPolicy: IfNotPresent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-stage-worker
+  namespace: rec-sidecar
+spec:
+  template:
+    spec:
+      nodeSelector:
+        ai-native-paas.io/pool: ci
+      containers:
+        - name: stage-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:a7ef7663aa1a508c9cf8bc17e3711a90266db454
+          imagePullPolicy: IfNotPresent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-scorecard-worker
+  namespace: rec-sidecar
+spec:
+  template:
+    spec:
+      nodeSelector:
+        ai-native-paas.io/pool: ci
+      containers:
+        - name: scorecard-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:a7ef7663aa1a508c9cf8bc17e3711a90266db454
+          imagePullPolicy: IfNotPresent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-student-worker
+  namespace: rec-sidecar
+spec:
+  template:
+    spec:
+      nodeSelector:
+        ai-native-paas.io/pool: ci
+      containers:
+        - name: student-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:a7ef7663aa1a508c9cf8bc17e3711a90266db454
+          imagePullPolicy: IfNotPresent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-helper
+  namespace: rec-sidecar
+spec:
+  template:
+    spec:
+      nodeSelector:
+        $patch: replace
+        ai-native-paas.io/pool: ci
+      imagePullSecrets:
+        - name: craas-ai-native-paas-registry
+      containers:
+        - name: llm-helper
+          image: ai-native-paas-registry.registry.twcstorage.ru/mirror/legacy/rec-sidecar@sha256:ef34db730d0f581af1ce69d035b8f4d40d25ec194f553d9136da1ce94e88ab05
+          imagePullPolicy: IfNotPresent

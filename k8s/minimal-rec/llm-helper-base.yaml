@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rec-sidecar
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-helper
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: llm-helper
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: llm-helper
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8088"
+      labels:
+        app.kubernetes.io/name: llm-helper
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: llm-helper
+          image: ghcr.io/vilebody/rec-sidecar-mvp:main
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8088
+          envFrom:
+            - configMapRef:
+                name: clean-start-observability-env
+            - secretRef:
+                name: llm-helper-env
+          env:
+            - name: COACH_HELP_OPENER_TIMEOUT_MS
+              value: "4000"
+            - name: VERTEX_ADC_CREDENTIALS
+              value: /root/.config/gcloud/application_default_credentials.json
+            - name: VERTEX_THINKING_LEVEL
+              value: low
+            - name: OTEL_SERVICE_NAME
+              value: llm-sidecar
+          volumeMounts:
+            - name: gcloud-adc
+              mountPath: /root/.config/gcloud/application_default_credentials.json
+              subPath: application_default_credentials.json
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: gcloud-adc
+          secret:
+            secretName: gcloud-adc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-helper
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: llm-helper
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: llm-helper
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30914

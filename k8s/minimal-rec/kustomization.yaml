@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - clean-start-base.yaml
+  - llm-helper-base.yaml
+  - observability-env.yaml
+  - edge-plumbing.yaml
+  - edge-caddy-pvc.yaml
+patches:
+  - path: delete-test-agent.yaml
+  - path: runtime-patches.yaml
+  - path: edge-patch.yaml
+  - path: caddy-config.yaml

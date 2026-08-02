@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: botamin-postgres
+  namespace: botamin-voice
+  labels:
+    app.kubernetes.io/name: botamin-postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: botamin-voice
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: false
+  selector:
+    app.kubernetes.io/name: botamin-postgres
+    app.kubernetes.io/component: database
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

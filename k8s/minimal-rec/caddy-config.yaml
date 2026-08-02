@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clean-start-edge-caddy
+  namespace: rec-sidecar
+data:
+  Caddyfile: |
+    {
+      auto_https disable_redirects
+    }
+
+    rec.teamgenius.ru {
+      tls /etc/caddy/tls/tls.crt /etc/caddy/tls/tls.key
+      encode zstd gzip
+      reverse_proxy clean-start-gateway.rec-sidecar.svc.cluster.local:80
+    }
+
+    voicechat.teamgenius.ru {
+      tls {
+        issuer acme {
+          disable_http_challenge
+        }
+      }
+      encode zstd gzip
+      reverse_proxy botamin-voice.botamin-voice.svc.cluster.local:80
+    }

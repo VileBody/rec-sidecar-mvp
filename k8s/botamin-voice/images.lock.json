@@ -1,0 +1,9 @@
+{
+  "captured_at": "2026-07-30T10:39:44Z",
+  "source": "/Users/ergin/Documents/портфолио2",
+  "release_tag": "20260730-tools-fix-103927",
+  "images": {
+    "botamin_voice": "ai-native-paas-registry.registry.twcstorage.ru/botamin/voice-agent@sha256:af01472d3897c859c0b81ac7aca86e1d5196457f706bb5658beb62f97daed7d5",
+    "postgres": "ai-native-paas-registry.registry.twcstorage.ru/mirror/postgres@sha256:79950da386bda7fcc9d57aa9aa9be6c6d7407596a9b8f68014b09a778a9ab316"
+  }
+}

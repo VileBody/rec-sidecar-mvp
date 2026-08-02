@@ -1,0 +1,156 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: botamin-voice
+  namespace: botamin-voice
+  labels:
+    app.kubernetes.io/name: botamin-voice
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: botamin-voice
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: botamin-voice
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: botamin-voice
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: botamin-voice
+    spec:
+      serviceAccountName: botamin-voice
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: craas-ai-native-paas-registry
+      nodeSelector:
+        ai-native-paas.io/pool: ci
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: botamin-voice
+          image: ai-native-paas-registry.registry.twcstorage.ru/botamin/voice-agent@sha256:53ac8b60fe9b756403a0bc9be0338d541dd7e53de572392035d77eac944c1254
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: APP_ENV
+              value: production-demo
+            - name: LOG_LEVEL
+              value: INFO
+            - name: BACKEND_BASE_URL
+              value: https://voicechat.teamgenius.ru
+            - name: BUSINESS_TIMEZONE
+              value: Europe/Moscow
+            - name: CALENDAR_PROVIDER
+              value: mock
+            - name: CALENDAR_ID
+              value: botamin-demo
+            - name: VALIDATE_CONTACTS_TIMEOUT_SECONDS
+              value: "5"
+            - name: INWORLD_TTS_PROXY_ENABLED
+              value: "true"
+            - name: INWORLD_MODEL
+              value: inworld-tts-2
+            - name: INWORLD_VOICE_ID
+              value: Svetlana
+            - name: INWORLD_LANGUAGE
+              value: ru-RU
+            - name: INWORLD_DELIVERY_MODE
+              value: BALANCED
+            - name: INWORLD_TTS_TIMEOUT_SECONDS
+              value: "20"
+            - name: INWORLD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: botamin-voice-secrets
+                  key: INWORLD_API_KEY
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: botamin-voice-secrets
+                  key: DATABASE_URL
+            - name: VAPI_TOOL_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: botamin-voice-secrets
+                  key: VAPI_TOOL_BEARER_TOKEN
+            - name: VAPI_ADMIN_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: botamin-voice-secrets
+                  key: VAPI_ADMIN_BEARER_TOKEN
+            - name: PII_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: botamin-voice-secrets
+                  key: PII_ENCRYPTION_KEY
+            - name: VAPI_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: botamin-voice-secrets
+                  key: VAPI_PUBLIC_KEY
+            - name: VAPI_ASSISTANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: botamin-voice-secrets
+                  key: VAPI_ASSISTANT_ID
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+      terminationGracePeriodSeconds: 30
