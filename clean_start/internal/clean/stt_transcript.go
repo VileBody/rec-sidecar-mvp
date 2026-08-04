@@ -98,11 +98,17 @@ func browserTranscriptRejectReason(text string) string {
 }
 
 func browserTranscriptRejectReasonForRole(text, role string) string {
+	return browserTranscriptRejectReasonForAccountRole(text, role, "")
+}
+
+func browserTranscriptRejectReasonForAccountRole(text, role, accountRole string) string {
 	reason := browserTranscriptRejectReason(text)
 	if reason == "" {
 		return ""
 	}
-	if strings.HasPrefix(strings.TrimSpace(role), "student_") && reason == "no_cyrillic" {
+	allowLatin := strings.HasPrefix(strings.TrimSpace(role), "student_") ||
+		normalizeUserRoleOrDefault(accountRole) == UserRolePersonal
+	if allowLatin && reason == "no_cyrillic" {
 		return ""
 	}
 	return reason

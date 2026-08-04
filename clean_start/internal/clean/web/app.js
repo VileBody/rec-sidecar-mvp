@@ -120,7 +120,7 @@ const telemetry = {
     this.logForSession(sessionId, event, data);
   },
   logForSession(targetSessionId, event, data = {}) {
-    if (!targetSessionId) return;
+    if (!targetSessionId || isPersonalUser()) return;
     const payload = {
       event,
       source: data.source || "",
@@ -250,6 +250,10 @@ function isStudentUser() {
   return currentRole() === "student";
 }
 
+function isPersonalUser() {
+  return currentRole() === "personal";
+}
+
 function isAdminUser() {
   return currentRole() === "admin";
 }
@@ -291,15 +295,18 @@ function renderAuth(locked) {
   $("authPanel").hidden = !locked;
   $("authStatus").textContent = label;
   $("studentAuthStatus").textContent = label;
+  $("personalAuthStatus").textContent = label;
   $("adminAuthStatus").textContent = label;
   $("logout").hidden = locked || isDevUser;
   $("studentLogout").hidden = locked || isDevUser;
+  $("personalLogout").hidden = locked || isDevUser;
   $("adminLogout").hidden = locked || isDevUser;
   $("newSession").disabled = locked;
   $("studentNewSession").disabled = locked;
   $("adminRefreshPrompts").disabled = locked || !isAdminUser();
-  $("salesApp").hidden = !locked && (isStudentUser() || isAdminUser());
+  $("salesApp").hidden = !locked && (isStudentUser() || isPersonalUser() || isAdminUser());
   $("studentApp").hidden = locked || !isStudentUser();
+  $("personalApp").hidden = locked || !isPersonalUser();
   $("adminApp").hidden = locked || !isAdminUser();
 }
 
@@ -362,6 +369,7 @@ async function logout() {
   state = null;
   $("session").textContent = "нужно войти";
   $("studentSession").textContent = "нужно войти";
+  $("personalSession").textContent = "нужно войти";
   setStreamStatus("offline");
   render();
   renderAuth(true);
@@ -394,6 +402,7 @@ function applySession(data) {
   sessionId = data.session_id;
   $("session").textContent = sessionId;
   $("studentSession").textContent = sessionId;
+  $("personalSession").textContent = sessionId;
   state = data.state;
   rememberSession(sessionId);
   rememberSessionState(sessionId, state);
@@ -410,7 +419,29 @@ async function restoreSessionOrCreate() {
   if (await resumeLatestSession()) {
     return;
   }
+  if (isPersonalUser()) {
+    waitForPersonalSession();
+    return;
+  }
   await createSession();
+}
+
+function waitForPersonalSession() {
+  stopSessionLive();
+  sessionId = "";
+  state = null;
+  $("personalSession").textContent = "жду desktop-сессию...";
+  setStreamStatus("ожидание desktop");
+  renderPersonal();
+  const poll = async () => {
+    if (!isPersonalUser() || sessionId) return;
+    try {
+      if (await resumeLatestSession()) return;
+    } catch (_) {
+      setStreamStatus("нет связи");
+    }
+  };
+  pollTimer = setInterval(poll, 2000);
 }
 
 async function resumeSession(id) {
@@ -421,6 +452,7 @@ async function resumeSession(id) {
     state = cachedState;
     $("session").textContent = sessionId;
     $("studentSession").textContent = sessionId;
+    $("personalSession").textContent = sessionId;
     render();
   }
   const res = await fetch(`/v1/sessions/${encodeURIComponent(id)}`, {
@@ -434,6 +466,7 @@ async function resumeSession(id) {
     renderAuth(true);
     $("session").textContent = "нужно войти";
     $("studentSession").textContent = "нужно войти";
+    $("personalSession").textContent = "нужно войти";
     return true;
   }
   if (res.status === 403 || res.status === 404) {
@@ -460,6 +493,7 @@ async function resumeLatestSession() {
     renderAuth(true);
     $("session").textContent = "нужно войти";
     $("studentSession").textContent = "нужно войти";
+    $("personalSession").textContent = "нужно войти";
     return true;
   }
   if (res.status === 404) {
@@ -481,7 +515,7 @@ async function createSession() {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
-    body: JSON.stringify({ auto_opener: !isStudentUser() }),
+    body: JSON.stringify({ auto_opener: !isStudentUser() && !isPersonalUser() }),
   });
   if (res.status === 401) {
     currentUser = null;
@@ -564,7 +598,46 @@ function render() {
   renderStage();
   renderAssist();
   renderStudent();
+  renderPersonal();
   renderSpeakerMapStatus();
+}
+
+function renderPersonal() {
+  const list = $("personalTranscript");
+  if (!list) return;
+  const items = (state?.transcript || [])
+    .filter((item) => String(item.text || "").trim())
+    .slice(-300);
+  if (!items.length) {
+    list.innerHTML = `<div class="empty">${sessionId ? "Запись подключена. Жду речь с Mac..." : "Запусти запись в REC Personal на Mac — текст появится здесь."}</div>`;
+    $("personalTranscriptMeta").textContent = "веб-режим · только просмотр";
+    return;
+  }
+  const pinnedToBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+  list.innerHTML = items.map((item) => {
+    const source = personalSource(item.source);
+    const sourceClass = source.kind === "microphone" ? " microphone" : " system";
+    const partialClass = item.final === false ? " partial" : "";
+    return `<article class="personal-transcript-item${sourceClass}${partialClass}">
+      <div class="personal-transcript-item-head">
+        <span class="personal-source-dot" aria-hidden="true"></span>
+        <span class="personal-source-label">${escapeHtml(source.label)}</span>
+        <time>${escapeHtml(formatTime(item.created_at))}</time>
+        ${item.final === false ? "<span>слушаю…</span>" : ""}
+      </div>
+      <div class="personal-transcript-text">${escapeHtml(item.text)}</div>
+    </article>`;
+  }).join("");
+  if (pinnedToBottom) list.scrollTop = list.scrollHeight;
+  const finals = items.filter((item) => item.final !== false).length;
+  $("personalTranscriptMeta").textContent = `${finals} реплик · системный звук и микрофон`;
+}
+
+function personalSource(source) {
+  if (["seller_mic", "browser-microphone-test", "student_mic"].includes(source)) {
+    return { kind: "microphone", label: "Микрофон" };
+  }
+  return { kind: "system", label: "Системный звук" };
 }
 
 function renderAdmin() {
@@ -3247,6 +3320,10 @@ function logAudioEvent(captureState, event, detail = "", data = {}) {
 
 function setStreamStatus(text) {
   $("streamStatus").textContent = text;
+  const personal = $("personalStreamStatus");
+  if (!personal) return;
+  personal.textContent = text === "streaming" ? "live" : text;
+  personal.className = `status-pill ${text === "streaming" ? "on" : text === "offline" || text === "нет связи" ? "err" : "warn"}`;
 }
 
 function scoreColor(score) {
@@ -3340,6 +3417,7 @@ $("studentNewSession").onclick = () => {
 };
 $("logout").onclick = () => logout().catch((error) => showToast(error.message));
 $("studentLogout").onclick = () => logout().catch((error) => showToast(error.message));
+$("personalLogout").onclick = () => logout().catch((error) => showToast(error.message));
 $("adminLogout").onclick = () => logout().catch((error) => showToast(error.message));
 $("authLogin").onclick = () => submitAuth("login");
 $("authRegister").onclick = () => submitAuth("register");

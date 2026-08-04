@@ -106,6 +106,9 @@ func (g *Gateway) createSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if normalizeUserRoleOrDefault(user.Role) == UserRolePersonal {
+		req.AutoOpener = false
+	}
 	sessionID := NewID("sess")
 	if g.authRequired() {
 		if err := g.authStore.CreateAppSession(r.Context(), sessionID, user.ID); err != nil {
@@ -113,7 +116,9 @@ func (g *Gateway) createSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	created := NewEventFromContext(r.Context(), sessionID, EventSessionCreated, "gateway", map[string]any{})
+	created := NewEventFromContext(r.Context(), sessionID, EventSessionCreated, "gateway", map[string]any{
+		"account_role": normalizeUserRoleOrDefault(user.Role),
+	})
 	if err := g.emit(created); err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
@@ -178,7 +183,8 @@ func (g *Gateway) latestSession(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
-	if _, ok := g.requireSessionOwner(w, r, sessionID); !ok {
+	user, ok := g.requireSessionOwner(w, r, sessionID)
+	if !ok {
 		return
 	}
 	if _, ok, err := g.hydrateSession(r.Context(), sessionID); err != nil {
@@ -259,13 +265,14 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 			roleReason = "source:" + source
 		}
 		event = NewEventFromContext(r.Context(), sessionID, req.Type, "gateway", SpeechData{
-			Role:       role,
-			RoleReason: roleReason,
-			Text:       strings.TrimSpace(req.Text),
-			Source:     source,
-			Speaker:    strings.TrimSpace(req.Speaker),
-			SegmentID:  strings.TrimSpace(req.SegmentID),
-			Direction:  strings.TrimSpace(req.Direction),
+			Role:        role,
+			RoleReason:  roleReason,
+			AccountRole: normalizeUserRoleOrDefault(user.Role),
+			Text:        strings.TrimSpace(req.Text),
+			Source:      source,
+			Speaker:     strings.TrimSpace(req.Speaker),
+			SegmentID:   strings.TrimSpace(req.SegmentID),
+			Direction:   strings.TrimSpace(req.Direction),
 		})
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported event type %q", req.Type))

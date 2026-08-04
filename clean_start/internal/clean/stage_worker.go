@@ -67,12 +67,12 @@ func (w *StageWorker) Run(ctx context.Context) error {
 			w.scheduleDetect(handleCtx, event.SessionID, mem, EventStageCommitted, data.Text, true)
 		case EventSTTPartial:
 			data, _ := DecodeData[SpeechData](event)
-			if data.Role == "client" {
+			if shouldRunSalesCoachForSpeech(data) {
 				w.scheduleDetect(handleCtx, event.SessionID, mem, EventStageCandidate, data.Text, false)
 			}
 		case EventSTTFinal:
 			data, _ := DecodeData[SpeechData](event)
-			if data.Role == "client" {
+			if shouldRunSalesCoachForSpeech(data) {
 				w.scheduleDetect(handleCtx, event.SessionID, mem, EventStageCommitted, data.Text, true)
 			}
 		}

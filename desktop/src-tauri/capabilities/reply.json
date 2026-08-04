@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "reply",
+  "description": "Restricted access for the always-on-top reply window",
+  "windows": ["reply"],
+  "local": true,
+  "permissions": [
+    "core:event:default",
+    "core:window:default",
+    "allow-reply-commands"
+  ]
+}

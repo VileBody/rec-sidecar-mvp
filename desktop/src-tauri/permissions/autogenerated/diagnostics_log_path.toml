@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-diagnostics-log-path"
+description = "Enables the diagnostics_log_path command without any pre-configured scope."
+commands.allow = ["diagnostics_log_path"]
+
+[[permission]]
+identifier = "deny-diagnostics-log-path"
+description = "Denies the diagnostics_log_path command without any pre-configured scope."
+commands.deny = ["diagnostics_log_path"]

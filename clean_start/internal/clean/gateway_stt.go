@@ -45,9 +45,11 @@ type AudioChunkMessage struct {
 
 func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
-	if _, ok := g.requireSessionOwner(w, r, sessionID); !ok {
+	user, ok := g.requireSessionOwner(w, r, sessionID)
+	if !ok {
 		return
 	}
+	accountRole := normalizeUserRoleOrDefault(user.Role)
 	ctx, span := StartSpan(r.Context(), "stt.transcribe_pcm", attribute.String("session.id_hash", shortHash(sessionID)))
 	var spanErr error
 	defer func() { EndSpan(span, spanErr) }()
@@ -103,7 +105,7 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	if reason := browserTranscriptRejectReasonForRole(text, role); reason != "" {
+	if reason := browserTranscriptRejectReasonForAccountRole(text, role, accountRole); reason != "" {
 		g.logger.Info("browser audio stt rejected", "session_id", sessionID, "role", role, "source", source, "provider", provider, "bytes", len(raw), "elapsed_ms", elapsedMS, "reason", reason, "text", text)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -117,12 +119,13 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 	ObserveHistogram("seller_stt_partial_latency_ms", float64(elapsedMS), map[string]string{"provider": provider, "source": source, "role": role, "status": "ok"})
 	IncCounter("seller_stt_final_total", map[string]string{"provider": provider, "source": source, "role": role})
 	event := NewEventFromContext(ctx, sessionID, EventSTTFinal, "gateway-stt", SpeechData{
-		Role:       role,
-		RoleReason: roleReason,
-		Text:       text,
-		Source:     source,
-		Direction:  direction,
-		Language:   language,
+		Role:        role,
+		RoleReason:  roleReason,
+		AccountRole: accountRole,
+		Text:        text,
+		Source:      source,
+		Direction:   direction,
+		Language:    language,
 	})
 	if err := g.emit(event); err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -133,9 +136,11 @@ func (g *Gateway) transcribePCM(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
-	if _, ok := g.requireSessionOwner(w, r, sessionID); !ok {
+	user, ok := g.requireSessionOwner(w, r, sessionID)
+	if !ok {
 		return
 	}
+	accountRole := normalizeUserRoleOrDefault(user.Role)
 	ctx, span := StartSpan(r.Context(), "stt.websocket_stream", attribute.String("session.id_hash", shortHash(sessionID)))
 	var spanErr error
 	defer func() { EndSpan(span, spanErr) }()
@@ -263,7 +268,7 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 					}
 					continue
 				}
-				if reason := browserTranscriptRejectReasonForRole(segment.Text, segmentRole); reason != "" {
+				if reason := browserTranscriptRejectReasonForAccountRole(segment.Text, segmentRole, accountRole); reason != "" {
 					g.logger.Info("browser audio stt stream rejected", "session_id", sessionID, "role", segmentRole, "role_reason", roleReason, "source", source, "speaker", segment.Speaker, "reason", reason, "text", segment.Text)
 					IncCounter("seller_text_echo_rejected_total", map[string]string{"reason": reason, "source": source, "role": segmentRole})
 					if err := writeBrowserReject(segment, segmentID, segmentRole, roleReason, reason, 0, transcript.Final); err != nil {
@@ -284,14 +289,15 @@ func (g *Gateway) streamSTT(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				event := NewEventFromContext(ctx, sessionID, eventType, "gateway-stt-live", SpeechData{
-					Role:       segmentRole,
-					RoleReason: roleReason,
-					Text:       segment.Text,
-					Source:     source,
-					Speaker:    segment.Speaker,
-					SegmentID:  segmentID,
-					Direction:  direction,
-					Language:   language,
+					Role:        segmentRole,
+					RoleReason:  roleReason,
+					AccountRole: accountRole,
+					Text:        segment.Text,
+					Source:      source,
+					Speaker:     segment.Speaker,
+					SegmentID:   segmentID,
+					Direction:   direction,
+					Language:    language,
 				})
 				if err := g.emit(event); err != nil {
 					done <- err

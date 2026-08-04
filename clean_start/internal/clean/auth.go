@@ -18,9 +18,10 @@ var (
 )
 
 const (
-	UserRoleSales   = "sales"
-	UserRoleStudent = "student"
-	UserRoleAdmin   = "admin"
+	UserRoleSales    = "sales"
+	UserRoleStudent  = "student"
+	UserRolePersonal = "personal"
+	UserRoleAdmin    = "admin"
 )
 
 type User struct {
@@ -112,10 +113,10 @@ func normalizeUserRole(role string) (string, error) {
 		return UserRoleSales, nil
 	}
 	switch role {
-	case UserRoleSales, UserRoleStudent, UserRoleAdmin:
+	case UserRoleSales, UserRoleStudent, UserRolePersonal, UserRoleAdmin:
 		return role, nil
 	default:
-		return "", errors.New("role must be sales, student, or admin")
+		return "", errors.New("role must be sales, student, personal, or admin")
 	}
 }
 
@@ -125,10 +126,10 @@ func normalizePublicRegistrationRole(role string) (string, error) {
 		return UserRoleSales, nil
 	}
 	switch role {
-	case UserRoleSales, UserRoleStudent:
+	case UserRoleSales, UserRoleStudent, UserRolePersonal:
 		return role, nil
 	default:
-		return "", errors.New("role must be sales or student")
+		return "", errors.New("role must be sales, student, or personal")
 	}
 }
 

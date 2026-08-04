@@ -127,6 +127,50 @@ func TestAuthRegisterSupportsStudentRole(t *testing.T) {
 	}
 }
 
+func TestAuthRegisterSupportsPersonalRole(t *testing.T) {
+	g := newAuthTestGateway()
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(`{"email":"personal@example.com","password":"password123","role":"personal"}`))
+	rec := httptest.NewRecorder()
+
+	g.register(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	registered := authJSON[AuthResponse](t, rec)
+	if registered.User.Role != UserRolePersonal {
+		t.Fatalf("role = %q, want personal", registered.User.Role)
+	}
+}
+
+func TestPersonalSessionNeverStartsSalesCoach(t *testing.T) {
+	g := newAuthTestGateway()
+	registerReq := httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(`{"email":"personal-session@example.com","password":"password123","role":"personal"}`))
+	registerRec := httptest.NewRecorder()
+	g.register(registerRec, registerReq)
+	registered := authJSON[AuthResponse](t, registerRec)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"auto_opener":true}`))
+	req.Header.Set("Authorization", "Bearer "+registered.Token)
+	rec := httptest.NewRecorder()
+	g.createSession(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create session status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	session := authJSON[CreateSessionResponse](t, rec)
+	if len(session.State.Events) != 1 || session.State.Events[0].Type != EventSessionCreated {
+		t.Fatalf("personal session must not emit sales opener: %#v", session.State.Events)
+	}
+	var createdData map[string]any
+	if err := json.Unmarshal(session.State.Events[0].Data, &createdData); err != nil {
+		t.Fatal(err)
+	}
+	if createdData["account_role"] != UserRolePersonal {
+		t.Fatalf("session account role = %#v, want personal", createdData["account_role"])
+	}
+}
+
 func TestAuthRecognizesAdminRole(t *testing.T) {
 	role, err := normalizeUserRole(" Admin ")
 	if err != nil {

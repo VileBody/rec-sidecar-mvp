@@ -298,6 +298,12 @@ func TestGatewayWebIncludesAuthControls(t *testing.T) {
 		`id="studentDirection"`,
 		`student.answer.request`,
 		`student.input`,
+		`id="personalApp"`,
+		`id="personalTranscript"`,
+		`id="personalLogout"`,
+		`function isPersonalUser()`,
+		`function waitForPersonalSession()`,
+		`веб-режим · только просмотр`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("index.html missing %q", want)

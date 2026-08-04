@@ -1,0 +1,15 @@
+.audio-title { font-size: 15px; }
+.auth-card > .eyebrow { margin: 0; }
+
+body.desktop-loading #salesApp {
+  pointer-events: none;
+}
+
+.audio-debug-panel[hidden] { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}

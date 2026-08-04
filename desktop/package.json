@@ -1,0 +1,21 @@
+{
+  "name": "rec-coach-desktop",
+  "private": true,
+  "version": "0.1.1",
+  "type": "module",
+  "scripts": {
+    "build:macos": "./scripts/build-macos.sh",
+    "build:personal:macos": "./scripts/build-personal-macos.sh",
+    "prepare-ui": "./scripts/prepare-ui.sh",
+    "prepare-personal-ui": "./scripts/prepare-personal-ui.sh",
+    "test:ui": "playwright test",
+    "test:personal:ui": "playwright test --config playwright.personal.config.js",
+    "test:personal:ui:update": "playwright test --config playwright.personal.config.js --update-snapshots",
+    "test:ui:update": "playwright test --update-snapshots",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.1",
+    "@tauri-apps/cli": "^2.8.0"
+  }
+}
