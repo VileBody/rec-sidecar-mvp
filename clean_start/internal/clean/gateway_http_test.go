@@ -283,7 +283,11 @@ func TestGatewayWebIncludesAuthControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	html := string(indexRaw) + "\n" + string(appRaw)
+	stylesRaw, err := gatewayWeb.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(indexRaw) + "\n" + string(appRaw) + "\n" + string(stylesRaw)
 	for _, want := range []string{
 		`/static/styles.css`,
 		`/static/app.js`,
@@ -300,6 +304,9 @@ func TestGatewayWebIncludesAuthControls(t *testing.T) {
 		`student.input`,
 		`id="personalApp"`,
 		`id="personalTranscript"`,
+		`role="log"`,
+		`touch-action: pan-y`,
+		`height: clamp(240px, 56dvh, 520px)`,
 		`id="personalLogout"`,
 		`function isPersonalUser()`,
 		`function waitForPersonalSession()`,

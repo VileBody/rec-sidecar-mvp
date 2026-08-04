@@ -180,8 +180,13 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   display: flex;
   flex-direction: column;
   gap: 10px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding-right: 3px;
+  scrollbar-gutter: stable;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 
 .personal-transcript-item {
@@ -297,6 +302,10 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
 .section {
   padding: 18px;
   overflow: auto;
+}
+
+.section.personal-transcript-card {
+  overflow: hidden;
 }
 
 .admin-list-card {
@@ -1370,7 +1379,7 @@ body.auth-locked .admin-app {
   .reply-text { min-height: 280px; }
   .pipeline-grid { grid-template-columns: 1fr; }
   .manual-reply-head { grid-template-columns: 1fr; }
-  .personal-app { grid-template-columns: minmax(0, 1fr); height: 100vh; overflow: hidden; }
+  .personal-app { grid-template-columns: minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
   .personal-empty-col { display: none; }
   .personal-transcript-col { min-height: 0; }
 }
@@ -1413,6 +1422,66 @@ body.auth-locked .admin-app {
     white-space: normal;
   }
   .bubble { max-width: 94%; }
-  .personal-app { height: 100vh; padding: 10px; }
-  .personal-header .header-actions { justify-content: flex-start; }
+  .personal-app {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    padding: 10px;
+  }
+  .personal-transcript-col {
+    align-content: start;
+    grid-template-rows: auto auto;
+  }
+  .personal-header {
+    gap: 10px;
+    padding: 14px;
+  }
+  .personal-header .header-actions {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    width: 100%;
+    justify-content: stretch;
+    flex-wrap: nowrap;
+  }
+  .personal-header .user-chip {
+    min-width: 0;
+    max-width: none;
+  }
+  .personal-header button {
+    width: auto;
+    min-height: 34px;
+    padding: 6px 11px;
+  }
+  .personal-transcript-card {
+    width: 100%;
+    height: clamp(240px, 56dvh, 520px);
+    gap: 10px;
+    padding: 14px;
+  }
+  .personal-transcript-head {
+    align-items: flex-start;
+  }
+  .personal-transcript-head .sub {
+    max-width: none;
+    white-space: normal;
+  }
+  .personal-transcript-list {
+    gap: 8px;
+    padding-right: 5px;
+  }
+  .personal-transcript-item {
+    flex: 0 0 auto;
+    border-radius: 13px;
+    padding: 10px 11px;
+  }
+  .personal-transcript-item-head {
+    margin-bottom: 5px;
+  }
+  .personal-transcript-text {
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .personal-readonly-badge {
+    display: none;
+  }
 }

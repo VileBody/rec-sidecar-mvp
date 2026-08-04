@@ -610,9 +610,11 @@ function renderPersonal() {
     .slice(-300);
   if (!items.length) {
     list.innerHTML = `<div class="empty">${sessionId ? "Запись подключена. Жду речь с Mac..." : "Запусти запись в REC Personal на Mac — текст появится здесь."}</div>`;
+    list.scrollTop = 0;
     $("personalTranscriptMeta").textContent = "веб-режим · только просмотр";
     return;
   }
+  const previousScrollTop = list.scrollTop;
   const pinnedToBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
   list.innerHTML = items.map((item) => {
     const source = personalSource(item.source);
@@ -628,7 +630,11 @@ function renderPersonal() {
       <div class="personal-transcript-text">${escapeHtml(item.text)}</div>
     </article>`;
   }).join("");
-  if (pinnedToBottom) list.scrollTop = list.scrollHeight;
+  if (pinnedToBottom) {
+    list.scrollTop = list.scrollHeight;
+  } else {
+    list.scrollTop = previousScrollTop;
+  }
   const finals = items.filter((item) => item.final !== false).length;
   $("personalTranscriptMeta").textContent = `${finals} реплик · системный звук и микрофон`;
 }
