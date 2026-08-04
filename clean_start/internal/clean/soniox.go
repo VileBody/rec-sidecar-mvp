@@ -41,7 +41,10 @@ func (c *SonioxClient) ConnectSTTWithLanguage(ctx context.Context, language stri
 	if !c.Configured() {
 		return nil, errors.New("missing SONIOX_API_KEY")
 	}
-	dialer := websocket.Dialer{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
+	dialer := websocket.Dialer{
+		HandshakeTimeout: sttHandshakeTimeout,
+		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
+	}
 	conn, resp, err := dialer.DialContext(ctx, c.cfg.SonioxSTTWSURL, nil)
 	if err != nil {
 		status := ""

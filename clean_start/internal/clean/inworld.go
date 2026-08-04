@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	audioSampleRate = 16000
-	audioChannels   = 1
-	audioBitDepth   = 16
+	audioSampleRate     = 16000
+	audioChannels       = 1
+	audioBitDepth       = 16
+	sttHandshakeTimeout = 10 * time.Second
 )
 
 var ErrNoSpeech = errors.New("stt returned no speech")
@@ -192,7 +193,10 @@ func (c *InworldClient) ConnectSTTWithLanguage(ctx context.Context, language str
 	}
 	header := http.Header{}
 	header.Set("Authorization", inworldAuthorization(c.cfg.InworldAPIKey))
-	dialer := websocket.Dialer{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
+	dialer := websocket.Dialer{
+		HandshakeTimeout: sttHandshakeTimeout,
+		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
+	}
 	conn, resp, err := dialer.DialContext(ctx, c.cfg.InworldSTTWSURL, header)
 	if err != nil {
 		status := ""
@@ -202,24 +206,7 @@ func (c *InworldClient) ConnectSTTWithLanguage(ctx context.Context, language str
 		return nil, fmt.Errorf("inworld stt connect failed %s: %w", status, err)
 	}
 
-	config := map[string]any{
-		"transcribe_config": map[string]any{
-			"modelId":                  c.cfg.InworldSTTModel,
-			"audioEncoding":            "LINEAR16",
-			"sampleRateHertz":          audioSampleRate,
-			"numberOfChannels":         audioChannels,
-			"enableSpeakerDiarization": c.cfg.InworldSTTDiarize,
-		},
-	}
-	transcribeConfig := config["transcribe_config"].(map[string]any)
-	if language = strings.TrimSpace(language); language == "" {
-		language = strings.TrimSpace(c.cfg.InworldSTTLanguage)
-	}
-	if language != "" {
-		transcribeConfig["language"] = language
-	} else {
-		transcribeConfig["enableLanguageDetection"] = true
-	}
+	config := inworldTranscribeConfigMessage(c.cfg, language)
 	if err := conn.WriteJSON(config); err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -240,11 +227,7 @@ func (s *InworldSTTStream) SendAudio(pcm []byte) error {
 			copy(padded, chunk)
 			chunk = padded
 		}
-		if err := s.conn.WriteJSON(map[string]any{
-			"audio_chunk": map[string]any{
-				"content": base64.StdEncoding.EncodeToString(chunk),
-			},
-		}); err != nil {
+		if err := s.conn.WriteJSON(inworldAudioChunkMessage(chunk)); err != nil {
 			return err
 		}
 	}
@@ -252,7 +235,7 @@ func (s *InworldSTTStream) SendAudio(pcm []byte) error {
 }
 
 func (s *InworldSTTStream) SendEndTurn() error {
-	return s.conn.WriteJSON(map[string]any{"end_turn": map[string]any{}})
+	return s.conn.WriteJSON(inworldEndTurnMessage())
 }
 
 func (s *InworldSTTStream) ReadTranscript() (STTTranscript, error) {
@@ -272,8 +255,43 @@ func (s *InworldSTTStream) SetReadDeadline(deadline time.Time) error {
 }
 
 func (s *InworldSTTStream) Close() {
-	_ = s.conn.WriteJSON(map[string]any{"close_stream": map[string]any{}})
+	_ = s.conn.WriteJSON(inworldCloseStreamMessage())
 	_ = s.conn.Close()
+}
+
+func inworldTranscribeConfigMessage(cfg Config, language string) map[string]any {
+	transcribeConfig := map[string]any{
+		"modelId":                  cfg.InworldSTTModel,
+		"audioEncoding":            "LINEAR16",
+		"sampleRateHertz":          audioSampleRate,
+		"numberOfChannels":         audioChannels,
+		"enableSpeakerDiarization": cfg.InworldSTTDiarize,
+	}
+	if language = strings.TrimSpace(language); language == "" {
+		language = strings.TrimSpace(cfg.InworldSTTLanguage)
+	}
+	if language != "" {
+		transcribeConfig["language"] = language
+	} else {
+		transcribeConfig["enableLanguageDetection"] = true
+	}
+	return map[string]any{"transcribeConfig": transcribeConfig}
+}
+
+func inworldAudioChunkMessage(chunk []byte) map[string]any {
+	return map[string]any{
+		"audioChunk": map[string]any{
+			"content": base64.StdEncoding.EncodeToString(chunk),
+		},
+	}
+}
+
+func inworldEndTurnMessage() map[string]any {
+	return map[string]any{"endTurn": map[string]any{}}
+}
+
+func inworldCloseStreamMessage() map[string]any {
+	return map[string]any{"closeStream": map[string]any{}}
 }
 
 func parseInworldTranscript(raw []byte) (STTTranscript, error) {
