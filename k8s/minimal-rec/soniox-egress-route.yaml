@@ -1,5 +1,5 @@
 apiVersion: apps/v1
-kind: DaemonSet
+kind: Deployment
 metadata:
   name: soniox-egress-route
   namespace: rec-sidecar
@@ -7,6 +7,9 @@ metadata:
     app.kubernetes.io/name: soniox-egress-route
     app.kubernetes.io/part-of: rec-sidecar
 spec:
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: soniox-egress-route
