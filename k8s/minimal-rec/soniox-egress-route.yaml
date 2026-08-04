@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: soniox-egress-route
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: soniox-egress-route
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: soniox-egress-route
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: soniox-egress-route
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      hostNetwork: true
+      nodeSelector:
+        ai-native-paas.io/pool: ci
+      containers:
+        - name: route-keeper
+          image: cr-internal.twcstorage.ru/cilium/cilium:v1.20.0@sha256:383968cd5e8873f7976fa76aa6196045643558f4cc9518a207b9335cb24a0e93
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              previous=""
+              cleanup() {
+                if [ -n "$previous" ]; then
+                  ip route del "$previous/32" 2>/dev/null || true
+                fi
+              }
+              trap cleanup EXIT INT TERM
+              while true; do
+                current="$(getent ahostsv4 stt-rt.soniox.com | awk 'NR == 1 { print $1 }')"
+                if [ -n "$current" ]; then
+                  ip route replace "$current/32" via 192.168.73.7 dev eth1
+                  if [ -n "$previous" ] && [ "$previous" != "$current" ]; then
+                    ip route del "$previous/32" 2>/dev/null || true
+                  fi
+                  previous="$current"
+                fi
+                sleep 60
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add: ["NET_ADMIN"]
+              drop: ["ALL"]
+            runAsNonRoot: false
+            runAsUser: 0
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi

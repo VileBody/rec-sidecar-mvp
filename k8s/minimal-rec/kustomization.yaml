@@ -6,6 +6,7 @@ resources:
   - observability-env.yaml
   - edge-plumbing.yaml
   - edge-caddy-pvc.yaml
+  - soniox-egress-route.yaml
 patches:
   - path: delete-test-agent.yaml
   - path: runtime-patches.yaml

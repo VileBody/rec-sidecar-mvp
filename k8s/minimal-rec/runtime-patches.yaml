@@ -46,12 +46,6 @@ spec:
         - name: gateway
           image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:4c09ebbe96ffaaf83dbddb84ad08a1be57d82043
           imagePullPolicy: IfNotPresent
-          env:
-            # The CI worker can reach api.inworld.ai but currently blackholes
-            # TLS handshakes to Soniox's native endpoints. Inworld proxies the
-            # configured Soniox model and keeps live transcription available.
-            - name: CLEAN_START_STT_PROVIDER
-              value: inworld
 ---
 apiVersion: apps/v1
 kind: Deployment
