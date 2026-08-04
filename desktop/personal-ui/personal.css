@@ -1,0 +1,216 @@
+body.personal-desktop {
+  min-width: 0;
+}
+
+.personal-desktop .personal-app {
+  grid-template-columns: minmax(390px, 1.08fr) minmax(330px, .96fr) minmax(300px, .78fr);
+}
+
+.personal-main-col {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.personal-transcript-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+  overflow: hidden;
+}
+
+.personal-transcript-head,
+.personal-transcript-item-head,
+.personal-audio-primary,
+.personal-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.personal-transcript-head,
+.personal-audio-primary {
+  justify-content: space-between;
+}
+
+.personal-transcript-head .eyebrow,
+.auth-card > .eyebrow {
+  margin: 0;
+}
+
+.desktop-mode-badge {
+  flex: 0 0 auto;
+  border: 1px solid #c9ead8;
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.personal-transcript-list {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+.personal-transcript-item {
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  padding: 12px 13px;
+  background: var(--paper-soft);
+}
+
+.personal-transcript-item.system {
+  border-color: #cbdaf8;
+  background: #f4f7ff;
+}
+
+.personal-transcript-item.microphone {
+  border-color: #c9ead8;
+  background: #f1faf5;
+}
+
+.personal-transcript-item.partial {
+  opacity: .68;
+}
+
+.personal-transcript-item-head {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.personal-transcript-item-head time {
+  margin-left: auto;
+}
+
+.source-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.source-dot.system { background: var(--blue); }
+.source-dot.microphone { background: var(--green); }
+
+.personal-source-label {
+  color: var(--ink);
+  font-weight: 850;
+}
+
+.personal-transcript-text {
+  font-size: 15px;
+  line-height: 1.48;
+  white-space: pre-wrap;
+}
+
+.personal-audio-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.personal-record-button {
+  min-width: 148px;
+}
+
+.personal-record-button.recording {
+  border-color: var(--red);
+  background: var(--red);
+}
+
+.personal-lanes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.personal-lane {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 8px;
+  padding: 11px 12px;
+  text-align: left;
+  background: var(--paper-soft);
+}
+
+.personal-lane-label {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.personal-lane small {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--muted);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-filter-row {
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.personal-filter-row .sub {
+  margin: 0 0 0 auto;
+}
+
+.personal-log-path {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.desktop-loading #personalApp {
+  pointer-events: none;
+}
+
+@media (max-width: 1180px) {
+  .personal-desktop .personal-app {
+    grid-template-columns: minmax(0, 1fr);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .personal-empty-col { display: none; }
+  .personal-main-col { min-height: 0; }
+}
+
+@media (max-width: 760px) {
+  .personal-desktop .personal-app {
+    height: 100vh;
+    padding: 10px;
+  }
+
+  .personal-header .header-actions { justify-content: flex-start; }
+  .personal-lanes { grid-template-columns: 1fr; }
+  .personal-audio-primary { align-items: stretch; flex-direction: column; }
+  .personal-record-button { width: 100%; }
+  .personal-filter-row .sub { width: 100%; margin-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}

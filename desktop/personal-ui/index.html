@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>REC Personal</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="personal.css">
+</head>
+<body class="personal-desktop desktop-loading">
+  <div id="authPanel" class="auth-panel" hidden>
+    <section class="auth-card">
+      <p class="eyebrow">personal</p>
+      <h1>Войти в REC Personal</h1>
+      <p>Используй personal-аккаунт. Эта Mac-версия записывает системный звук и микрофон; веб с тем же аккаунтом только показывает транскрипт.</p>
+      <input id="authEmail" type="email" autocomplete="email" placeholder="email">
+      <input id="authPassword" type="password" autocomplete="current-password" placeholder="пароль">
+      <button id="authLogin" class="blue full">Войти</button>
+      <div id="authError" class="auth-error"></div>
+    </section>
+  </div>
+
+  <main id="personalApp" class="app personal-app">
+    <section class="column personal-main-col">
+      <header class="card header-card personal-header">
+        <div>
+          <h1 class="title">REC Personal</h1>
+          <div id="session" class="sub">подключаю сессию...</div>
+        </div>
+        <div class="header-actions">
+          <span id="streamStatus" class="status-pill warn">подключение</span>
+          <span id="authStatus" class="user-chip">проверяю доступ...</span>
+          <button id="logout" class="ghost">Выйти</button>
+        </div>
+      </header>
+
+      <section class="card section personal-transcript-card">
+        <div class="personal-transcript-head">
+          <div>
+            <p class="eyebrow">live-транскрибация</p>
+            <div id="transcriptMeta" class="sub">системный звук и микрофон</div>
+          </div>
+          <span class="desktop-mode-badge">desktop source</span>
+        </div>
+        <div id="transcript" class="personal-transcript-list">
+          <div class="empty">Нажми «Включить всё», чтобы начать транскрибацию.</div>
+        </div>
+      </section>
+
+      <footer class="card personal-audio-card">
+        <div class="personal-audio-primary">
+          <div>
+            <div class="title audio-title">Запись</div>
+            <div id="allStatus" class="sub">продолжится, когда окно свёрнуто</div>
+          </div>
+          <button id="allToggle" class="primary personal-record-button">Включить всё</button>
+        </div>
+        <div class="personal-lanes">
+          <button id="systemToggle" class="personal-lane" type="button">
+            <span class="personal-lane-label"><i class="source-dot system"></i>Системный звук</span>
+            <span id="systemPill" class="status-pill warn">ожидание</span>
+            <small id="systemStatus">звук приложений и звонка</small>
+          </button>
+          <button id="microphoneToggle" class="personal-lane" type="button">
+            <span class="personal-lane-label"><i class="source-dot microphone"></i>Микрофон</span>
+            <span id="microphonePill" class="status-pill warn">ожидание</span>
+            <small id="microphoneStatus">ваш голос</small>
+          </button>
+        </div>
+        <div class="personal-filter-row">
+          <label class="switch-label">
+            <input id="echoFilter" type="checkbox" checked>
+            <span>эхо-фильтр</span>
+          </label>
+          <button id="aec3Toggle" class="ghost" type="button">AEC3 выкл</button>
+          <span id="filterStatus" class="sub">cross-source echo suppression включён</span>
+        </div>
+        <div id="logPath" class="personal-log-path"></div>
+      </footer>
+    </section>
+    <section class="column personal-empty-col" aria-label="Пустая центральная колонка"></section>
+    <section class="column personal-empty-col" aria-label="Пустая правая колонка"></section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>

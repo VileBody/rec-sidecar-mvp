@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "REC Coach",
+  "version": "0.1.1",
+  "identifier": "ru.teamgenius.rec-coach",
+  "build": {
+    "beforeDevCommand": "./scripts/prepare-ui.sh",
+    "beforeBuildCommand": "./scripts/prepare-ui.sh",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "REC Coach",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 760,
+        "minHeight": 680,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost",
+      "capabilities": ["main", "reply"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "category": "Business",
+    "shortDescription": "Live sales call transcription and coaching",
+    "macOS": {
+      "minimumSystemVersion": "14.2",
+      "infoPlist": "Info.plist"
+    }
+  }
+}

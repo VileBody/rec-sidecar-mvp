@@ -101,12 +101,12 @@ func (w *SellerWorker) Run(ctx context.Context) error {
 			w.maybeStartFromClientText(handleCtx, event.SessionID, mem, data.Text, "final")
 		case EventSTTPartial:
 			data, _ := DecodeData[SpeechData](event)
-			if data.Role == "client" {
+			if shouldRunSalesCoachForSpeech(data) {
 				w.maybeStartFromClientText(handleCtx, event.SessionID, mem, data.Text, "partial")
 			}
 		case EventSTTFinal:
 			data, _ := DecodeData[SpeechData](event)
-			if data.Role == "client" {
+			if shouldRunSalesCoachForSpeech(data) {
 				w.maybeStartFromClientText(handleCtx, event.SessionID, mem, data.Text, "final")
 			}
 		case EventStageCandidate, EventStageCommitted:

@@ -47,6 +47,27 @@ func TestBrowserTranscriptRejectReasonForStudentRole(t *testing.T) {
 	}
 }
 
+func TestBrowserTranscriptAllowsShortLatinForPersonalAccount(t *testing.T) {
+	if got := browserTranscriptRejectReasonForAccountRole("Yes.", "client", UserRolePersonal); got != "" {
+		t.Fatalf("personal latin text rejected as %q", got)
+	}
+	if got := browserTranscriptRejectReasonForAccountRole("Yes.", "client", UserRoleSales); got != "no_cyrillic" {
+		t.Fatalf("sales latin text reject reason = %q, want no_cyrillic", got)
+	}
+}
+
+func TestPersonalSpeechDoesNotRunSalesCoach(t *testing.T) {
+	if shouldRunSalesCoachForSpeech(SpeechData{Role: "client", AccountRole: UserRolePersonal}) {
+		t.Fatal("personal speech must not trigger the sales coach")
+	}
+	if !shouldRunSalesCoachForSpeech(SpeechData{Role: "client", AccountRole: UserRoleSales}) {
+		t.Fatal("sales client speech must trigger the sales coach")
+	}
+	if shouldRunSalesCoachForSpeech(SpeechData{Role: "seller", AccountRole: UserRoleSales}) {
+		t.Fatal("seller speech must not trigger the sales coach")
+	}
+}
+
 func TestStudentCaptureSourcesMapToStudentRoles(t *testing.T) {
 	tests := []struct {
 		source string

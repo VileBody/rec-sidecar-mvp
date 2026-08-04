@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>REC Coach</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="desktop.css">
+  <script src="app.js" defer></script>
+</head>
+<body class="auth-locked">
+  <div id="authPanel" class="auth-panel">
+    <section class="auth-card">
+      <p class="eyebrow">доступ</p>
+      <h1>Войти в REC Coach</h1>
+      <p>Аккаунт нужен, чтобы параллельные звонки и сессии не смешивались между пользователями.</p>
+      <input id="authEmail" type="email" autocomplete="email" placeholder="email">
+      <input id="authPassword" type="password" autocomplete="current-password" placeholder="пароль, минимум 8 символов">
+      <input id="authRole" type="hidden" value="sales">
+      <div class="action-row">
+        <button id="authLogin" class="blue">Войти</button>
+        <button id="authRegister" class="ghost">Создать аккаунт</button>
+      </div>
+      <div id="authError" class="auth-error"></div>
+    </section>
+  </div>
+
+  <main id="salesApp" class="app">
+    <section class="column dialog-col">
+      <header class="card header-card">
+        <div>
+          <h1 class="title">REC Coach</h1>
+          <div id="session" class="sub">создаю сессию...</div>
+        </div>
+        <div class="header-actions">
+          <span id="authStatus" class="user-chip">проверяю доступ...</span>
+          <button id="newSession" class="ghost" disabled>Новый</button>
+          <button id="logout" class="ghost">Выйти</button>
+        </div>
+      </header>
+
+      <section class="card section">
+        <div id="dialog" class="dialog"></div>
+      </section>
+
+      <footer class="card audio-card">
+        <div class="audio-row">
+          <div>
+            <div class="title audio-title">Захват звонка</div>
+            <div id="bothStatus" class="sub">system audio = клиент, микрофон = мы</div>
+          </div>
+          <div class="capture-row">
+            <button id="bothToggle" class="blue">Включить всё</button>
+          </div>
+        </div>
+        <div class="audio-row">
+          <div>
+            <div class="title audio-title">Подавление эха</div>
+            <div id="echoStatus" class="sub">микрофон: AEC unknown · эхо подавляется</div>
+          </div>
+          <div class="capture-row">
+            <label class="switch-label">
+              <input id="echoSuppressionToggle" type="checkbox" checked>
+              <span>эхо-фильтр</span>
+            </label>
+            <button id="aec3Toggle" class="ghost" type="button">AEC3 выкл</button>
+            <button id="audioAdvancedToggle" class="ghost" type="button">Диагностика</button>
+          </div>
+        </div>
+        <div id="audioAdvancedPanel" class="audio-debug-panel" hidden>
+          <div class="audio-row">
+            <div>
+              <div class="title audio-title">Встроенный WebRTC AEC3</div>
+              <div id="aec3Status" class="sub">встроенный процессор выключен</div>
+            </div>
+          </div>
+          <div class="audio-row">
+            <div>
+              <div class="title audio-title">Кто я</div>
+              <div id="speakerMapStatus" class="sub">выбери свой голос после первых реплик</div>
+            </div>
+            <div class="capture-row">
+              <select id="sellerSpeaker">
+                <option value="">не выбрано</option>
+                <option value="1">speaker 1</option>
+                <option value="2">speaker 2</option>
+              </select>
+            </div>
+          </div>
+          <div id="echoDebugMetrics" class="audio-debug-metrics">echo stats: жду аудио</div>
+        </div>
+        <div class="audio-row">
+          <div>
+            <div class="title audio-title">Системный звук</div>
+            <div id="captureStatus" class="sub">нажми «Включить», чтобы захватить весь системный звук</div>
+          </div>
+          <div class="capture-row">
+            <span id="capturePill" class="status-pill warn">ожидание</span>
+            <button id="captureToggle" class="blue">Включить</button>
+          </div>
+        </div>
+        <div class="audio-row">
+          <div>
+            <div class="title audio-title">Микрофон</div>
+            <div id="micStatus" class="sub">тест выключен</div>
+          </div>
+          <div class="capture-row">
+            <span id="micPill" class="status-pill warn">ожидание</span>
+            <button id="micToggle" class="ghost">Проверить микрофон</button>
+          </div>
+        </div>
+      </footer>
+    </section>
+
+    <section class="column reply-col">
+      <header class="card header-card">
+        <div>
+          <h2 class="title">Предлагаемая реплика</h2>
+          <div id="replyMeta" class="sub">обновляется по речи клиента</div>
+        </div>
+        <div class="action-row">
+          <button id="openReplyPip" class="ghost">Окошко</button>
+          <button id="copyReply" class="blue" disabled>Скопировать</button>
+        </div>
+      </header>
+
+      <section class="card reply-main">
+        <div class="reply-auto-panel">
+          <p class="eyebrow reply-panel-title">следующая реплика</p>
+          <div id="replyText" class="reply-text muted">Жду речь клиента...</div>
+          <div id="pipelineStatus" class="pipeline-panel"></div>
+        </div>
+        <div class="reply-manual-panel">
+          <div class="manual-reply-head">
+            <div>
+              <p class="eyebrow">сгенерить реплику немедленно</p>
+              <div class="manual-reply-meta">прямой Gemini, без ZAI gate</div>
+            </div>
+            <button id="generateReply" class="reply-generate" type="button">
+              <span class="button-spinner" aria-hidden="true"></span>
+              <span id="generateReplyLabel">Сгенерить сейчас</span>
+            </button>
+          </div>
+          <div id="immediateReplyText" class="reply-immediate-text muted">Жду ручную генерацию...</div>
+          <div id="manualReplyStatus" class="manual-status"></div>
+        </div>
+      </section>
+    </section>
+
+    <section class="column assist-col">
+      <header class="card header-card">
+        <div>
+          <h2 class="title">Чат / Помоги</h2>
+          <div id="streamStatus" class="sub">offline</div>
+        </div>
+        <button id="help" class="primary">Помоги</button>
+      </header>
+      <section class="card section">
+        <p class="eyebrow">ответ помощника</p>
+        <div class="chat">
+          <div id="assistLog" class="chat-log">
+            <div class="empty">Нажми «Помоги» или задай уточнение ниже.</div>
+          </div>
+          <textarea id="assistQuestion" rows="4" placeholder="Уточнить у помощника: что сказать, как дожать, куда вести?"></textarea>
+          <div class="action-row">
+            <button id="askAssist" class="blue">Спросить</button>
+            <button id="clearAssist" class="ghost">Очистить</button>
+          </div>
+        </div>
+      </section>
+      <section class="card section stage-section">
+        <p class="eyebrow">стадия и метрики</p>
+        <div id="stage" class="stage-grid"></div>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+</body>
+</html>

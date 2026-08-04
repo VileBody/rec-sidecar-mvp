@@ -1,0 +1,5 @@
+dist/
+personal-dist/
+node_modules/
+test-results/
+src-tauri/target/

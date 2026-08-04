@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Предлагаемая реплика</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #222734;
+      --muted: #7b8496;
+      --line: #d9e0ec;
+      --paper: #ffffff;
+      --paper-soft: #f6f8fc;
+      --green: #1f7a4d;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--paper); color: var(--ink); }
+    body { display: grid; grid-template-rows: auto 1fr auto; }
+    header { padding: 18px 20px 8px; border-bottom: 1px solid var(--line); }
+    .eyebrow { color: #8a92a4; font-size: 12px; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
+    .meta { margin-top: 6px; color: var(--muted); font-size: 13px; font-weight: 650; }
+    #replyText { display: block; padding: 22px 24px; font-size: clamp(21px, 6.6vw, 34px); line-height: 1.2; font-weight: 760; overflow: auto; word-break: break-word; }
+    #replyText.muted { color: #9aa3b5; font-weight: 680; }
+    .rich-text { min-height: 100%; display: grid; align-content: center; gap: 10px; }
+    .rich-text p { margin: 0; }
+    .rich-text ul, .rich-text ol { margin: 0; padding-left: 1.25em; }
+    .rich-text li + li { margin-top: 6px; }
+    footer { display: flex; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--paper-soft); }
+    button { appearance: none; border: 1px solid #cfd8e8; border-radius: 14px; min-height: 58px; width: 100%; padding: 9px 16px; background: var(--green); color: white; font: inherit; font-size: 18px; font-weight: 800; cursor: pointer; }
+    button:disabled { background: #2f9a66; border-color: #7fc8a1; color: #eefbf3; }
+  </style>
+  <script src="pip.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">следующая реплика</div>
+    <div id="replyMeta" class="meta">обновляется по речи клиента</div>
+  </header>
+  <main id="replyText" class="muted"><div class="rich-text">Жду речь клиента...</div></main>
+  <footer><button id="generateReply">Сгенерить сейчас</button></footer>
+</body>
+</html>

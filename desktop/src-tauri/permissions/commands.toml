@@ -1,0 +1,23 @@
+[[permission]]
+identifier = "allow-rec-coach-commands"
+description = "Allow the main bundled window to use REC Coach application commands."
+commands.allow = [
+  "auth_status",
+  "auth_login",
+  "auth_register",
+  "auth_logout",
+  "session_resume_or_create",
+  "session_current",
+  "session_create",
+  "session_post_event",
+  "audio_start",
+  "audio_stop",
+  "audio_configure",
+  "diagnostics_log_path",
+  "reply_window_open"
+]
+
+[[permission]]
+identifier = "allow-reply-commands"
+description = "Allow the reply window to request a fresh manual suggestion."
+commands.allow = ["session_current", "session_post_event"]

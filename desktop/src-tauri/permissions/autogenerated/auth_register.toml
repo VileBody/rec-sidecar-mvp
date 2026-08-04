@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-auth-register"
+description = "Enables the auth_register command without any pre-configured scope."
+commands.allow = ["auth_register"]
+
+[[permission]]
+identifier = "deny-auth-register"
+description = "Denies the auth_register command without any pre-configured scope."
+commands.deny = ["auth_register"]
