@@ -152,5 +152,5 @@ spec:
         - name: ghcr-pull
       containers:
         - name: llm-helper
-          image: ghcr.io/vilebody/rec-sidecar-mvp:e96edcaef03d83fd7b3f762226ef1634203625b9
+          image: ghcr.io/vilebody/rec-sidecar-mvp:e8f6611743362d54a0aa7c65d944a567b4d592ae
           imagePullPolicy: IfNotPresent
