@@ -44,7 +44,7 @@ spec:
         ai-native-paas.io/pool: ci
       containers:
         - name: gateway
-          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:8393ef9ad3243a993bba8241e5a1c9167a744898
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:e96edcaef03d83fd7b3f762226ef1634203625b9
           imagePullPolicy: IfNotPresent
 ---
 apiVersion: apps/v1
@@ -59,7 +59,7 @@ spec:
         ai-native-paas.io/pool: ci
       containers:
         - name: seller-worker
-          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:8393ef9ad3243a993bba8241e5a1c9167a744898
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:e96edcaef03d83fd7b3f762226ef1634203625b9
           imagePullPolicy: IfNotPresent
 ---
 apiVersion: apps/v1
@@ -74,7 +74,7 @@ spec:
         ai-native-paas.io/pool: ci
       containers:
         - name: assist-worker
-          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:8393ef9ad3243a993bba8241e5a1c9167a744898
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:e96edcaef03d83fd7b3f762226ef1634203625b9
           imagePullPolicy: IfNotPresent
 ---
 apiVersion: apps/v1
@@ -89,7 +89,7 @@ spec:
         ai-native-paas.io/pool: ci
       containers:
         - name: stage-worker
-          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:8393ef9ad3243a993bba8241e5a1c9167a744898
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:e96edcaef03d83fd7b3f762226ef1634203625b9
           imagePullPolicy: IfNotPresent
 ---
 apiVersion: apps/v1
@@ -104,7 +104,7 @@ spec:
         ai-native-paas.io/pool: ci
       containers:
         - name: scorecard-worker
-          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:8393ef9ad3243a993bba8241e5a1c9167a744898
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:e96edcaef03d83fd7b3f762226ef1634203625b9
           imagePullPolicy: IfNotPresent
 ---
 apiVersion: apps/v1
@@ -119,7 +119,22 @@ spec:
         ai-native-paas.io/pool: ci
       containers:
         - name: student-worker
-          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:8393ef9ad3243a993bba8241e5a1c9167a744898
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:e96edcaef03d83fd7b3f762226ef1634203625b9
+          imagePullPolicy: IfNotPresent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clean-start-interview-worker
+  namespace: rec-sidecar
+spec:
+  template:
+    spec:
+      nodeSelector:
+        ai-native-paas.io/pool: ci
+      containers:
+        - name: interview-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:e96edcaef03d83fd7b3f762226ef1634203625b9
           imagePullPolicy: IfNotPresent
 ---
 apiVersion: apps/v1
@@ -134,8 +149,8 @@ spec:
         $patch: replace
         ai-native-paas.io/pool: ci
       imagePullSecrets:
-        - name: craas-ai-native-paas-registry
+        - name: ghcr-pull
       containers:
         - name: llm-helper
-          image: ai-native-paas-registry.registry.twcstorage.ru/mirror/legacy/rec-sidecar@sha256:ef34db730d0f581af1ce69d035b8f4d40d25ec194f553d9136da1ce94e88ab05
+          image: ghcr.io/vilebody/rec-sidecar-mvp:e96edcaef03d83fd7b3f762226ef1634203625b9
           imagePullPolicy: IfNotPresent
