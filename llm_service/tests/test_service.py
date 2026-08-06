@@ -128,6 +128,7 @@ def make_settings(**overrides):
         "openrouter_gemini_model": "google/gemini-3.5-flash",
         "openrouter_site_url": None,
         "openrouter_app_name": "rec-sidecar-test",
+        "openrouter_proxy": None,
     }
     values.update(overrides)
     return Settings(**values)
@@ -138,8 +139,25 @@ async def test_orchestrator_uses_cerebras_proxy_without_proxying_vertex():
     orchestrator = LlmOrchestrator(make_settings(outbound_proxy="http://proxy.test:8080"))
     try:
         assert orchestrator.cerebras.client is orchestrator.cerebras_client
+        assert orchestrator.openrouter.client is orchestrator.vertex_client
         assert orchestrator.vertex.client is orchestrator.vertex_client
         assert orchestrator.cerebras.client is not orchestrator.vertex.client
+    finally:
+        await orchestrator.aclose()
+
+
+@pytest.mark.anyio
+async def test_orchestrator_uses_dedicated_openrouter_proxy_client():
+    orchestrator = LlmOrchestrator(
+        make_settings(
+            outbound_proxy="http://cerebras-proxy.test:8080",
+            openrouter_proxy="socks5://openrouter-proxy.test:1080",
+        )
+    )
+    try:
+        assert orchestrator.openrouter.client is orchestrator.openrouter_client
+        assert orchestrator.openrouter.client is not orchestrator.vertex.client
+        assert orchestrator.openrouter.client is not orchestrator.cerebras.client
     finally:
         await orchestrator.aclose()
 
@@ -155,6 +173,7 @@ async def test_orchestrator_reuses_injected_mock_client():
             client,
         )
         assert orchestrator.cerebras.client is client
+        assert orchestrator.openrouter.client is client
         assert orchestrator.vertex.client is client
     finally:
         await client.aclose()

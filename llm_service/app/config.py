@@ -137,6 +137,7 @@ class Settings:
     openrouter_gemini_model: str
     openrouter_site_url: str | None
     openrouter_app_name: str | None
+    openrouter_proxy: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -263,6 +264,7 @@ class Settings:
             ),
             openrouter_site_url=env_var("OPENROUTER_SITE_URL"),
             openrouter_app_name=env_var("OPENROUTER_APP_NAME") or "rec-sidecar",
+            openrouter_proxy=env_var("OPENROUTER_PROXY") or env_var("OUTBOUND_PROXY"),
         )
 
     @property

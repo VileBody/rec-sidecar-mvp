@@ -118,9 +118,11 @@ class LlmOrchestrator:
         if client is not None:
             self.client = client
             self.cerebras_client = client
+            self.openrouter_client = client
             self.vertex_client = client
             self._owns_client = False
             self._owns_cerebras_client = False
+            self._owns_openrouter_client = False
         else:
             self.vertex_client = self._new_http_client(settings)
             if settings.outbound_proxy:
@@ -130,12 +132,20 @@ class LlmOrchestrator:
                 )
             else:
                 self.cerebras_client = self.vertex_client
+            if settings.openrouter_proxy:
+                self.openrouter_client = self._new_http_client(
+                    settings,
+                    proxy=settings.openrouter_proxy,
+                )
+            else:
+                self.openrouter_client = self.vertex_client
             self.client = self.vertex_client
             self._owns_client = True
             self._owns_cerebras_client = self.cerebras_client is not self.vertex_client
+            self._owns_openrouter_client = self.openrouter_client is not self.vertex_client
 
         self.cerebras = CerebrasClient(settings, self.cerebras_client)
-        self.openrouter = OpenRouterClient(settings, self.vertex_client)
+        self.openrouter = OpenRouterClient(settings, self.openrouter_client)
         self.vertex = VertexClient(settings, self.vertex_client)
         self._opener_cooldowns: dict[str, float] = {}
         self._live_intelligence_sessions: dict[str, VertexLiveIntelligenceSession] = {}
@@ -160,6 +170,8 @@ class LlmOrchestrator:
             self._live_intelligence_sessions.clear()
         if self._owns_cerebras_client:
             await self.cerebras_client.aclose()
+        if self._owns_openrouter_client:
+            await self.openrouter_client.aclose()
         if self._owns_client:
             await self.vertex_client.aclose()
 
