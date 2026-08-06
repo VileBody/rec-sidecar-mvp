@@ -29,14 +29,20 @@ spec:
           command: ["/bin/sh", "-ec"]
           args:
             - |
+              relay_ip="3.123.199.28"
               previous=""
               cleanup() {
                 if [ -n "$previous" ]; then
                   ip route del "$previous/32" 2>/dev/null || true
                 fi
+                ip route del "$relay_ip/32" 2>/dev/null || true
               }
               trap cleanup EXIT INT TERM
               while true; do
+                # The node's public path establishes TCP to AWS but drops
+                # response payloads. Keep the relay on the verified VPC NAT
+                # path, whose stable source is allowlisted by the AWS SG.
+                ip route replace "$relay_ip/32" via 192.168.73.7 dev eth1
                 current="$(getent ahostsv4 stt-rt.soniox.com | awk 'NR == 1 { print $1 }')"
                 if [ -n "$current" ]; then
                   ip route replace "$current/32" via 192.168.73.7 dev eth1
