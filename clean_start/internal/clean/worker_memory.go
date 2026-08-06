@@ -22,6 +22,7 @@ type sessionMemory struct {
 	StudentOriginals            []Message
 	StudentTranslations         []Message
 	StudentAnswers              []Message
+	InterviewQuestion           string
 }
 
 func (m *sessionMemory) contextBlock() string {
@@ -174,6 +175,51 @@ func (m *sessionMemory) studentContextBlock() string {
 	return b.String()
 }
 
+func (m *sessionMemory) interviewContextBlock() string {
+	var b strings.Builder
+	b.WriteString("Live job interview for Kirill Ergin. Interviewer speech comes from system audio; Kirill's speech comes from the microphone.\n\n--- Recent interview transcript ---\n")
+	start := len(m.Messages) - 48
+	if start < 0 {
+		start = 0
+	}
+	if start == len(m.Messages) {
+		b.WriteString("(interview transcript is empty)\n")
+	}
+	for _, msg := range m.Messages[start:] {
+		role := "Interviewer"
+		if msg.Role == "seller" {
+			role = "Kirill"
+		}
+		b.WriteString(role)
+		b.WriteString(": ")
+		b.WriteString(msg.Text)
+		b.WriteString("\n")
+	}
+	if question := strings.TrimSpace(m.InterviewQuestion); question != "" {
+		b.WriteString("\n--- Last identified interviewer question ---\n")
+		b.WriteString(question)
+		b.WriteString("\n")
+	}
+	return tailRunes(b.String(), 18000)
+}
+
+func (m *sessionMemory) latestInterviewerText() string {
+	for i := len(m.Messages) - 1; i >= 0; i-- {
+		if m.Messages[i].Role == "client" && strings.TrimSpace(m.Messages[i].Text) != "" {
+			return strings.TrimSpace(m.Messages[i].Text)
+		}
+	}
+	return ""
+}
+
+func tailRunes(text string, maxRunes int) string {
+	runes := []rune(text)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return text
+	}
+	return "[earlier transcript omitted]\n" + string(runes[len(runes)-maxRunes:])
+}
+
 type memoryBook struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionMemory
@@ -253,6 +299,10 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 	case EventStudentAnswerDone:
 		if data, err := DecodeData[StudentAnswerDoneData](event); err == nil && data.Text != "" {
 			mem.StudentAnswers = append(mem.StudentAnswers, Message{Role: "assistant", Text: data.Text, CreatedAt: event.CreatedAt})
+		}
+	case EventInterviewQuestionIdentified:
+		if data, err := DecodeData[InterviewQuestionIdentifiedData](event); err == nil && data.Question != "" {
+			mem.InterviewQuestion = data.Question
 		}
 	case EventStageCandidate, EventStageCommitted:
 		if data, err := DecodeData[StageData](event); err == nil && data.Stage != "" {

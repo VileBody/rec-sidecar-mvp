@@ -21,10 +21,11 @@ type LLMClient struct {
 }
 
 type streamEvent struct {
-	Event   string `json:"event"`
-	Text    string `json:"text,omitempty"`
-	Model   string `json:"model,omitempty"`
-	Message string `json:"message,omitempty"`
+	Event    string `json:"event"`
+	Text     string `json:"text,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Message  string `json:"message,omitempty"`
 }
 
 type helpOpenerResponse struct {
@@ -73,6 +74,13 @@ type studentTranslateResponse struct {
 	Text     string `json:"text"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+}
+
+type interviewQuestionResponse struct {
+	IsQuestion bool   `json:"is_question"`
+	Question   string `json:"question"`
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
 }
 
 func NewLLMClient(cfg Config, logger *slog.Logger) *LLMClient {
@@ -518,6 +526,102 @@ func (c *LLMClient) StreamStudentAnswer(ctx context.Context, sessionID, contextT
 		return strings.Join(parts, ""), model, nil
 	}
 	return strings.Join(parts, ""), model, nil
+}
+
+func (c *LLMClient) DetectInterviewQuestion(ctx context.Context, sessionID, contextText, candidate string) (interviewQuestionResponse, error) {
+	if c.cfg.LLMServiceURL == "" {
+		return interviewQuestionResponse{}, errors.New("interview question detector is not configured")
+	}
+	body := map[string]any{
+		"run_id":    sessionID,
+		"context":   contextText,
+		"candidate": strings.TrimSpace(candidate),
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.LLMServiceURL+"/v1/interview/question", bytes.NewReader(raw))
+	if err != nil {
+		return interviewQuestionResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
+	if c.cfg.LLMServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return interviewQuestionResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
+		return interviewQuestionResponse{}, fmt.Errorf("interview question detector http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var out interviewQuestionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return interviewQuestionResponse{}, err
+	}
+	out.Question = strings.TrimSpace(out.Question)
+	if out.IsQuestion && out.Question == "" {
+		out.Question = strings.TrimSpace(candidate)
+	}
+	return out, nil
+}
+
+func (c *LLMClient) StreamInterviewAnswer(ctx context.Context, sessionID, contextText, question, trigger string, onDelta func(string) error) (string, string, string, error) {
+	if c.cfg.LLMServiceURL == "" {
+		return "", "", "", errors.New("interview answer service is not configured")
+	}
+	body := map[string]any{
+		"id":       time.Now().UnixNano(),
+		"run_id":   sessionID,
+		"context":  contextText,
+		"question": strings.TrimSpace(question),
+		"trigger":  trigger,
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.LLMServiceURL+"/v1/interview/answer/stream", bytes.NewReader(raw))
+	if err != nil {
+		return "", "", "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	InjectTraceHeaders(ctx, req)
+	if c.cfg.LLMServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.LLMServiceToken)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
+		return "", "", "", fmt.Errorf("interview answer http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var parts []string
+	provider := ""
+	model := ""
+	if err := scanSSE(resp.Body, func(event streamEvent) error {
+		switch event.Event {
+		case "model":
+			provider = event.Provider
+			model = event.Model
+		case "delta":
+			if event.Text != "" {
+				parts = append(parts, event.Text)
+				return onDelta(event.Text)
+			}
+		case "error":
+			return errors.New(event.Message)
+		}
+		return nil
+	}); err != nil {
+		return strings.Join(parts, ""), provider, model, err
+	}
+	text := strings.TrimSpace(strings.Join(parts, ""))
+	if text == "" {
+		return "", provider, model, errors.New("empty interview answer stream")
+	}
+	return text, provider, model, nil
 }
 
 func scanSSE(reader io.Reader, handle func(streamEvent) error) error {

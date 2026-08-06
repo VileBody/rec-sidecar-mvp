@@ -9,6 +9,7 @@ One binary runs different roles:
 - `gateway`: external HTTP/SSE API and session reducer
 - `seller-worker`: listens to client partial/final events and streams seller deltas
 - `assist-worker`: manual "Помоги" stream with fast emotional opener + slow constructive step
+- `interview-worker`: detects personal interview questions and runs independent auto/help Gemini streams
 - `stage-worker`: listens to client partial/final events and publishes stage updates
 - `scorecard-worker`: listens to committed stages and publishes scorecard updates
 - `student-worker`: listens to student transcript events, translates them, and answers student chat/help

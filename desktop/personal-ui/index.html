@@ -78,8 +78,44 @@
         <div id="logPath" class="personal-log-path"></div>
       </footer>
     </section>
-    <section class="column personal-empty-col" aria-label="Пустая центральная колонка"></section>
-    <section class="column personal-empty-col" aria-label="Пустая правая колонка"></section>
+    <section class="column personal-prompter-col" aria-label="Автоматический суфлёр">
+      <header class="card header-card personal-pane-header">
+        <div>
+          <p class="eyebrow">live-суфлёр</p>
+          <div class="title personal-pane-title">Ответ на вопрос</div>
+        </div>
+        <span id="autoStatus" class="status-pill warn">жду вопрос</span>
+      </header>
+      <section class="card section personal-answer-card">
+        <div class="personal-question-block">
+          <p class="eyebrow">распознанный вопрос</p>
+          <div id="autoQuestion" class="personal-question">Вопрос появится после речи интервьюера.</div>
+        </div>
+        <div id="autoAnswer" class="personal-answer-text waiting" role="status" aria-live="polite">Суфлёр начнёт писать ответ автоматически.</div>
+        <div id="autoMeta" class="personal-answer-meta">Gemini · автоматически</div>
+      </section>
+    </section>
+
+    <section class="column personal-help-col" aria-label="Скорая помощь">
+      <header class="card header-card personal-pane-header personal-help-header">
+        <div>
+          <p class="eyebrow">скорая помощь</p>
+          <div class="title personal-pane-title">Независимый ответ</div>
+        </div>
+        <button id="helpGenerate" class="blue" type="button">Сгенерировать</button>
+      </header>
+      <section class="card section personal-answer-card personal-help-card">
+        <div class="personal-question-block">
+          <p class="eyebrow">вопрос для помощи</p>
+          <div id="helpQuestion" class="personal-question">Нажми кнопку — Gemini отдельно ответит по последнему вопросу.</div>
+        </div>
+        <div id="helpAnswer" class="personal-answer-text waiting" role="status" aria-live="polite">Здесь появится второй, независимый ответ.</div>
+        <div class="personal-answer-footer">
+          <span id="helpMeta" class="personal-answer-meta">Gemini · независимый ручной вызов</span>
+          <span id="helpStatus" class="status-pill warn">не запускался</span>
+        </div>
+      </section>
+    </section>
   </main>
 
   <div id="toast" class="toast"></div>

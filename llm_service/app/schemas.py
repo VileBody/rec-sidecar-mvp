@@ -145,6 +145,27 @@ class StudentAnswerRequest(StrictModel):
     question: str | None = None
 
 
+class InterviewQuestionRequest(StrictModel):
+    run_id: str
+    context: str
+    candidate: str
+
+
+class InterviewQuestionResponse(BaseModel):
+    is_question: bool
+    question: str = ""
+    provider: str
+    model: str
+
+
+class InterviewAnswerRequest(StrictModel):
+    id: int
+    run_id: str
+    context: str
+    question: str
+    trigger: Literal["auto", "help"] = "auto"
+
+
 class StageRequest(StrictModel):
     run_id: str
     context: str

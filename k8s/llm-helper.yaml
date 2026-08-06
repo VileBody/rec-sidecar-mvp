@@ -26,6 +26,9 @@ spec:
         app.kubernetes.io/name: llm-helper
         app.kubernetes.io/part-of: rec-sidecar
     spec:
+      # External model providers need the same verified egress route as STT.
+      nodeSelector:
+        kubernetes.io/hostname: worker-192.168.73.9
       imagePullSecrets:
         - name: ghcr-pull
       containers:
@@ -47,6 +50,10 @@ spec:
               value: /root/.config/gcloud/application_default_credentials.json
             - name: VERTEX_THINKING_LEVEL
               value: low
+            - name: OPENROUTER_GEMINI_MODEL
+              value: google/gemini-3.5-flash
+            - name: OPENROUTER_APP_NAME
+              value: rec-sidecar
             - name: OTEL_SERVICE_NAME
               value: llm-sidecar
           volumeMounts:

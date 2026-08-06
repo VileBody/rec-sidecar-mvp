@@ -10,6 +10,10 @@ body.personal-desktop {
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
+.personal-help-header button {
+  min-width: 136px;
+}
+
 .personal-transcript-card {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -187,21 +191,30 @@ body.desktop-loading #personalApp {
 @media (max-width: 1180px) {
   .personal-desktop .personal-app {
     grid-template-columns: minmax(0, 1fr);
-    height: 100vh;
-    overflow: hidden;
+    height: auto;
+    min-height: 100vh;
+    overflow: auto;
+    align-content: start;
   }
 
-  .personal-empty-col { display: none; }
-  .personal-main-col { min-height: 0; }
+  .personal-main-col,
+  .personal-prompter-col,
+  .personal-help-col { min-height: 640px; }
 }
 
 @media (max-width: 760px) {
   .personal-desktop .personal-app {
-    height: 100vh;
+    height: auto;
+    min-height: 100vh;
     padding: 10px;
   }
 
   .personal-header .header-actions { justify-content: flex-start; }
+  .personal-main-col,
+  .personal-prompter-col,
+  .personal-help-col { min-height: 0; }
+  .personal-help-header { align-items: center; flex-direction: row; }
+  .personal-help-header button { width: auto; }
   .personal-lanes { grid-template-columns: 1fr; }
   .personal-audio-primary { align-items: stretch; flex-direction: column; }
   .personal-record-button { width: 100%; }

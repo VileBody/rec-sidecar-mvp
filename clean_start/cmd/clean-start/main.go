@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	roleFlag := flag.String("role", "", "gateway, seller-worker, assist-worker, stage-worker, scorecard-worker, student-worker, test-agent, or all")
+	roleFlag := flag.String("role", "", "gateway, seller-worker, assist-worker, interview-worker, stage-worker, scorecard-worker, student-worker, test-agent, or all")
 	flag.Parse()
 
 	cfg := clean.ConfigFromEnv()
@@ -80,6 +80,12 @@ func main() {
 		} else {
 			runners = append(runners, clean.NewIdleRunner(cfg.Role, logger))
 		}
+	case "interview-worker":
+		if cfg.CoachEnabled {
+			runners = append(runners, clean.NewInterviewWorker(cfg, nc, llm, logger))
+		} else {
+			runners = append(runners, clean.NewIdleRunner(cfg.Role, logger))
+		}
 	case "stage-worker":
 		if cfg.CoachEnabled {
 			runners = append(runners, clean.NewStageWorker(cfg, nc, llm, logger))
@@ -103,6 +109,7 @@ func main() {
 				runners,
 				clean.NewSellerWorker(cfg, nc, llm, logger),
 				clean.NewAssistWorker(cfg, nc, llm, logger),
+				clean.NewInterviewWorker(cfg, nc, llm, logger),
 				clean.NewStageWorker(cfg, nc, llm, logger),
 				clean.NewScorecardWorker(cfg, nc, logger),
 			)

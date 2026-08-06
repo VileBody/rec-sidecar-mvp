@@ -171,6 +171,35 @@ func TestPersonalSessionNeverStartsSalesCoach(t *testing.T) {
 	}
 }
 
+func TestPersonalSessionAcceptsInterviewHelpRequest(t *testing.T) {
+	g := newAuthTestGateway()
+	g.cfg.CoachEnabled = true
+	registerReq := httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(`{"email":"personal-help@example.com","password":"password123","role":"personal"}`))
+	registerRec := httptest.NewRecorder()
+	g.register(registerRec, registerReq)
+	registered := authJSON[AuthResponse](t, registerRec)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"auto_opener":false}`))
+	createReq.Header.Set("Authorization", "Bearer "+registered.Token)
+	createRec := httptest.NewRecorder()
+	g.createSession(createRec, createReq)
+	session := authJSON[CreateSessionResponse](t, createRec)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+session.SessionID+"/events", strings.NewReader(`{"type":"interview.help.request","trigger":"button"}`))
+	req.SetPathValue("session_id", session.SessionID)
+	req.Header.Set("Authorization", "Bearer "+registered.Token)
+	rec := httptest.NewRecorder()
+	g.postEvent(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("post help status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	state, ok := g.store.Get(session.SessionID)
+	if !ok || len(state.Events) != 2 || state.Events[1].Type != EventInterviewHelpRequest {
+		t.Fatalf("interview help event missing: %#v", state.Events)
+	}
+}
+
 func TestAuthRecognizesAdminRole(t *testing.T) {
 	role, err := normalizeUserRole(" Admin ")
 	if err != nil {

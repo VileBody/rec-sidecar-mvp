@@ -41,6 +41,8 @@ from llm_service.app.prompts import (
 )
 from llm_service.app.providers import (
     CerebrasClient,
+    OpenRouterClient,
+    ProviderError,
     cerebras_pivot_gate_response_format,
     cerebras_ready_gate_response_format,
     cerebras_stage_response_format,
@@ -60,11 +62,15 @@ from llm_service.app.scorecard import (
 )
 from llm_service.app.schemas import (
     HelpRequest,
+    InterviewAnswerRequest,
+    InterviewQuestionRequest,
     LiveRequest,
     StageRequest,
     StudentAnswerRequest,
     StudentTranslateRequest,
 )
+
+
 from llm_service.app.stage_assets import (
     KNOWN_STAGES,
     STAGE_AGENDA_BY_TAG,
@@ -117,6 +123,11 @@ def make_settings(**overrides):
         "vertex_quota_project_id": None,
         "vertex_thinking_level": "low",
         "vertex_scorecard_thinking_level": "minimal",
+        "openrouter_api_key": None,
+        "openrouter_api_base": "https://openrouter.test/api/v1",
+        "openrouter_gemini_model": "google/gemini-3.5-flash",
+        "openrouter_site_url": None,
+        "openrouter_app_name": "rec-sidecar-test",
     }
     values.update(overrides)
     return Settings(**values)
@@ -913,6 +924,55 @@ async def test_cerebras_prompt_cache_retry():
 
 
 @pytest.mark.anyio
+async def test_openrouter_structured_uses_chat_completions_contract():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append((request, payload))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"action":"suggest","text":"Готовая реплика."}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        openrouter = OpenRouterClient(
+            make_settings(openrouter_api_key="or-key"),
+            client,
+        )
+
+        response = await openrouter.generate_structured(
+            model="google/gemini-3.5-flash",
+            system_prompt="system",
+            user_content="user",
+            temperature=0.35,
+        )
+
+        assert response == {"action": "suggest", "text": "Готовая реплика."}
+        request, payload = calls[0]
+        assert str(request.url) == "https://openrouter.test/api/v1/chat/completions"
+        assert request.headers["authorization"] == "Bearer or-key"
+        assert request.headers["x-title"] == "rec-sidecar-test"
+        assert payload["model"] == "google/gemini-3.5-flash"
+        assert payload["messages"] == [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "user"},
+        ]
+        assert payload["response_format"]["type"] == "json_schema"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
 async def test_live_uses_zai_validator_to_keep_current_reply():
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
     try:
@@ -975,15 +1035,19 @@ async def test_live_uses_gemini_generator_when_zai_marks_reply_stale():
             validator_calls.append(request.current_text)
             return {"action": "suggest", "text": ""}
 
-        async def fake_generator(request: LiveRequest) -> dict[str, str]:
+        async def fake_generator(request: LiveRequest) -> tuple[str, str, dict[str, str]]:
             generator_calls.append(request.current_text)
-            return {
-                "action": "suggest",
-                "text": "Что для вас должно измениться в ближайшие три месяца, чтобы вы назвали это реальным сдвигом?",
-            }
+            return (
+                "vertex",
+                "gemini-3.5-flash",
+                {
+                    "action": "suggest",
+                    "text": "Что для вас должно измениться в ближайшие три месяца, чтобы вы назвали это реальным сдвигом?",
+                },
+            )
 
         orchestrator._cerebras_live_validator = fake_validator
-        orchestrator._vertex_live_generate = fake_generator
+        orchestrator._gemini_live_generate = fake_generator
 
         response = await orchestrator.live(
             LiveRequest(
@@ -1021,15 +1085,19 @@ async def test_live_force_skips_zai_validator_even_with_current_reply():
             validator_calls.append(request.current_text)
             return {"action": "skip", "text": ""}
 
-        async def fake_generator(request: LiveRequest) -> dict[str, str]:
+        async def fake_generator(request: LiveRequest) -> tuple[str, str, dict[str, str]]:
             generator_calls.append(request.current_text)
-            return {
-                "action": "suggest",
-                "text": "Давайте коротко зафиксируем главный вопрос и вернем разговор к задаче.",
-            }
+            return (
+                "vertex",
+                "gemini-3.5-flash",
+                {
+                    "action": "suggest",
+                    "text": "Давайте коротко зафиксируем главный вопрос и вернем разговор к задаче.",
+                },
+            )
 
         orchestrator._cerebras_live_validator = fake_validator
-        orchestrator._vertex_live_generate = fake_generator
+        orchestrator._gemini_live_generate = fake_generator
 
         response = await orchestrator.live(
             LiveRequest(
@@ -1046,6 +1114,107 @@ async def test_live_force_skips_zai_validator_even_with_current_reply():
         assert response.text.startswith("Давайте коротко")
         assert validator_calls == []
         assert generator_calls == ["Старая авто-подсказка еще висит на экране."]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_live_parallel_uses_ready_fallback_after_primary_error():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                vertex_project="project-id",
+                vertex_access_token="token",
+            ),
+            client,
+        )
+        fallback_started = asyncio.Event()
+        allow_primary_error = asyncio.Event()
+
+        async def fake_primary(
+            _request: LiveRequest,
+        ) -> tuple[str, str, dict[str, str]]:
+            await fallback_started.wait()
+            allow_primary_error.set()
+            raise ProviderError("vertex", "403 billing disabled", status_code=403)
+
+        async def fake_fallback(
+            _request: LiveRequest,
+        ) -> tuple[str, str, dict[str, str]]:
+            fallback_started.set()
+            await allow_primary_error.wait()
+            return (
+                "cerebras",
+                "zai-glm-4.7",
+                {"action": "suggest", "text": "Задам первый конкретный вопрос по сути."},
+            )
+
+        orchestrator._gemini_live_generate = fake_primary
+        orchestrator._cerebras_live_generate = fake_fallback
+
+        response = await orchestrator.live(
+            LiveRequest(
+                run_id="run",
+                content="Клиент: да, слушаю, задавайте.",
+                current_text="",
+            )
+        )
+
+        assert response.provider == "cerebras"
+        assert response.model == "zai-glm-4.7"
+        assert response.text == "Задам первый конкретный вопрос по сути."
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_live_parallel_waits_for_primary_even_when_fallback_finishes_first():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                vertex_project="project-id",
+                vertex_access_token="token",
+            ),
+            client,
+        )
+        fallback_done = asyncio.Event()
+
+        async def fake_primary(
+            _request: LiveRequest,
+        ) -> tuple[str, str, dict[str, str]]:
+            await fallback_done.wait()
+            return (
+                "vertex",
+                "gemini-3.5-flash",
+                {"action": "suggest", "text": "Primary ответ, которого нужно дождаться."},
+            )
+
+        async def fake_fallback(
+            _request: LiveRequest,
+        ) -> tuple[str, str, dict[str, str]]:
+            fallback_done.set()
+            return (
+                "cerebras",
+                "zai-glm-4.7",
+                {"action": "suggest", "text": "Быстрый fallback не должен победить."},
+            )
+
+        orchestrator._gemini_live_generate = fake_primary
+        orchestrator._cerebras_live_generate = fake_fallback
+
+        response = await orchestrator.live(
+            LiveRequest(
+                run_id="run",
+                content="Клиент: да, слушаю, задавайте.",
+                current_text="",
+            )
+        )
+
+        assert response.provider == "vertex"
+        assert response.model == "gemini-3.5-flash"
+        assert response.text == "Primary ответ, которого нужно дождаться."
     finally:
         await client.aclose()
 
@@ -1793,7 +1962,7 @@ async def test_help_constructive_stream_sends_temperature_one():
         ]
 
         assert frames == [
-            {"event": "model", "model": "gemini-3.5-flash"},
+            {"event": "model", "model": "gemini-3.5-flash", "provider": "vertex"},
             {"event": "delta", "text": "next step"},
             {"event": "done"},
         ]
@@ -2008,3 +2177,79 @@ def test_normalize_otlp_grpc_endpoint_accepts_url_or_hostport():
     assert normalize_otlp_grpc_endpoint("otel-collector:4317") == "otel-collector:4317"
     assert normalize_otlp_grpc_endpoint("  http://127.0.0.1:4317  ") == "127.0.0.1:4317"
     assert normalize_otlp_grpc_endpoint("") == ""
+
+
+@pytest.mark.anyio
+async def test_interview_question_and_answer_use_independent_gemini_calls():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        if payload["stream"]:
+            return httpx.Response(
+                200,
+                text=(
+                    'data: {"choices":[{"delta":{"content":"The most relevant "}}]}\n\n'
+                    'data: {"choices":[{"delta":{"content":"example is Bondora."}}]}\n\n'
+                    "data: [DONE]\n\n"
+                ),
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_question":true,"question":"Tell me about your most relevant project."}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                cerebras_api_key=None,
+                vertex_project=None,
+                vertex_access_token=None,
+                openrouter_api_key="or-key",
+            ),
+            client,
+        )
+        detected = await orchestrator.interview_question(
+            InterviewQuestionRequest(
+                run_id="run",
+                context="Interviewer: Tell me about your most relevant project.",
+                candidate="Tell me about your most relevant project.",
+            )
+        )
+        frames = [
+            json.loads(frame.decode("utf-8").removeprefix("data:").strip())
+            async for frame in orchestrator.interview_answer_stream(
+                InterviewAnswerRequest(
+                    id=1,
+                    run_id="run",
+                    context="Interviewer: Tell me about your most relevant project.",
+                    question=detected.question,
+                    trigger="help",
+                )
+            )
+        ]
+
+        assert detected.is_question is True
+        assert detected.provider == "openrouter"
+        assert [frame["event"] for frame in frames] == ["model", "delta", "delta", "done"]
+        assert (
+            "".join(frame.get("text", "") for frame in frames)
+            == "The most relevant example is Bondora."
+        )
+        detector_prompt = calls[0]["messages"][0]["content"]
+        answer_prompt = calls[1]["messages"][0]["content"]
+        assert "identify the latest interviewer question" in detector_prompt
+        assert "Senior AI/ML Engineer" in answer_prompt
+        assert "INDEPENDENT EMERGENCY COPILOT OVERRIDE" in answer_prompt
+    finally:
+        await client.aclose()

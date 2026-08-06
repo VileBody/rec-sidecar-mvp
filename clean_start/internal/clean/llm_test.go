@@ -116,3 +116,68 @@ func TestScanSSECombinesMultilineData(t *testing.T) {
 		t.Fatalf("event = %#v", got)
 	}
 }
+
+func TestDetectInterviewQuestionUsesDedicatedEndpoint(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/interview/question" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(w, http.StatusOK, interviewQuestionResponse{
+			IsQuestion: true,
+			Question:   "Tell me about yourself.",
+			Provider:   "openrouter",
+			Model:      "google/gemini-3.5-flash",
+		})
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(Config{LLMServiceURL: server.URL}, slog.Default())
+	out, err := client.DetectInterviewQuestion(context.Background(), "sess-interview", "Interviewer: Tell me about yourself", "Tell me about yourself")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.IsQuestion || out.Question != "Tell me about yourself." || out.Provider != "openrouter" {
+		t.Fatalf("response = %#v", out)
+	}
+	if got["run_id"] != "sess-interview" || got["candidate"] != "Tell me about yourself" {
+		t.Fatalf("request = %#v", got)
+	}
+}
+
+func TestStreamInterviewAnswerKeepsTriggerAndProvider(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/interview/answer/stream" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"event\":\"model\",\"provider\":\"openrouter\",\"model\":\"google/gemini-3.5-flash\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"event\":\"delta\",\"text\":\"The most relevant \"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"event\":\"delta\",\"text\":\"example is Bondora.\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"event\":\"done\"}\n\n"))
+	}))
+	defer server.Close()
+
+	var deltas []string
+	client := NewLLMClient(Config{LLMServiceURL: server.URL}, slog.Default())
+	text, provider, model, err := client.StreamInterviewAnswer(context.Background(), "sess-interview", "context", "Tell me about Bondora", "help", func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "The most relevant example is Bondora." || provider != "openrouter" || model != "google/gemini-3.5-flash" {
+		t.Fatalf("stream result text=%q provider=%q model=%q", text, provider, model)
+	}
+	if got["trigger"] != "help" || got["question"] != "Tell me about Bondora" || len(deltas) != 2 {
+		t.Fatalf("request=%#v deltas=%#v", got, deltas)
+	}
+}

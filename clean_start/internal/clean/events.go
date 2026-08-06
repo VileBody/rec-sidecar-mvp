@@ -25,6 +25,16 @@ const (
 	EventAssistDelta                   = "assist.delta"
 	EventAssistDone                    = "assist.done"
 	EventAssistCanceled                = "assist.canceled"
+	EventInterviewAutoStarted          = "interview.auto.started"
+	EventInterviewQuestionIdentified   = "interview.question.identified"
+	EventInterviewAutoDelta            = "interview.auto.delta"
+	EventInterviewAutoDone             = "interview.auto.done"
+	EventInterviewAutoCanceled         = "interview.auto.canceled"
+	EventInterviewHelpRequest          = "interview.help.request"
+	EventInterviewHelpStarted          = "interview.help.started"
+	EventInterviewHelpDelta            = "interview.help.delta"
+	EventInterviewHelpDone             = "interview.help.done"
+	EventInterviewHelpCanceled         = "interview.help.canceled"
 	EventStudentInput                  = "student.input"
 	EventStudentDirection              = "student.direction"
 	EventStudentTranslateStarted       = "student.translate.started"
@@ -98,6 +108,42 @@ type SellerRequestData struct {
 type AssistRequestData struct {
 	Trigger string `json:"trigger"`
 	Text    string `json:"text,omitempty"`
+}
+
+type InterviewHelpRequestData struct {
+	Trigger string `json:"trigger"`
+	Text    string `json:"text,omitempty"`
+}
+
+type InterviewStartedData struct {
+	GenerationID string `json:"generation_id"`
+	Trigger      string `json:"trigger"`
+	Question     string `json:"question,omitempty"`
+}
+
+type InterviewQuestionIdentifiedData struct {
+	GenerationID string `json:"generation_id"`
+	Question     string `json:"question"`
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+}
+
+type InterviewDeltaData struct {
+	GenerationID string `json:"generation_id"`
+	Delta        string `json:"delta"`
+}
+
+type InterviewDoneData struct {
+	GenerationID string `json:"generation_id"`
+	Question     string `json:"question"`
+	Text         string `json:"text"`
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+}
+
+type InterviewCanceledData struct {
+	GenerationID string `json:"generation_id"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 type StudentInputData struct {

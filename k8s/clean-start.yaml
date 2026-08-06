@@ -494,6 +494,59 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  name: clean-start-interview-worker
+  namespace: rec-sidecar
+  labels:
+    app.kubernetes.io/name: clean-start-interview-worker
+    app.kubernetes.io/part-of: rec-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clean-start-interview-worker
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
+      labels:
+        app.kubernetes.io/name: clean-start-interview-worker
+        app.kubernetes.io/part-of: rec-sidecar
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: interview-worker
+          image: ghcr.io/vilebody/rec-sidecar-mvp-clean-start:latest
+          imagePullPolicy: Always
+          args: ["--role", "interview-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: clean-start-observability-env
+            - secretRef:
+                name: llm-helper-env
+          env:
+            - name: NATS_URL
+              value: nats://clean-start-nats:4222
+            - name: COACH_LLM_SERVICE_URL
+              value: http://llm-helper
+            - name: OTEL_SERVICE_NAME
+              value: clean-start-interview-worker
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
   name: clean-start-stage-worker
   namespace: rec-sidecar
   labels:

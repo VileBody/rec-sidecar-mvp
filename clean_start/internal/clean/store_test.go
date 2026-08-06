@@ -117,6 +117,37 @@ func TestStoreApplySeparatesImmediateSellerDraft(t *testing.T) {
 	}
 }
 
+func TestStoreApplyKeepsInterviewAutoAndHelpIndependent(t *testing.T) {
+	store := NewStore()
+	sessionID := "sess-interview-independent"
+	store.Apply(NewEvent(sessionID, EventSessionCreated, "test", map[string]any{}))
+	store.Apply(NewEvent(sessionID, EventInterviewAutoStarted, "test", InterviewStartedData{GenerationID: "auto-1", Trigger: "question", Question: "Tell me about yourself."}))
+	store.Apply(NewEvent(sessionID, EventInterviewQuestionIdentified, "test", InterviewQuestionIdentifiedData{GenerationID: "auto-1", Question: "Tell me about yourself.", Provider: "openrouter", Model: "gemini"}))
+	store.Apply(NewEvent(sessionID, EventInterviewHelpStarted, "test", InterviewStartedData{GenerationID: "help-1", Trigger: "button", Question: "Tell me about yourself."}))
+	store.Apply(NewEvent(sessionID, EventInterviewAutoDelta, "test", InterviewDeltaData{GenerationID: "auto-1", Delta: "Auto answer"}))
+	store.Apply(NewEvent(sessionID, EventInterviewHelpDelta, "test", InterviewDeltaData{GenerationID: "help-1", Delta: "Help answer"}))
+
+	state := store.Apply(NewEvent(sessionID, EventInterviewAutoDone, "test", InterviewDoneData{GenerationID: "auto-1", Question: "Tell me about yourself.", Text: "Auto answer done", Provider: "openrouter", Model: "gemini"}))
+	if state.Interview.Auto.Text != "Auto answer done" || state.Interview.Auto.Streaming {
+		t.Fatalf("auto lane = %#v", state.Interview.Auto)
+	}
+	if state.Interview.Help.Text != "Help answer" || !state.Interview.Help.Streaming {
+		t.Fatalf("help lane should keep streaming independently: %#v", state.Interview.Help)
+	}
+
+	state = store.Apply(NewEvent(sessionID, EventInterviewHelpDone, "test", InterviewDoneData{GenerationID: "help-1", Question: "Tell me about yourself.", Text: "Help answer done", Provider: "openrouter", Model: "gemini"}))
+	if state.Interview.Help.Text != "Help answer done" || state.Interview.Help.Streaming {
+		t.Fatalf("help lane = %#v", state.Interview.Help)
+	}
+	if state.Interview.Auto.Text != "Auto answer done" {
+		t.Fatalf("help lane overwrote auto answer: %#v", state.Interview)
+	}
+	state = store.Apply(NewEvent(sessionID, EventError, "test", ErrorData{Where: "interview.help", Message: "gemini timeout"}))
+	if state.Interview.Help.Status != "error" || state.Interview.Help.Error != "gemini timeout" || state.Interview.Auto.Text != "Auto answer done" {
+		t.Fatalf("lane error should remain isolated: %#v", state.Interview)
+	}
+}
+
 func TestStoreApplyStudentTranslationAndAnswer(t *testing.T) {
 	store := NewStore()
 	sessionID := "sess-student"

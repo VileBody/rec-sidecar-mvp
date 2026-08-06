@@ -617,6 +617,186 @@ class CerebrasClient:
             raise ProviderError("cerebras", f"{exc.__class__.__name__}: {exc}") from exc
 
 
+class OpenRouterClient:
+    def __init__(self, settings: Settings, client: httpx.AsyncClient):
+        self.settings = settings
+        self.client = client
+
+    def configured(self) -> bool:
+        return self.settings.openrouter_configured
+
+    def _headers(self) -> dict[str, str]:
+        if not self.settings.openrouter_api_key:
+            raise ProviderError("openrouter", "missing OPENROUTER_API_KEY")
+        headers = {
+            "Authorization": f"Bearer {self.settings.openrouter_api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.settings.openrouter_site_url:
+            headers["HTTP-Referer"] = self.settings.openrouter_site_url
+        if self.settings.openrouter_app_name:
+            headers["X-Title"] = self.settings.openrouter_app_name
+        return headers
+
+    def _body(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+        stream: bool,
+        max_tokens: int | None = None,
+        response_format: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": temperature,
+            "stream": stream,
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        if response_format:
+            body["response_format"] = response_format
+        return body
+
+    async def generate_structured(
+        self,
+        *,
+        model: str | None = None,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+    ) -> dict[str, str]:
+        text = await self.text(
+            model=model or self.settings.openrouter_gemini_model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+            response_format=cerebras_structured_response_format(),
+        )
+        return parse_json_suggestion(text)
+
+    async def generate_stage_detection(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+        thinking_level: str | None = None,
+    ) -> str:
+        return await self.text(
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+            max_tokens=96,
+        )
+
+    async def generate_scorecard(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+        thinking_level: str | None = None,
+    ) -> str:
+        return await self.text(
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+            max_tokens=2048,
+        )
+
+    async def text(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+        max_tokens: int | None = None,
+        response_format: dict[str, Any] | None = None,
+    ) -> str:
+        body = self._body(
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+            stream=False,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+        try:
+            with provider_timer("openrouter", model, "generic"):
+                response = await self.client.post(
+                    f"{self.settings.openrouter_api_base.rstrip('/')}/chat/completions",
+                    headers=self._headers(),
+                    json=body,
+                )
+        except httpx.HTTPError as exc:
+            raise ProviderError("openrouter", f"{exc.__class__.__name__}: {exc}") from exc
+        if not response.is_success:
+            raise ProviderError("openrouter", response.text, response.status_code)
+        text = response_content(response.json())
+        if not text or not text.strip():
+            raise ProviderError("openrouter", f"empty text response: {compact_json(response.json())}")
+        return text
+
+    async def stream_text(
+        self,
+        *,
+        model: str | None = None,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+        thinking_level: str | None = None,
+    ) -> AsyncIterator[str]:
+        effective_model = model or self.settings.openrouter_gemini_model
+        body = self._body(
+            model=effective_model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+            stream=True,
+        )
+        try:
+            with provider_timer("openrouter", effective_model, "stream"):
+                async with self.client.stream(
+                    "POST",
+                    f"{self.settings.openrouter_api_base.rstrip('/')}/chat/completions",
+                    headers=self._headers(),
+                    json=body,
+                ) as response:
+                    if not response.is_success:
+                        text = (await response.aread()).decode("utf-8", errors="replace")
+                        raise ProviderError("openrouter", text, response.status_code)
+
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line.removeprefix("data:").strip()
+                        if data == "[DONE]":
+                            return
+                        try:
+                            value = json.loads(data)
+                        except ValueError:
+                            continue
+                        for part in stream_content_parts(value):
+                            if part:
+                                yield part
+        except httpx.HTTPError as exc:
+            raise ProviderError("openrouter", f"{exc.__class__.__name__}: {exc}") from exc
+
+
 class VertexClient:
     def __init__(self, settings: Settings, client: httpx.AsyncClient):
         self.settings = settings

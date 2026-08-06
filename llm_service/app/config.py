@@ -27,6 +27,7 @@ DEFAULT_VERTEX_THINKING_LEVEL = "low"
 DEFAULT_VERTEX_SCORECARD_THINKING_LEVEL = "minimal"
 DEFAULT_INTELLIGENCE_TRANSPORT = "rest"
 DEFAULT_VERTEX_LIVE_TIMEOUT_SECS = 20
+DEFAULT_OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 
@@ -83,6 +84,13 @@ def default_vertex_api_base(location: str) -> str:
     return f"https://{location}-aiplatform.googleapis.com"
 
 
+def default_openrouter_model(vertex_model: str) -> str:
+    model = vertex_model.strip()
+    if "/" in model:
+        return model
+    return f"google/{model}"
+
+
 @dataclass(frozen=True)
 class Settings:
     provider: str
@@ -123,6 +131,12 @@ class Settings:
     vertex_quota_project_id: str | None
     vertex_thinking_level: str | None
     vertex_scorecard_thinking_level: str | None
+
+    openrouter_api_key: str | None
+    openrouter_api_base: str
+    openrouter_gemini_model: str
+    openrouter_site_url: str | None
+    openrouter_app_name: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -236,6 +250,19 @@ class Settings:
             or quota_project_from_adc(adc_path),
             vertex_thinking_level=env_optional_vertex_thinking_level(),
             vertex_scorecard_thinking_level=env_optional_vertex_scorecard_thinking_level(),
+            openrouter_api_key=env_var("OPENROUTER_API_KEY"),
+            openrouter_api_base=env_var("OPENROUTER_API_BASE") or DEFAULT_OPENROUTER_API_BASE,
+            openrouter_gemini_model=(
+                env_var("OPENROUTER_GEMINI_MODEL")
+                or env_var("OPENROUTER_MODEL")
+                or default_openrouter_model(
+                    env_var("VERTEX_GEMINI_MODEL")
+                    or env_var("GEMINI_VERTEX_MODEL")
+                    or DEFAULT_VERTEX_MODEL
+                )
+            ),
+            openrouter_site_url=env_var("OPENROUTER_SITE_URL"),
+            openrouter_app_name=env_var("OPENROUTER_APP_NAME") or "rec-sidecar",
         )
 
     @property
@@ -252,39 +279,59 @@ class Settings:
             return False
         return Path(self.vertex_adc_credentials_path).expanduser().exists()
 
+    @property
+    def openrouter_configured(self) -> bool:
+        return bool(self.openrouter_api_key)
+
+    @property
+    def gemini_text_configured(self) -> bool:
+        return self.openrouter_configured or self.vertex_configured
+
+    @property
+    def gemini_text_provider(self) -> str:
+        return "openrouter" if self.openrouter_configured else "vertex"
+
+    @property
+    def gemini_text_model(self) -> str:
+        return self.openrouter_gemini_model if self.openrouter_configured else self.vertex_model
+
     def provider_label(self) -> str:
         if self.provider == "cerebras":
             return "cerebras" if self.cerebras_configured else "cerebras: disabled"
-        if self.provider in {"vertex", "gemini", "google"}:
-            return "vertex" if self.vertex_configured else "vertex: disabled"
-        if self.cerebras_configured and self.vertex_configured:
-            return "auto: cerebras -> vertex"
+        if self.provider in {"vertex", "gemini", "google", "openrouter"}:
+            return (
+                self.gemini_text_provider
+                if self.gemini_text_configured
+                else "gemini: disabled"
+            )
+        if self.cerebras_configured and self.gemini_text_configured:
+            return f"auto: cerebras -> {self.gemini_text_provider}"
         if self.cerebras_configured:
             return "auto: cerebras"
-        if self.vertex_configured:
-            return "auto: vertex"
+        if self.gemini_text_configured:
+            return f"auto: {self.gemini_text_provider}"
         return "auto: disabled"
 
     def active_model_label(self) -> str:
         intelligence_suffix = ""
         if self.intelligence_transport in {"live", "websocket", "gemini-live"}:
             intelligence_suffix = f" / intelligence live {self.vertex_live_model}"
-        if self.provider in {"vertex", "gemini", "google"}:
-            return f"{self.vertex_model}{intelligence_suffix}"
+        if self.provider in {"vertex", "gemini", "google", "openrouter"}:
+            return f"{self.gemini_text_model}{intelligence_suffix}"
         if self.provider == "cerebras":
             return f"{self.cerebras_model}{intelligence_suffix}"
-        if self.cerebras_configured and self.vertex_configured:
+        if self.cerebras_configured and self.gemini_text_configured:
             return (
-                f"fast priority {self.vertex_model}({self.vertex_thinking_level or 'default'}) "
+                f"fast priority {self.gemini_text_model}({self.gemini_text_provider}) "
                 f"-> {self.help_opener_primary_model} -> "
-                f"{self.help_opener_secondary_model} / slow {self.vertex_model} / "
+                f"{self.help_opener_secondary_model} / slow {self.gemini_text_model} / "
                 f"stage {self.cerebras_stage_model} -> "
-                f"scorecard {self.vertex_scorecard_model}"
+                f"scorecard {self.gemini_text_model}"
                 f"({self.vertex_scorecard_thinking_level or 'default'})"
                 f"{intelligence_suffix}"
             )
-        if self.vertex_configured:
-            return f"{self.vertex_model}{intelligence_suffix}"
+        if self.gemini_text_configured:
+            return f"{self.gemini_text_model}{intelligence_suffix}"
         return f"{self.cerebras_model}{intelligence_suffix}"
 
 

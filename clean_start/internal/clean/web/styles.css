@@ -140,6 +140,78 @@ textarea:focus, input:focus, select:focus { border-color: #aab8d0; background: #
   grid-template-rows: auto minmax(0, 1fr);
 }
 
+.personal-prompter-col,
+.personal-help-col {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.personal-pane-header .eyebrow,
+.personal-question-block .eyebrow {
+  margin: 0 0 5px;
+}
+
+.personal-pane-title {
+  font-size: 20px;
+}
+
+.personal-answer-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.personal-question-block {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.personal-question {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 760;
+  line-height: 1.45;
+}
+
+.personal-answer-text {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding-right: 5px;
+  color: var(--ink);
+  font-size: clamp(20px, 1.55vw, 27px);
+  font-weight: 650;
+  line-height: 1.52;
+  white-space: pre-wrap;
+  scrollbar-gutter: stable;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.personal-help-card .personal-answer-text {
+  font-size: clamp(17px, 1.18vw, 21px);
+}
+
+.personal-answer-text.waiting {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.personal-answer-meta,
+.personal-answer-footer {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.personal-answer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .personal-transcript-card {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1379,9 +1451,17 @@ body.auth-locked .admin-app {
   .reply-text { min-height: 280px; }
   .pipeline-grid { grid-template-columns: 1fr; }
   .manual-reply-head { grid-template-columns: 1fr; }
-  .personal-app { grid-template-columns: minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
-  .personal-empty-col { display: none; }
-  .personal-transcript-col { min-height: 0; }
+  .personal-app {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+    overflow: visible;
+    align-content: start;
+  }
+  .personal-transcript-col,
+  .personal-prompter-col,
+  .personal-help-col { min-height: 520px; }
 }
 
 @media (max-width: 760px) {
@@ -1430,6 +1510,11 @@ body.auth-locked .admin-app {
   }
   .personal-transcript-col {
     align-content: start;
+    grid-template-rows: auto auto;
+  }
+  .personal-prompter-col,
+  .personal-help-col {
+    min-height: 0;
     grid-template-rows: auto auto;
   }
   .personal-header {
@@ -1483,5 +1568,22 @@ body.auth-locked .admin-app {
   }
   .personal-readonly-badge {
     display: none;
+  }
+  .personal-pane-header {
+    align-items: center;
+    flex-direction: row;
+  }
+  .personal-answer-card {
+    height: clamp(280px, 50dvh, 480px);
+    padding: 14px;
+  }
+  .personal-answer-text,
+  .personal-help-card .personal-answer-text {
+    font-size: 17px;
+    line-height: 1.48;
+  }
+  .personal-answer-footer {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

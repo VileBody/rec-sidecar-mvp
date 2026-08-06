@@ -327,8 +327,44 @@
         </div>
       </section>
     </section>
-    <section class="column personal-empty-col" aria-label="Пустая центральная колонка"></section>
-    <section class="column personal-empty-col" aria-label="Пустая правая колонка"></section>
+    <section class="column personal-prompter-col" aria-label="Автоматический суфлёр">
+      <header class="card header-card personal-pane-header">
+        <div>
+          <p class="eyebrow">live-суфлёр</p>
+          <div class="title personal-pane-title">Ответ на вопрос</div>
+        </div>
+        <span id="personalAutoStatus" class="status-pill warn">жду вопрос</span>
+      </header>
+      <section class="card section personal-answer-card">
+        <div class="personal-question-block">
+          <p class="eyebrow">распознанный вопрос</p>
+          <div id="personalAutoQuestion" class="personal-question">Вопрос появится после речи интервьюера.</div>
+        </div>
+        <div id="personalAutoAnswer" class="personal-answer-text" role="status" aria-live="polite">Суфлёр начнёт писать ответ автоматически.</div>
+        <div id="personalAutoMeta" class="personal-answer-meta">Gemini · автоматически</div>
+      </section>
+    </section>
+
+    <section class="column personal-help-col" aria-label="Скорая помощь">
+      <header class="card header-card personal-pane-header">
+        <div>
+          <p class="eyebrow">скорая помощь</p>
+          <div class="title personal-pane-title">Независимый ответ</div>
+        </div>
+        <span class="personal-readonly-badge">read only</span>
+      </header>
+      <section class="card section personal-answer-card personal-help-card">
+        <div class="personal-question-block">
+          <p class="eyebrow">вопрос для помощи</p>
+          <div id="personalHelpQuestion" class="personal-question">На Mac нажми «Скорая помощь».</div>
+        </div>
+        <div id="personalHelpAnswer" class="personal-answer-text" role="status" aria-live="polite">Здесь появится второй, независимый ответ.</div>
+        <div class="personal-answer-footer">
+          <span id="personalHelpMeta" class="personal-answer-meta">Gemini · ручной запуск на desktop</span>
+          <span id="personalHelpStatus" class="status-pill warn">не запускался</span>
+        </div>
+      </section>
+    </section>
   </main>
 
   <main id="adminApp" class="admin-app" hidden>

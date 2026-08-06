@@ -36,6 +36,26 @@ type AssistState struct {
 	SlowModel    string `json:"slow_model,omitempty"`
 }
 
+type InterviewLaneState struct {
+	Question     string `json:"question,omitempty"`
+	Text         string `json:"text"`
+	Buffer       string `json:"-"`
+	Streaming    bool   `json:"streaming"`
+	GenerationID string `json:"generation_id,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+}
+
+type InterviewState struct {
+	Question         string             `json:"question"`
+	QuestionProvider string             `json:"question_provider,omitempty"`
+	QuestionModel    string             `json:"question_model,omitempty"`
+	Auto             InterviewLaneState `json:"auto"`
+	Help             InterviewLaneState `json:"help"`
+}
+
 type StudentTranslationItem struct {
 	ID            string    `json:"id"`
 	SourceEventID string    `json:"source_event_id"`
@@ -92,6 +112,7 @@ type SessionState struct {
 	SellerImmediateStreaming    bool             `json:"seller_immediate_streaming"`
 	SellerImmediateGenerationID string           `json:"seller_immediate_generation_id"`
 	Assist                      AssistState      `json:"assist"`
+	Interview                   InterviewState   `json:"interview"`
 	Student                     StudentState     `json:"student"`
 	StageCandidate              *StageData       `json:"stage_candidate,omitempty"`
 	StageCommitted              *StageData       `json:"stage_committed,omitempty"`
@@ -263,6 +284,78 @@ func (s *Store) Apply(event Event) SessionState {
 		}
 	case EventAssistCanceled:
 		state.Assist.Streaming = false
+	case EventInterviewAutoStarted:
+		if data, err := DecodeData[InterviewStartedData](event); err == nil {
+			state.Interview.Auto.Buffer = ""
+			state.Interview.Auto.Streaming = true
+			state.Interview.Auto.GenerationID = data.GenerationID
+			state.Interview.Auto.Status = "identifying"
+			state.Interview.Auto.Error = ""
+		}
+	case EventInterviewQuestionIdentified:
+		if data, err := DecodeData[InterviewQuestionIdentifiedData](event); err == nil && data.GenerationID == state.Interview.Auto.GenerationID {
+			state.Interview.Question = data.Question
+			state.Interview.Auto.Question = data.Question
+			state.Interview.QuestionProvider = data.Provider
+			state.Interview.QuestionModel = data.Model
+			state.Interview.Auto.Status = "streaming"
+		}
+	case EventInterviewAutoDelta:
+		if data, err := DecodeData[InterviewDeltaData](event); err == nil && data.GenerationID == state.Interview.Auto.GenerationID {
+			state.Interview.Auto.Buffer += data.Delta
+			state.Interview.Auto.Text = state.Interview.Auto.Buffer
+			state.Interview.Auto.Streaming = true
+			state.Interview.Auto.Status = "streaming"
+		}
+	case EventInterviewAutoDone:
+		if data, err := DecodeData[InterviewDoneData](event); err == nil && data.GenerationID == state.Interview.Auto.GenerationID {
+			state.Interview.Question = data.Question
+			state.Interview.Auto.Question = data.Question
+			state.Interview.Auto.Text = data.Text
+			state.Interview.Auto.Buffer = ""
+			state.Interview.Auto.Streaming = false
+			state.Interview.Auto.Status = "ready"
+			state.Interview.Auto.Provider = data.Provider
+			state.Interview.Auto.Model = data.Model
+		}
+	case EventInterviewAutoCanceled:
+		if data, err := DecodeData[InterviewCanceledData](event); err == nil && data.GenerationID == state.Interview.Auto.GenerationID {
+			state.Interview.Auto.Buffer = ""
+			state.Interview.Auto.Streaming = false
+			state.Interview.Auto.Status = data.Reason
+		}
+	case EventInterviewHelpStarted:
+		if data, err := DecodeData[InterviewStartedData](event); err == nil {
+			state.Interview.Help.Buffer = ""
+			state.Interview.Help.Question = data.Question
+			state.Interview.Help.Streaming = true
+			state.Interview.Help.GenerationID = data.GenerationID
+			state.Interview.Help.Status = "streaming"
+			state.Interview.Help.Error = ""
+		}
+	case EventInterviewHelpDelta:
+		if data, err := DecodeData[InterviewDeltaData](event); err == nil && data.GenerationID == state.Interview.Help.GenerationID {
+			state.Interview.Help.Buffer += data.Delta
+			state.Interview.Help.Text = state.Interview.Help.Buffer
+			state.Interview.Help.Streaming = true
+			state.Interview.Help.Status = "streaming"
+		}
+	case EventInterviewHelpDone:
+		if data, err := DecodeData[InterviewDoneData](event); err == nil && data.GenerationID == state.Interview.Help.GenerationID {
+			state.Interview.Help.Question = data.Question
+			state.Interview.Help.Text = data.Text
+			state.Interview.Help.Buffer = ""
+			state.Interview.Help.Streaming = false
+			state.Interview.Help.Status = "ready"
+			state.Interview.Help.Provider = data.Provider
+			state.Interview.Help.Model = data.Model
+		}
+	case EventInterviewHelpCanceled:
+		if data, err := DecodeData[InterviewCanceledData](event); err == nil && data.GenerationID == state.Interview.Help.GenerationID {
+			state.Interview.Help.Buffer = ""
+			state.Interview.Help.Streaming = false
+			state.Interview.Help.Status = data.Reason
+		}
 	case EventStudentDirection:
 		if data, err := DecodeData[StudentDirectionData](event); err == nil && data.Direction != "" {
 			state.Student.Direction = data.Direction
@@ -352,6 +445,14 @@ func (s *Store) Apply(event Event) SessionState {
 	case EventError:
 		if data, err := DecodeData[ErrorData](event); err == nil {
 			state.LastError = data.Message
+			switch data.Where {
+			case "interview.question", "interview.auto":
+				state.Interview.Auto.Status = "error"
+				state.Interview.Auto.Error = data.Message
+			case "interview.help":
+				state.Interview.Help.Status = "error"
+				state.Interview.Help.Error = data.Message
+			}
 		}
 	}
 

@@ -232,6 +232,22 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 			trigger = "manual"
 		}
 		event = NewEventFromContext(r.Context(), sessionID, EventAssistRequest, "gateway", AssistRequestData{Trigger: trigger, Text: strings.TrimSpace(req.Text)})
+	case EventInterviewHelpRequest:
+		if normalizeUserRoleOrDefault(user.Role) != UserRolePersonal {
+			writeError(w, http.StatusForbidden, errors.New("interview help is available only for personal accounts"))
+			return
+		}
+		if !g.cfg.CoachEnabled {
+			g.logger.Info("coach request ignored", "session_id", sessionID, "type", req.Type, "reason", "coach_disabled")
+			state, _, _ := g.hydrateSession(r.Context(), sessionID)
+			writeJSON(w, http.StatusAccepted, state)
+			return
+		}
+		trigger := req.Trigger
+		if trigger == "" {
+			trigger = "button"
+		}
+		event = NewEventFromContext(r.Context(), sessionID, EventInterviewHelpRequest, "gateway", InterviewHelpRequestData{Trigger: trigger, Text: strings.TrimSpace(req.Text)})
 	case EventStudentDirection:
 		direction, err := normalizeStudentDirection(req.Direction)
 		if err != nil {

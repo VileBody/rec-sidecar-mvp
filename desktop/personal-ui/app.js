@@ -22,6 +22,23 @@ function createMockBridge() {
       { source: "seller_mic", role: "seller", text: "Да, начнём с задач, которые уже в работе.", final: true, created_at: new Date(now - 9000).toISOString() },
       { source: "remote_audio", role: "client", text: "Хорошо, первая задача сейчас...", final: false, created_at: new Date(now - 2000).toISOString() },
     ],
+    interview: {
+      question: "Could you tell me about your most relevant production AI project?",
+      auto: {
+        question: "Could you tell me about your most relevant production AI project?",
+        text: "The most relevant example is the collections copilot I built at Bondora. It combined customer, payment, communication, and policy data in one controlled workflow. I focused on retrieval, guarded tool use, auditability, and safe rollout. It reduced average handling time by around 15 to 20 percent.",
+        status: "ready",
+        provider: "openrouter",
+        model: "google/gemini-3.5-flash",
+      },
+      help: {
+        question: "Could you tell me about your most relevant production AI project?",
+        text: "A strong example is my work at Bondora. I helped build a human-in-the-loop collections copilot for a compliance-sensitive workflow. The important part was not only the model. We added policy controls, guarded natural-language-to-SQL, auditability, and gradual rollout. The result was a 15 to 20 percent reduction in average handling time.",
+        status: "ready",
+        provider: "openrouter",
+        model: "google/gemini-3.5-flash",
+      },
+    },
   };
   const listeners = new Map();
   return {
@@ -34,6 +51,7 @@ function createMockBridge() {
       if (command === "auth_login") return { id: "preview", email: args.email || "personal@rec.local", role: "personal" };
       if (command === "auth_logout") return null;
       if (command === "session_resume_or_create" || command === "session_current") return { session_id: mockState.session_id, state: mockState };
+      if (command === "session_post_event") return null;
       if (command === "diagnostics_log_path") return "~/Library/Application Support/ru.TeamGenius.REC-Personal/logs/rec-personal.log";
       if (command === "audio_configure") {
         audio.config = { ...audio.config, ...(args.config || {}) };
@@ -118,6 +136,7 @@ function bindControls() {
   $("microphoneToggle").onclick = () => toggleAudio("microphone");
   $("echoFilter").onchange = () => configureAudio({ echo_filter: $("echoFilter").checked });
   $("aec3Toggle").onclick = () => configureAudio({ aec3: !audio.config?.aec3 });
+  $("helpGenerate").onclick = requestInterviewHelp;
 }
 
 async function submitAuth() {
@@ -163,7 +182,7 @@ function applySession(envelope) {
   sessionId = envelope.session_id || envelope.state?.session_id || "";
   state = envelope.state || envelope;
   $("session").textContent = sessionId || "сессия";
-  renderTranscript();
+  render();
 }
 
 function renderAuth(locked) {
@@ -175,8 +194,64 @@ function renderAuth(locked) {
 
 function render() {
   renderTranscript();
+  renderInterview();
   renderConnection();
   renderAudio();
+}
+
+function renderInterview() {
+  const interview = state?.interview || {};
+  const auto = interview.auto || {};
+  const help = interview.help || {};
+  renderInterviewLane({
+    lane: auto,
+    questionNode: $("autoQuestion"),
+    answerNode: $("autoAnswer"),
+    statusNode: $("autoStatus"),
+    metaNode: $("autoMeta"),
+    question: auto.question || interview.question || "",
+    emptyQuestion: "Вопрос появится после речи интервьюера.",
+    emptyAnswer: "Суфлёр начнёт писать ответ автоматически.",
+    emptyStatus: "жду вопрос",
+    mode: "автоматически",
+  });
+  renderInterviewLane({
+    lane: help,
+    questionNode: $("helpQuestion"),
+    answerNode: $("helpAnswer"),
+    statusNode: $("helpStatus"),
+    metaNode: $("helpMeta"),
+    question: help.question || interview.question || "",
+    emptyQuestion: "Нажми кнопку — Gemini отдельно ответит по последнему вопросу.",
+    emptyAnswer: "Здесь появится второй, независимый ответ.",
+    emptyStatus: "не запускался",
+    mode: "независимый ручной вызов",
+  });
+  $("helpGenerate").disabled = Boolean(help.streaming);
+  $("helpGenerate").textContent = help.streaming ? "Генерируется…" : "Сгенерировать";
+}
+
+function renderInterviewLane({ lane, questionNode, answerNode, statusNode, metaNode, question, emptyQuestion, emptyAnswer, emptyStatus, mode }) {
+  questionNode.textContent = question || emptyQuestion;
+  answerNode.textContent = lane.text || emptyAnswer;
+  answerNode.classList.toggle("waiting", !lane.text);
+  const status = lane.status || "";
+  let label = emptyStatus;
+  let statusClass = "warn";
+  if (lane.streaming || status === "streaming" || status === "identifying") {
+    label = status === "identifying" ? "ищу вопрос" : "пишет ответ";
+    statusClass = "on";
+  } else if (status === "ready" || lane.text) {
+    label = "готово";
+    statusClass = "on";
+  } else if (status === "error") {
+    label = "ошибка";
+    statusClass = "err";
+  }
+  statusNode.textContent = label;
+  statusNode.className = `status-pill ${statusClass}`;
+  const model = [lane.provider, lane.model].filter(Boolean).join(" / ") || "Gemini";
+  metaNode.textContent = lane.error ? `Ошибка: ${lane.error}` : `${model} · ${mode}`;
 }
 
 function renderTranscript() {
@@ -268,6 +343,20 @@ async function configureAudio(config) {
     renderAudio();
   } catch (error) {
     showToast(errorText(error));
+  }
+}
+
+async function requestInterviewHelp() {
+  if (!sessionId || state?.interview?.help?.streaming) return;
+  $("helpGenerate").disabled = true;
+  try {
+    await bridge.invoke("session_post_event", {
+      event: { type: "interview.help.request", trigger: "button", text: "" },
+    });
+  } catch (error) {
+    showToast(errorText(error), 3600);
+  } finally {
+    setTimeout(() => renderInterview(), 800);
   }
 }
 

@@ -603,6 +603,7 @@ function render() {
 }
 
 function renderPersonal() {
+  renderPersonalInterview();
   const list = $("personalTranscript");
   if (!list) return;
   const items = (state?.transcript || [])
@@ -637,6 +638,60 @@ function renderPersonal() {
   }
   const finals = items.filter((item) => item.final !== false).length;
   $("personalTranscriptMeta").textContent = `${finals} реплик · системный звук и микрофон`;
+}
+
+function renderPersonalInterview() {
+  if (!$("personalAutoAnswer")) return;
+  const interview = state?.interview || {};
+  const auto = interview.auto || {};
+  const help = interview.help || {};
+  renderPersonalAnswerLane({
+    lane: auto,
+    questionNode: $("personalAutoQuestion"),
+    answerNode: $("personalAutoAnswer"),
+    statusNode: $("personalAutoStatus"),
+    metaNode: $("personalAutoMeta"),
+    question: auto.question || interview.question || "",
+    emptyQuestion: "Вопрос появится после речи интервьюера.",
+    emptyAnswer: "Суфлёр начнёт писать ответ автоматически.",
+    emptyStatus: "жду вопрос",
+    mode: "автоматически",
+  });
+  renderPersonalAnswerLane({
+    lane: help,
+    questionNode: $("personalHelpQuestion"),
+    answerNode: $("personalHelpAnswer"),
+    statusNode: $("personalHelpStatus"),
+    metaNode: $("personalHelpMeta"),
+    question: help.question || interview.question || "",
+    emptyQuestion: "На Mac нажми «Скорая помощь».",
+    emptyAnswer: "Здесь появится второй, независимый ответ.",
+    emptyStatus: "не запускался",
+    mode: "ручной независимый вызов",
+  });
+}
+
+function renderPersonalAnswerLane({ lane, questionNode, answerNode, statusNode, metaNode, question, emptyQuestion, emptyAnswer, emptyStatus, mode }) {
+  questionNode.textContent = question || emptyQuestion;
+  answerNode.textContent = lane.text || emptyAnswer;
+  answerNode.classList.toggle("waiting", !lane.text);
+  const status = lane.status || "";
+  let label = emptyStatus;
+  let statusClass = "warn";
+  if (lane.streaming || status === "streaming" || status === "identifying") {
+    label = status === "identifying" ? "ищу вопрос" : "пишет ответ";
+    statusClass = "on";
+  } else if (status === "ready" || lane.text) {
+    label = "готово";
+    statusClass = "on";
+  } else if (status === "error") {
+    label = "ошибка";
+    statusClass = "err";
+  }
+  statusNode.textContent = label;
+  statusNode.className = `status-pill ${statusClass}`;
+  const model = [lane.provider, lane.model].filter(Boolean).join(" / ") || "Gemini";
+  metaNode.textContent = lane.error ? `Ошибка: ${lane.error}` : `${model} · ${mode}`;
 }
 
 function personalSource(source) {

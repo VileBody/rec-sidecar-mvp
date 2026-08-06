@@ -12,6 +12,11 @@ import httpx
 
 from .config import Settings
 from .live_intelligence import LiveIntelligenceNoUpdate, VertexLiveIntelligenceSession
+from .interview_prompts import (
+    INTERVIEW_HELP_ANSWER_SYSTEM_PROMPT,
+    INTERVIEW_LIVE_ANSWER_SYSTEM_PROMPT,
+    INTERVIEW_QUESTION_DETECTOR_SYSTEM_PROMPT,
+)
 from .prompts import (
     SALES_COACH_CHAT_SYSTEM_PROMPT,
     SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
@@ -28,6 +33,7 @@ from .prompts import (
 )
 from .providers import (
     CerebrasClient,
+    OpenRouterClient,
     ProviderError,
     VertexClient,
     cerebras_pivot_gate_response_format,
@@ -40,6 +46,9 @@ from .providers import (
 from .schemas import (
     ChatRequest,
     HelpRequest,
+    InterviewAnswerRequest,
+    InterviewQuestionRequest,
+    InterviewQuestionResponse,
     LiveRequest,
     LiveResponse,
     OpenerResponse,
@@ -126,6 +135,7 @@ class LlmOrchestrator:
             self._owns_cerebras_client = self.cerebras_client is not self.vertex_client
 
         self.cerebras = CerebrasClient(settings, self.cerebras_client)
+        self.openrouter = OpenRouterClient(settings, self.vertex_client)
         self.vertex = VertexClient(settings, self.vertex_client)
         self._opener_cooldowns: dict[str, float] = {}
         self._live_intelligence_sessions: dict[str, VertexLiveIntelligenceSession] = {}
@@ -197,43 +207,7 @@ class LlmOrchestrator:
                         exc,
                     )
 
-            try:
-                suggestion = await self._vertex_live_generate(request)
-            except (ProviderError, ValueError, json.JSONDecodeError) as exc:
-                logger.warning(
-                    "live_generator error run_id=%s provider=vertex model=%s error=%s",
-                    request.run_id,
-                    self.settings.vertex_model,
-                    exc,
-                )
-                provider, model, suggestion = await self._live_single_provider(request)
-                logger.info(
-                    "live_response run_id=%s action=%s provider=%s model=%s total_elapsed_ms=%s",
-                    request.run_id,
-                    suggestion["action"],
-                    provider,
-                    model,
-                    int((time.monotonic() - started_at) * 1000),
-                )
-                return LiveResponse(
-                    action=suggestion["action"],
-                    text=suggestion["text"],
-                    provider=provider,
-                    model=model,
-                )
-            logger.info(
-                "live_response run_id=%s action=%s provider=vertex model=%s total_elapsed_ms=%s",
-                request.run_id,
-                suggestion["action"],
-                self.settings.vertex_model,
-                int((time.monotonic() - started_at) * 1000),
-            )
-            return LiveResponse(
-                action=suggestion["action"],
-                text=suggestion["text"],
-                provider="vertex",
-                model=self.settings.vertex_model,
-            )
+            return await self._live_parallel_generate(request, started_at)
 
         provider, model, suggestion = await self._live_single_provider(request)
         logger.info(
@@ -329,8 +303,8 @@ class LlmOrchestrator:
 
     async def chat_stream(self, request: ChatRequest) -> AsyncIterator[bytes]:
         user_content = f"{request.context}\n\n--- Вопрос продавца ---\n{request.question}\n"
-        if self._prefer_vertex() or not self.cerebras.configured():
-            async for event in self._vertex_text_stream(
+        if self._prefer_gemini() or not self.cerebras.configured():
+            async for event in self._gemini_text_stream(
                 system_prompt=SALES_COACH_CHAT_SYSTEM_PROMPT,
                 user_content=user_content,
                 temperature=0.35,
@@ -350,8 +324,8 @@ class LlmOrchestrator:
                 yield sse_event({"event": "delta", "text": delta})
             yield sse_event({"event": "done"})
         except ProviderError as exc:
-            if exc.is_rate_limit and self._auto_provider() and self.vertex.configured():
-                async for event in self._vertex_text_stream(
+            if exc.is_rate_limit and self._auto_provider() and self._gemini_text_configured():
+                async for event in self._gemini_text_stream(
                     system_prompt=SALES_COACH_CHAT_SYSTEM_PROMPT,
                     user_content=user_content,
                     temperature=0.35,
@@ -392,15 +366,15 @@ class LlmOrchestrator:
                     exc.status_code,
                     str(exc)[:240],
                 )
-                if not self.vertex.configured():
+                if not self._gemini_text_configured():
                     raise
 
-        if not self.vertex.configured():
+        if not self._gemini_text_configured():
             raise ProviderError("student_translation", "no configured translation provider")
 
         parts: list[str] = []
-        async for delta in self.vertex.stream_text(
-            model=self.settings.student_answer_model,
+        async for delta in self._gemini_stream_text(
+            model=self._gemini_text_model(),
             system_prompt=STUDENT_TRANSLATION_SYSTEM_PROMPT,
             user_content=user_content,
             temperature=0.0,
@@ -409,18 +383,18 @@ class LlmOrchestrator:
             parts.append(delta)
         text = "".join(parts).strip()
         if not text:
-            raise ProviderError("vertex", "empty student translation response")
+            raise ProviderError(self._gemini_text_provider(), "empty student translation response")
         return StudentTranslateResponse(
             text=text,
-            provider="vertex",
-            model=self.settings.student_answer_model,
+            provider=self._gemini_text_provider(),
+            model=self._gemini_text_model(),
         )
 
     async def student_answer_stream(
         self, request: StudentAnswerRequest
     ) -> AsyncIterator[bytes]:
-        if not self.vertex.configured():
-            yield sse_event({"event": "error", "message": "vertex: missing Vertex auth"})
+        if not self._gemini_text_configured():
+            yield sse_event({"event": "error", "message": "gemini: missing text provider auth"})
             return
         question = (request.question or "").strip()
         user_content = request.context
@@ -434,15 +408,85 @@ class LlmOrchestrator:
             yield sse_event(
                 {
                     "event": "model",
-                    "model": self.settings.student_answer_model,
-                    "provider": "vertex",
+                    "model": self._gemini_text_model(),
+                    "provider": self._gemini_text_provider(),
                 }
             )
-            async for delta in self.vertex.stream_text(
-                model=self.settings.student_answer_model,
+            async for delta in self._gemini_stream_text(
+                model=self._gemini_text_model(),
                 system_prompt=system_prompt,
                 user_content=user_content,
                 temperature=0.35,
+                thinking_level=self.settings.vertex_thinking_level,
+            ):
+                yield sse_event({"event": "delta", "text": delta})
+            yield sse_event({"event": "done"})
+        except ProviderError as exc:
+            yield sse_event({"event": "error", "message": str(exc)})
+
+    async def interview_question(
+        self, request: InterviewQuestionRequest
+    ) -> InterviewQuestionResponse:
+        if not self._gemini_text_configured():
+            raise ProviderError("gemini", "Gemini text backend is not configured")
+        user_content = (
+            f"{request.context}\n\n"
+            "--- Latest system-audio candidate ---\n"
+            f"{request.candidate.strip()}\n"
+        )
+        raw = await self._gemini_generate_stage_detection(
+            model=self._gemini_text_model(),
+            system_prompt=INTERVIEW_QUESTION_DETECTOR_SYSTEM_PROMPT,
+            user_content=user_content,
+            temperature=0.0,
+            thinking_level="minimal",
+        )
+        value = load_json_object(raw)
+        is_question = value.get("is_question") is True or str(
+            value.get("is_question", "")
+        ).strip().lower() in {"1", "true", "yes"}
+        question = " ".join(str(value.get("question") or "").split())
+        if is_question and not question:
+            question = " ".join(request.candidate.split())
+        return InterviewQuestionResponse(
+            is_question=is_question and bool(question),
+            question=question if is_question else "",
+            provider=self._gemini_text_provider(),
+            model=self._gemini_text_model(),
+        )
+
+    async def interview_answer_stream(
+        self, request: InterviewAnswerRequest
+    ) -> AsyncIterator[bytes]:
+        if not self._gemini_text_configured():
+            yield sse_event(
+                {"event": "error", "message": "gemini: missing text provider auth"}
+            )
+            return
+        system_prompt = (
+            INTERVIEW_HELP_ANSWER_SYSTEM_PROMPT
+            if request.trigger == "help"
+            else INTERVIEW_LIVE_ANSWER_SYSTEM_PROMPT
+        )
+        user_content = (
+            f"{request.context}\n\n"
+            "--- Interviewer question to answer now ---\n"
+            f"{request.question.strip()}\n\n"
+            "Draft the ready spoken answer now."
+        )
+        try:
+            yield sse_event(
+                {
+                    "event": "model",
+                    "model": self._gemini_text_model(),
+                    "provider": self._gemini_text_provider(),
+                }
+            )
+            async for delta in self._gemini_stream_text(
+                model=self._gemini_text_model(),
+                system_prompt=system_prompt,
+                user_content=user_content,
+                temperature=0.25,
                 thinking_level=self.settings.vertex_thinking_level,
             ):
                 yield sse_event({"event": "delta", "text": delta})
@@ -515,11 +559,12 @@ class LlmOrchestrator:
                     exc,
                 )
 
-        if self.vertex.configured():
-            model = self.settings.vertex_stage_model
+        if self._gemini_text_configured():
+            provider = self._gemini_text_provider()
+            model = self._gemini_text_model()
             try:
                 detect_started_at = time.monotonic()
-                text = await self.vertex.generate_stage_detection(
+                text = await self._gemini_generate_stage_detection(
                     model=model,
                     system_prompt=stage_detection_system_prompt(),
                     user_content=user_content,
@@ -529,22 +574,23 @@ class LlmOrchestrator:
                 stage, confidence = parse_stage_detection(text)
                 stage = self._clamp_detected_stage(request, stage, model)
                 if self._stage_unchanged(
-                    request, stage, provider="vertex", model=model
+                    request, stage, provider=provider, model=model
                 ) and not request.include_scorecard:
                     return None
                 return await self._stage_response(
                     request=request,
                     stage=stage,
                     confidence=confidence,
-                    provider="vertex",
+                    provider=provider,
                     model=model,
                     detect_elapsed_ms=int((time.monotonic() - detect_started_at) * 1000),
                 )
             except (ProviderError, ValueError, json.JSONDecodeError) as exc:
-                errors.append(f"vertex/{model}: {exc}")
+                errors.append(f"{provider}/{model}: {exc}")
                 logger.warning(
-                    "stage_detect provider_error run_id=%s provider=vertex model=%s error=%s",
+                    "stage_detect provider_error run_id=%s provider=%s model=%s error=%s",
                     request.run_id,
+                    provider,
                     model,
                     exc,
                 )
@@ -736,7 +782,7 @@ class LlmOrchestrator:
             yield event
 
     async def help_constructive_stream(self, request: HelpRequest) -> AsyncIterator[bytes]:
-        if not self.vertex.configured():
+        if not self._gemini_text_configured():
             yield sse_event({"event": "done"})
             return
 
@@ -752,9 +798,15 @@ class LlmOrchestrator:
         first_delta_logged = False
         total_chars = 0
         try:
-            yield sse_event({"event": "model", "model": self.settings.vertex_model})
+            yield sse_event(
+                {
+                    "event": "model",
+                    "model": self._gemini_text_model(),
+                    "provider": self._gemini_text_provider(),
+                }
+            )
             stripper = ConstructivePrefixStripper()
-            async for delta in self.vertex.stream_text(
+            async for delta in self._gemini_stream_text(
                 system_prompt=SALES_COACH_HELP_CONSTRUCTIVE_SYSTEM_PROMPT,
                 user_content=user_content,
                 temperature=HELP_TEMPERATURE,
@@ -768,7 +820,7 @@ class LlmOrchestrator:
                             "help_constructive first_delta id=%s run_id=%s model=%s elapsed_ms=%s chars=%s",
                             request.id,
                             request.run_id,
-                            self.settings.vertex_model,
+                            self._gemini_text_model(),
                             int((time.monotonic() - started_at) * 1000),
                             len(delta),
                         )
@@ -777,7 +829,7 @@ class LlmOrchestrator:
                 "help_constructive done id=%s run_id=%s model=%s elapsed_ms=%s chars=%s",
                 request.id,
                 request.run_id,
-                self.settings.vertex_model,
+                self._gemini_text_model(),
                 int((time.monotonic() - started_at) * 1000),
                 total_chars,
             )
@@ -787,7 +839,7 @@ class LlmOrchestrator:
                 "help_constructive error id=%s run_id=%s model=%s elapsed_ms=%s error=%s",
                 request.id,
                 request.run_id,
-                self.settings.vertex_model,
+                self._gemini_text_model(),
                 int((time.monotonic() - started_at) * 1000),
                 exc,
             )
@@ -796,13 +848,87 @@ class LlmOrchestrator:
     async def _cerebras_live_structured(self, request: LiveRequest) -> dict[str, str]:
         text = await self.cerebras.text(
             model=self.settings.cerebras_model,
-            system_prompt=SALES_COACH_STRUCTURED_SYSTEM_PROMPT,
-            user_content=request.content,
-            temperature=0.2,
-            prompt_cache_key=f"rec-sidecar-sales-coach-v2-{request.run_id}",
+            system_prompt=SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT,
+            user_content=self._live_generator_user_content(request),
+            temperature=0.35,
+            prompt_cache_key=f"rec-sidecar-sales-coach-live-v1-{request.run_id}",
             response_format=cerebras_structured_response_format(),
         )
         return parse_json_suggestion(text)
+
+    async def _cerebras_live_generate(
+        self, request: LiveRequest
+    ) -> tuple[str, str, dict[str, str]]:
+        try:
+            suggestion = await self._cerebras_live_structured(request)
+        except ProviderError as exc:
+            if not exc.is_structured_output_error:
+                raise
+            suggestion = await self._cerebras_live_unstructured(request)
+        except (ValueError, json.JSONDecodeError):
+            suggestion = await self._cerebras_live_unstructured(request)
+        if suggestion["action"] != "suggest" or not suggestion["text"].strip():
+            raise ProviderError("cerebras", "empty live fallback suggestion")
+        return ("cerebras", self.settings.cerebras_model, suggestion)
+
+    async def _live_parallel_generate(
+        self, request: LiveRequest, started_at: float
+    ) -> LiveResponse:
+        primary_task = asyncio.create_task(self._gemini_live_generate(request))
+        fallback_task = asyncio.create_task(self._cerebras_live_generate(request))
+        try:
+            provider, model, suggestion = await primary_task
+        except (ProviderError, ValueError, json.JSONDecodeError) as primary_error:
+            logger.warning(
+                "live_generator error run_id=%s provider=%s model=%s error=%s",
+                request.run_id,
+                self._gemini_text_provider(),
+                self._gemini_text_model(),
+                primary_error,
+            )
+            try:
+                provider, model, suggestion = await fallback_task
+            except (ProviderError, ValueError, json.JSONDecodeError) as fallback_error:
+                logger.warning(
+                    "live_generator error run_id=%s provider=cerebras model=%s error=%s",
+                    request.run_id,
+                    self.settings.cerebras_model,
+                    fallback_error,
+                )
+                raise primary_error from fallback_error
+            logger.info(
+                "live_response run_id=%s action=%s provider=%s model=%s source=fallback_after_primary_error total_elapsed_ms=%s",
+                request.run_id,
+                suggestion["action"],
+                provider,
+                model,
+                int((time.monotonic() - started_at) * 1000),
+            )
+            return LiveResponse(
+                action=suggestion["action"],
+                text=suggestion["text"],
+                provider=provider,
+                model=model,
+            )
+        finally:
+            if not fallback_task.done():
+                fallback_task.cancel()
+            await asyncio.gather(fallback_task, return_exceptions=True)
+
+        logger.info(
+            "live_response run_id=%s action=%s provider=%s model=%s source=primary total_elapsed_ms=%s",
+            request.run_id,
+            suggestion["action"],
+            provider,
+            model,
+            int((time.monotonic() - started_at) * 1000),
+        )
+        return LiveResponse(
+            action=suggestion["action"],
+            text=suggestion["text"],
+            provider=provider,
+            model=model,
+        )
 
     async def _cerebras_live_validator(self, request: LiveRequest) -> dict[str, str]:
         text = await self.cerebras.text(
@@ -818,47 +944,45 @@ class LlmOrchestrator:
     async def _cerebras_live_unstructured(self, request: LiveRequest) -> dict[str, str]:
         text = await self.cerebras.text(
             model=self.settings.cerebras_model,
-            system_prompt=SALES_COACH_SYSTEM_PROMPT,
-            user_content=request.content,
-            temperature=0.25,
-            prompt_cache_key=f"rec-sidecar-sales-coach-v1-{request.run_id}",
-        )
-        return parse_bos_eos_text(text)
-
-    async def _vertex_live(self, request: LiveRequest) -> dict[str, str]:
-        if not self.vertex.configured():
-            raise ProviderError("vertex", "Vertex is not configured")
-        return await self.vertex.generate_structured(
-            system_prompt=SALES_COACH_STRUCTURED_SYSTEM_PROMPT,
-            user_content=request.content,
-            temperature=0.2,
-        )
-
-    async def _vertex_live_generate(self, request: LiveRequest) -> dict[str, str]:
-        if not self.vertex.configured():
-            raise ProviderError("vertex", "Vertex is not configured")
-        suggestion = await self.vertex.generate_structured(
-            model=self.settings.vertex_model,
             system_prompt=SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT,
             user_content=self._live_generator_user_content(request),
             temperature=0.35,
-            thinking_level=self.settings.vertex_thinking_level,
+            prompt_cache_key=f"rec-sidecar-sales-coach-live-v1-{request.run_id}",
+        )
+        return parse_json_suggestion(text)
+
+    async def _vertex_live(self, request: LiveRequest) -> dict[str, str]:
+        return (await self._gemini_live_generate(request))[2]
+
+    async def _vertex_live_generate(self, request: LiveRequest) -> dict[str, str]:
+        return (await self._gemini_live_generate(request))[2]
+
+    async def _gemini_live_generate(
+        self, request: LiveRequest
+    ) -> tuple[str, str, dict[str, str]]:
+        if not self._gemini_text_configured():
+            raise ProviderError("gemini", "Gemini text backend is not configured")
+        suggestion = await self._gemini_generate_structured(
+            model=self._gemini_text_model(),
+            system_prompt=SALES_COACH_LIVE_GENERATOR_SYSTEM_PROMPT,
+            user_content=self._live_generator_user_content(request),
+            temperature=0.35,
         )
         if suggestion["action"] != "suggest" or not suggestion["text"].strip():
-            raise ProviderError("vertex", "empty live generator suggestion")
-        return suggestion
+            raise ProviderError(self._gemini_text_provider(), "empty live generator suggestion")
+        return (self._gemini_text_provider(), self._gemini_text_model(), suggestion)
 
     async def _live_single_provider(
         self, request: LiveRequest
     ) -> tuple[str, str, dict[str, str]]:
-        if self._prefer_vertex():
+        if self._prefer_gemini():
             suggestion = await self._vertex_live(request)
-            return ("vertex", self.settings.vertex_model, suggestion)
+            return (self._gemini_text_provider(), self._gemini_text_model(), suggestion)
 
         if not self.cerebras.configured():
-            if self.vertex.configured():
+            if self._gemini_text_configured():
                 suggestion = await self._vertex_live(request)
-                return ("vertex", self.settings.vertex_model, suggestion)
+                return (self._gemini_text_provider(), self._gemini_text_model(), suggestion)
             raise ProviderError("service", "no LLM provider configured")
 
         try:
@@ -866,9 +990,9 @@ class LlmOrchestrator:
         except ProviderError as exc:
             if exc.is_structured_output_error:
                 suggestion = await self._cerebras_live_unstructured(request)
-            elif self._auto_provider() and self.vertex.configured():
+            elif self._auto_provider() and self._gemini_text_configured():
                 suggestion = await self._vertex_live(request)
-                return ("vertex", self.settings.vertex_model, suggestion)
+                return (self._gemini_text_provider(), self._gemini_text_model(), suggestion)
             else:
                 raise
         except (ValueError, json.JSONDecodeError):
@@ -892,7 +1016,7 @@ class LlmOrchestrator:
             request.content,
             "",
             "--- Как использовать методологию ---",
-            "Если в снимке есть Current stage / agenda и Current scorecard, сначала определи ближайший незакрытый шаг: miss/pending/uncertain check или Recommended next action. Реплика должна закрывать именно его; если scorecard green/ready_to_advance, реплика должна переводить разговор на следующий stage.",
+            "Сначала опирайся на живой диалог и последнюю осмысленную реплику клиента. Current stage / agenda и Current scorecard используй как контроль: не слишком ли долго топчемся на стадии, не ушли ли не туда, какой следующий факт полезно добрать. Если клиент уже согласился отвечать или прямо просит перейти к сути, не повторяй permission/рамку и сразу задай первый содержательный вопрос.",
         ]
         if current_text:
             parts.extend(
@@ -1054,16 +1178,17 @@ class LlmOrchestrator:
         return clamp_stage_forward(request.current_stage, proposed_stage)
 
     async def _stage_scorecard(self, request: StageRequest, agenda) -> object:
-        if not self.vertex.configured():
+        if not self._gemini_text_configured():
             return fallback_scorecard(
                 agenda.stage,
                 agenda,
-                "Scorecard evaluator disabled: Vertex is not configured.",
+                "Scorecard evaluator disabled: Gemini text backend is not configured.",
                 context=request.context,
             )
 
         started_at = time.monotonic()
-        model = self.settings.vertex_scorecard_model
+        provider = self._gemini_text_provider()
+        model = self._gemini_text_model()
         user_content = (
             f"{request.context}\n\n"
             f"--- Текущий stage из предыдущего шага ---\n"
@@ -1071,7 +1196,7 @@ class LlmOrchestrator:
         )
         advice_prompt = scorecard_advice_prompt(agenda.stage, agenda)
         scorecard_task = asyncio.create_task(
-            self.vertex.generate_scorecard(
+            self._gemini_generate_scorecard(
                 model=model,
                 system_prompt=scorecard_system_prompt(agenda.stage, agenda),
                 user_content=user_content,
@@ -1109,9 +1234,10 @@ class LlmOrchestrator:
                 context=request.context,
             )
             logger.info(
-                "stage_scorecard run_id=%s stage=%s model=%s readiness=%s score=%s hits=%s misses=%s elapsed_ms=%s",
+                "stage_scorecard run_id=%s stage=%s provider=%s model=%s readiness=%s score=%s hits=%s misses=%s elapsed_ms=%s",
                 request.run_id,
                 agenda.stage,
+                provider,
                 model,
                 scorecard.readiness,
                 scorecard.score,
@@ -1145,9 +1271,10 @@ class LlmOrchestrator:
                 )
             advice = pending_safe_advice(advice, agenda.step)
             logger.warning(
-                "stage_scorecard fallback run_id=%s stage=%s model=%s elapsed_ms=%s error=%s advice=%s",
+                "stage_scorecard fallback run_id=%s stage=%s provider=%s model=%s elapsed_ms=%s error=%s advice=%s",
                 request.run_id,
                 agenda.stage,
+                provider,
                 model,
                 int((time.monotonic() - started_at) * 1000),
                 reason,
@@ -1226,7 +1353,7 @@ class LlmOrchestrator:
     async def _stage_advice_text(self, *, system_prompt: str, user_content: str) -> str:
         parts: list[str] = []
         started_at = time.monotonic()
-        async for delta in self.vertex.stream_text(
+        async for delta in self._gemini_stream_text(
             system_prompt=system_prompt,
             user_content=user_content,
             temperature=0.4,
@@ -1287,7 +1414,113 @@ class LlmOrchestrator:
         )
         return text or None
 
-    async def _vertex_text_stream(
+    def _gemini_text_configured(self) -> bool:
+        return self.openrouter.configured() or self.vertex.configured()
+
+    def _gemini_text_provider(self) -> str:
+        return "openrouter" if self.openrouter.configured() else "vertex"
+
+    def _gemini_text_model(self) -> str:
+        if self.openrouter.configured():
+            return self.settings.openrouter_gemini_model
+        return self.settings.vertex_model
+
+    async def _gemini_generate_structured(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+    ) -> dict[str, str]:
+        if self.openrouter.configured():
+            return await self.openrouter.generate_structured(
+                model=model,
+                system_prompt=system_prompt,
+                user_content=user_content,
+                temperature=temperature,
+            )
+        return await self.vertex.generate_structured(
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+            thinking_level=self.settings.vertex_thinking_level,
+        )
+
+    async def _gemini_generate_stage_detection(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+        thinking_level: str | None = None,
+    ) -> str:
+        if self.openrouter.configured():
+            return await self.openrouter.generate_stage_detection(
+                model=model,
+                system_prompt=system_prompt,
+                user_content=user_content,
+                temperature=temperature,
+            )
+        return await self.vertex.generate_stage_detection(
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+            thinking_level=thinking_level,
+        )
+
+    async def _gemini_generate_scorecard(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+        thinking_level: str | None = None,
+    ) -> str:
+        if self.openrouter.configured():
+            return await self.openrouter.generate_scorecard(
+                model=model,
+                system_prompt=system_prompt,
+                user_content=user_content,
+                temperature=temperature,
+            )
+        return await self.vertex.generate_scorecard(
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+            thinking_level=thinking_level,
+        )
+
+    def _gemini_stream_text(
+        self,
+        *,
+        model: str | None = None,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+        thinking_level: str | None = None,
+    ) -> AsyncIterator[str]:
+        if self.openrouter.configured():
+            return self.openrouter.stream_text(
+                model=model or self.settings.openrouter_gemini_model,
+                system_prompt=system_prompt,
+                user_content=user_content,
+                temperature=temperature,
+            )
+        return self.vertex.stream_text(
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+            thinking_level=thinking_level,
+        )
+
+    async def _gemini_text_stream(
         self,
         *,
         system_prompt: str,
@@ -1295,8 +1528,14 @@ class LlmOrchestrator:
         temperature: float,
     ) -> AsyncIterator[bytes]:
         try:
-            yield sse_event({"event": "model", "model": self.settings.vertex_model})
-            async for delta in self.vertex.stream_text(
+            yield sse_event(
+                {
+                    "event": "model",
+                    "model": self._gemini_text_model(),
+                    "provider": self._gemini_text_provider(),
+                }
+            )
+            async for delta in self._gemini_stream_text(
                 system_prompt=system_prompt,
                 user_content=user_content,
                 temperature=temperature,
@@ -1305,6 +1544,20 @@ class LlmOrchestrator:
             yield sse_event({"event": "done"})
         except ProviderError as exc:
             yield sse_event({"event": "error", "message": str(exc)})
+
+    async def _vertex_text_stream(
+        self,
+        *,
+        system_prompt: str,
+        user_content: str,
+        temperature: float,
+    ) -> AsyncIterator[bytes]:
+        async for event in self._gemini_text_stream(
+            system_prompt=system_prompt,
+            user_content=user_content,
+            temperature=temperature,
+        ):
+            yield event
 
     def _ready_opener_model(self, slot: str, model: str) -> str | None:
         blocked_until = self._opener_cooldowns.get(slot)
@@ -1322,17 +1575,19 @@ class LlmOrchestrator:
         candidates: list[OpenerCandidate] = []
 
         use_cerebras = self.settings.provider == "cerebras" or self._auto_provider()
-        use_vertex = self._prefer_vertex() or self._auto_provider()
+        use_vertex = self._prefer_gemini() or self._auto_provider()
 
-        vertex_model = self._ready_opener_model("vertex", self.settings.vertex_model)
-        if use_vertex and self.vertex.configured() and vertex_model:
+        gemini_slot = self._gemini_text_provider()
+        vertex_model = self._ready_opener_model(gemini_slot, self._gemini_text_model())
+        if use_vertex and self._gemini_text_configured() and vertex_model:
             candidates.append(
                 OpenerCandidate(
-                    slot="vertex",
+                    slot=gemini_slot,
                     priority=0,
-                    provider="vertex",
+                    provider=gemini_slot,
                     model=vertex_model,
-                    stream=self.vertex.stream_text(
+                    stream=self._gemini_stream_text(
+                        model=vertex_model,
                         system_prompt=SALES_COACH_HELP_OPENER_SYSTEM_PROMPT,
                         user_content=user_content,
                         temperature=HELP_TEMPERATURE,
@@ -1406,28 +1661,37 @@ class LlmOrchestrator:
         yield sse_event({"event": "delta", "text": FALLBACK_HELP_OPENER_TEXT})
         yield sse_event({"event": "done"})
 
+    def _prefer_gemini(self) -> bool:
+        return self.settings.provider in {"vertex", "gemini", "google", "openrouter"}
+
     def _prefer_vertex(self) -> bool:
-        return self.settings.provider in {"vertex", "gemini", "google"}
+        return self._prefer_gemini()
 
     def _auto_provider(self) -> bool:
-        return self.settings.provider not in {"cerebras", "vertex", "gemini", "google"}
+        return self.settings.provider not in {
+            "cerebras",
+            "vertex",
+            "gemini",
+            "google",
+            "openrouter",
+        }
 
     def _split_live_flow(self) -> bool:
         return (
             self._auto_provider()
             and self.cerebras.configured()
-            and self.vertex.configured()
+            and self._gemini_text_configured()
         )
 
     def _use_live_intelligence(self) -> bool:
         return self.settings.intelligence_transport in {"live", "websocket", "gemini-live"}
 
     def _any_provider_configured(self) -> bool:
-        if self._prefer_vertex():
-            return self.vertex.configured()
+        if self._prefer_gemini():
+            return self._gemini_text_configured()
         if self.settings.provider == "cerebras":
             return self.cerebras.configured()
-        return self.cerebras.configured() or self.vertex.configured()
+        return self.cerebras.configured() or self._gemini_text_configured()
 
 
 def ready_gate_user_content(request: ReadyGateRequest) -> str:

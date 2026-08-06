@@ -15,6 +15,9 @@ from .schemas import (
     ChatRequest,
     HealthResponse,
     HelpRequest,
+    InterviewAnswerRequest,
+    InterviewQuestionRequest,
+    InterviewQuestionResponse,
     LiveRequest,
     LiveResponse,
     OpenerResponse,
@@ -181,6 +184,34 @@ async def student_translate(request: StudentTranslateRequest) -> StudentTranslat
 async def student_answer_stream(request: StudentAnswerRequest) -> StreamingResponse:
     return StreamingResponse(
         orchestrator.student_answer_stream(request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.post(
+    "/v1/interview/question",
+    response_model=InterviewQuestionResponse,
+    dependencies=[Depends(require_service_token)],
+)
+async def interview_question(
+    request: InterviewQuestionRequest,
+) -> InterviewQuestionResponse:
+    try:
+        return await orchestrator.interview_question(request)
+    except (ProviderError, ValueError) as exc:
+        status_code = provider_status(exc) if isinstance(exc, ProviderError) else 502
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post(
+    "/v1/interview/answer/stream", dependencies=[Depends(require_service_token)]
+)
+async def interview_answer_stream(
+    request: InterviewAnswerRequest,
+) -> StreamingResponse:
+    return StreamingResponse(
+        orchestrator.interview_answer_stream(request),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )

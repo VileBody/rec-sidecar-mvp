@@ -11,6 +11,10 @@ cache, creates sessions without Sales coaching, and shows a source-separated
 transcript with native recording controls. The web UI for the same account is
 read-only and follows that desktop session over SSE/polling.
 
+The center column streams an automatic answer after an interviewer question is
+identified. The right-hand emergency button starts a separate Gemini request;
+both answers can stream at the same time without canceling each other.
+
 ## Development
 
 ```bash
