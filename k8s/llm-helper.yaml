@@ -54,10 +54,6 @@ spec:
               value: google/gemini-3.5-flash
             - name: OPENROUTER_APP_NAME
               value: rec-sidecar
-            # OpenRouter currently blocks this cluster's public egress IP.
-            # Keep the credential in the Secret, but use direct Vertex Gemini here.
-            - name: OPENROUTER_API_KEY
-              value: ""
             - name: OTEL_SERVICE_NAME
               value: llm-sidecar
           volumeMounts:
