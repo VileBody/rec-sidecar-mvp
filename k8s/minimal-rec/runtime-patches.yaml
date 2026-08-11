@@ -152,5 +152,5 @@ spec:
         - name: craas-ai-native-paas-registry
       containers:
         - name: llm-helper
-          image: ai-native-paas-registry.registry.twcstorage.ru/mirror/rec-sidecar-mvp-llm-helper:9d0e1f6add8d65fcfd93da5447e51eaa928ca498
+          image: ai-native-paas-registry.registry.twcstorage.ru/mirror/rec-sidecar-mvp-llm-helper:62a25317d4ef73fc7b2808b003d408c51a6d1c08
           imagePullPolicy: IfNotPresent
