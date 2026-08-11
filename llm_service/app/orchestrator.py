@@ -84,8 +84,6 @@ from .stage_assets import (
 )
 
 INTERVIEW_MAX_SENTENCES = 7
-INTERVIEW_MAX_OUTPUT_TOKENS = 220
-INTERVIEW_MAX_OUTPUT_CHARS = 900
 INTERVIEW_SENTENCE_BOUNDARY = re.compile(r'[.!?](?:["”’\']+)?\s+')
 
 
@@ -106,25 +104,12 @@ async def limit_interview_answer_stream(
     stream: AsyncIterator[str],
     *,
     max_sentences: int = INTERVIEW_MAX_SENTENCES,
-    max_chars: int = INTERVIEW_MAX_OUTPUT_CHARS,
 ) -> AsyncIterator[str]:
     pending = ""
     emitted_sentences = 0
-    emitted_chars = 0
 
     def compact_piece(value: str) -> str:
         return " ".join(value.split())
-
-    def fit_piece(value: str, prefix: str) -> tuple[str, bool]:
-        room = max_chars - emitted_chars - len(prefix)
-        if room <= 0:
-            return "", True
-        if len(value) <= room:
-            return prefix + value, False
-        clipped = value[:room].rsplit(" ", 1)[0].rstrip(" ,;:-.!?")
-        if not clipped:
-            return "", True
-        return prefix + clipped + ".", True
 
     async for delta in stream:
         pending += delta
@@ -137,29 +122,16 @@ async def limit_interview_answer_stream(
             if not piece:
                 continue
             prefix = "" if emitted_sentences == 0 else " "
-            output, clipped = fit_piece(piece, prefix)
-            if output:
-                yield output
-                emitted_chars += len(output)
-                emitted_sentences += 1
-            if clipped or emitted_sentences >= max_sentences:
+            yield prefix + piece
+            emitted_sentences += 1
+            if emitted_sentences >= max_sentences:
                 return
-
-        if emitted_chars + len(pending) > max_chars:
-            piece = compact_piece(pending)
-            prefix = "" if emitted_sentences == 0 else " "
-            output, _ = fit_piece(piece, prefix)
-            if output:
-                yield output
-            return
 
     if emitted_sentences < max_sentences:
         piece = compact_piece(pending)
         if piece:
             prefix = "" if emitted_sentences == 0 else " "
-            output, _ = fit_piece(piece, prefix)
-            if output:
-                yield output
+            yield prefix + piece
 
 
 @dataclass
@@ -512,14 +484,45 @@ class LlmOrchestrator:
             "--- Latest system-audio candidate ---\n"
             f"{request.candidate.strip()}\n"
         )
-        raw = await self._gemini_generate_stage_detection(
-            model=self._gemini_text_model(),
-            system_prompt=INTERVIEW_QUESTION_DETECTOR_SYSTEM_PROMPT,
-            user_content=user_content,
-            temperature=0.0,
-            thinking_level="minimal",
-        )
-        value = load_json_object(raw)
+        value: dict[str, Any] | None = None
+        last_error: ProviderError | ValueError | None = None
+        for attempt in range(2):
+            try:
+                raw = await self._gemini_generate_stage_detection(
+                    model=self._gemini_text_model(),
+                    system_prompt=INTERVIEW_QUESTION_DETECTOR_SYSTEM_PROMPT,
+                    user_content=user_content,
+                    temperature=0.0,
+                    thinking_level="minimal",
+                    max_tokens=None,
+                )
+            except ProviderError as exc:
+                last_error = exc
+                if attempt == 0 and "empty" in exc.message.lower():
+                    logger.warning(
+                        "interview_question empty response provider=%s model=%s; retrying",
+                        self._gemini_text_provider(),
+                        self._gemini_text_model(),
+                    )
+                    continue
+                raise
+            try:
+                value = load_json_object(raw)
+                break
+            except ValueError as exc:
+                last_error = exc
+                logger.warning(
+                    "interview_question invalid response provider=%s model=%s attempt=%s response=%r",
+                    self._gemini_text_provider(),
+                    self._gemini_text_model(),
+                    attempt + 1,
+                    raw[:160],
+                )
+        if value is None:
+            raise ProviderError(
+                self._gemini_text_provider(),
+                "invalid interview question detector response after retry",
+            ) from last_error
         is_question = value.get("is_question") is True or str(
             value.get("is_question", "")
         ).strip().lower() in {"1", "true", "yes"}
@@ -566,7 +569,6 @@ class LlmOrchestrator:
                 user_content=user_content,
                 temperature=0.25,
                 thinking_level=self.settings.vertex_thinking_level,
-                max_tokens=INTERVIEW_MAX_OUTPUT_TOKENS,
             )
             async for delta in limit_interview_answer_stream(raw_stream):
                 yield sse_event({"event": "delta", "text": delta})
@@ -1536,6 +1538,7 @@ class LlmOrchestrator:
         user_content: str,
         temperature: float,
         thinking_level: str | None = None,
+        max_tokens: int | None = 96,
     ) -> str:
         if self.openrouter.configured():
             return await self.openrouter.generate_stage_detection(
@@ -1543,6 +1546,7 @@ class LlmOrchestrator:
                 system_prompt=system_prompt,
                 user_content=user_content,
                 temperature=temperature,
+                max_tokens=max_tokens,
             )
         return await self.vertex.generate_stage_detection(
             model=model,
@@ -1550,6 +1554,7 @@ class LlmOrchestrator:
             user_content=user_content,
             temperature=temperature,
             thinking_level=thinking_level,
+            max_tokens=max_tokens,
         )
 
     async def _gemini_generate_scorecard(

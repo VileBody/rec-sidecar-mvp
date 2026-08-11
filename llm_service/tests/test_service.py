@@ -2272,7 +2272,52 @@ async def test_interview_question_and_answer_use_independent_gemini_calls():
         assert "Senior AI/ML Engineer" in answer_prompt
         assert "INDEPENDENT EMERGENCY COPILOT OVERRIDE" in answer_prompt
         assert "Never exceed 7 sentences" in answer_prompt
-        assert calls[1]["max_tokens"] == 220
+        assert "max_tokens" not in calls[0]
+        assert "max_tokens" not in calls[1]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_interview_question_retries_an_invalid_provider_response():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        content = (
+            "```json"
+            if calls == 1
+            else '{"is_question":true,"question":"What is the GIL?"}'
+        )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        orchestrator = LlmOrchestrator(
+            make_settings(
+                cerebras_api_key=None,
+                vertex_project=None,
+                vertex_access_token=None,
+                openrouter_api_key="or-key",
+            ),
+            client,
+        )
+
+        detected = await orchestrator.interview_question(
+            InterviewQuestionRequest(
+                run_id="run",
+                context="Interviewer: What is the GIL?",
+                candidate="What is the GIL?",
+            )
+        )
+
+        assert calls == 2
+        assert detected.is_question is True
+        assert detected.question == "What is the GIL?"
     finally:
         await client.aclose()
 
@@ -2286,3 +2331,17 @@ async def test_interview_answer_stream_never_emits_more_than_seven_sentences():
     text = "".join([part async for part in limit_interview_answer_stream(source())])
 
     assert text == "One. Two. Three. Four. Five. Six. Seven."
+
+
+@pytest.mark.anyio
+async def test_interview_answer_stream_does_not_clip_long_valid_sentences():
+    sentence = "This is a deliberately long spoken sentence " + "with context " * 20
+    expected = " ".join(f"{sentence}{index}." for index in range(1, 7))
+
+    async def source() -> AsyncIterator[str]:
+        yield expected
+
+    text = "".join([part async for part in limit_interview_answer_stream(source())])
+
+    assert len(text) > 900
+    assert text == expected

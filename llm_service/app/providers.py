@@ -689,13 +689,14 @@ class OpenRouterClient:
         user_content: str,
         temperature: float,
         thinking_level: str | None = None,
+        max_tokens: int | None = 96,
     ) -> str:
         return await self.text(
             model=model,
             system_prompt=system_prompt,
             user_content=user_content,
             temperature=temperature,
-            max_tokens=96,
+            max_tokens=max_tokens,
         )
 
     async def generate_scorecard(
@@ -859,11 +860,11 @@ class VertexClient:
         user_content: str,
         temperature: float,
         thinking_level: str | None = None,
+        max_tokens: int | None = 96,
     ) -> str:
-        generation_config: dict[str, Any] = {
-            "temperature": temperature,
-            "maxOutputTokens": 96,
-        }
+        generation_config: dict[str, Any] = {"temperature": temperature}
+        if max_tokens is not None:
+            generation_config["maxOutputTokens"] = max_tokens
         if thinking_level:
             generation_config["thinkingConfig"] = {"thinkingLevel": thinking_level}
         body = {
