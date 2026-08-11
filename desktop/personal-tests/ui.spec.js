@@ -65,3 +65,14 @@ test("auto prompter and emergency help render independent answers", async ({ pag
   await expect(page.locator("#helpAnswer")).toContainText("human-in-the-loop collections copilot");
   await expect(page.getByRole("button", { name: "Сгенерировать" })).toBeEnabled();
 });
+
+test("reset clears transcript and both answer lanes", async ({ page }) => {
+  await page.setViewportSize({ width: 1710, height: 981 });
+  await page.goto("/?mock=live");
+  await expect(page.locator("#transcript .personal-transcript-item")).toHaveCount(3);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Сбросить" }).click();
+  await expect(page.locator("#transcript .personal-transcript-item")).toHaveCount(0);
+  await expect(page.locator("#autoAnswer")).toHaveText("Суфлёр начнёт писать ответ автоматически.");
+  await expect(page.locator("#helpAnswer")).toHaveText("Здесь появится второй, независимый ответ.");
+});

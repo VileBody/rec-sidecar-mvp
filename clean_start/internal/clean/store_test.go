@@ -20,6 +20,31 @@ func TestStoreApplyCreatesSessionAndDedupesEvents(t *testing.T) {
 	}
 }
 
+func TestStoreApplyPersonalResetClearsConversationState(t *testing.T) {
+	store := NewStore()
+	sessionID := "sess-personal-reset"
+	created := store.Apply(NewEvent(sessionID, EventSessionCreated, "test", map[string]any{}))
+	store.Apply(NewEvent(sessionID, EventSTTFinal, "test", SpeechData{Role: "client", AccountRole: UserRolePersonal, Text: "Tell me about yourself.", Source: CaptureSourceRemoteAudio}))
+	store.Apply(NewEvent(sessionID, EventInterviewAutoStarted, "test", InterviewStartedData{GenerationID: "auto-1", Trigger: "question"}))
+	store.Apply(NewEvent(sessionID, EventInterviewQuestionIdentified, "test", InterviewQuestionIdentifiedData{GenerationID: "auto-1", Question: "Tell me about yourself."}))
+	store.Apply(NewEvent(sessionID, EventInterviewAutoDelta, "test", InterviewDeltaData{GenerationID: "auto-1", Delta: "Long answer"}))
+	store.Apply(NewEvent(sessionID, EventError, "test", ErrorData{Where: "interview.auto", Message: "old error"}))
+
+	state := store.Apply(NewEvent(sessionID, EventPersonalReset, "test", map[string]any{}))
+	if state.CreatedAt != created.CreatedAt {
+		t.Fatalf("reset changed session creation time: got %v want %v", state.CreatedAt, created.CreatedAt)
+	}
+	if len(state.Messages) != 0 || len(state.Transcript) != 0 || state.ClientPartial != "" {
+		t.Fatalf("conversation history survived reset: %#v", state)
+	}
+	if state.Interview.Question != "" || state.Interview.Auto.Text != "" || state.Interview.Auto.Streaming || state.LastError != "" {
+		t.Fatalf("interview state survived reset: %#v", state.Interview)
+	}
+	if len(state.Events) != 1 || state.Events[0].Type != EventPersonalReset {
+		t.Fatalf("reset should become the new event-history boundary: %#v", state.Events)
+	}
+}
+
 func TestStoreApplyUpdatesMessagesTranscriptStageScorecardAndError(t *testing.T) {
 	store := NewStore()
 	sessionID := "sess-flow"

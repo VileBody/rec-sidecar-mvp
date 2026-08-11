@@ -202,6 +202,12 @@ func (g *Gateway) postEvent(w http.ResponseWriter, r *http.Request) {
 
 	var event Event
 	switch req.Type {
+	case EventPersonalReset:
+		if normalizeUserRoleOrDefault(user.Role) != UserRolePersonal {
+			writeError(w, http.StatusForbidden, errors.New("personal reset is available only for personal accounts"))
+			return
+		}
+		event = NewEventFromContext(r.Context(), sessionID, EventPersonalReset, "gateway", map[string]any{})
 	case EventSellerInput:
 		event = NewEventFromContext(r.Context(), sessionID, EventSellerInput, "gateway", TextData{Text: strings.TrimSpace(req.Text)})
 	case EventClientPartial:

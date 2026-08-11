@@ -26,6 +26,7 @@ from llm_service.app.orchestrator import (
     ConstructivePrefixStripper,
     LlmOrchestrator,
     OpenerCandidate,
+    limit_interview_answer_stream,
     parse_pivot_gate_response,
     parse_ready_gate_response,
     sse_event,
@@ -2260,7 +2261,7 @@ async def test_interview_question_and_answer_use_independent_gemini_calls():
 
         assert detected.is_question is True
         assert detected.provider == "openrouter"
-        assert [frame["event"] for frame in frames] == ["model", "delta", "delta", "done"]
+        assert [frame["event"] for frame in frames] == ["model", "delta", "done"]
         assert (
             "".join(frame.get("text", "") for frame in frames)
             == "The most relevant example is Bondora."
@@ -2270,5 +2271,18 @@ async def test_interview_question_and_answer_use_independent_gemini_calls():
         assert "identify the latest interviewer question" in detector_prompt
         assert "Senior AI/ML Engineer" in answer_prompt
         assert "INDEPENDENT EMERGENCY COPILOT OVERRIDE" in answer_prompt
+        assert "Never exceed 7 sentences" in answer_prompt
+        assert calls[1]["max_tokens"] == 220
     finally:
         await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_interview_answer_stream_never_emits_more_than_seven_sentences():
+    async def source() -> AsyncIterator[str]:
+        yield "One. Two. Three. Four."
+        yield " Five. Six. Seven. Eight. Nine."
+
+    text = "".join([part async for part in limit_interview_answer_stream(source())])
+
+    assert text == "One. Two. Three. Four. Five. Six. Seven."

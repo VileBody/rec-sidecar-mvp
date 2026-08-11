@@ -57,6 +57,8 @@ func (w *InterviewWorker) Run(ctx context.Context) error {
 		defer EndSpan(span, nil)
 		mem := w.memory.apply(event)
 		switch event.Type {
+		case EventPersonalReset:
+			w.resetSession(event.SessionID)
 		case EventSTTFinal:
 			data, _ := DecodeData[SpeechData](event)
 			if data.AccountRole == UserRolePersonal && data.Role == "client" && strings.TrimSpace(data.Text) != "" {
@@ -74,6 +76,20 @@ func (w *InterviewWorker) Run(ctx context.Context) error {
 	w.logger.Info("interview worker subscribed")
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+func (w *InterviewWorker) resetSession(sessionID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.detectSeq[sessionID]++
+	for _, cancels := range []map[string]context.CancelFunc{w.detects, w.auto, w.help} {
+		if cancel := cancels[sessionID]; cancel != nil {
+			cancel()
+		}
+		delete(cancels, sessionID)
+	}
+	delete(w.autoGen, sessionID)
+	delete(w.helpGen, sessionID)
 }
 
 func (w *InterviewWorker) Shutdown(context.Context) error {

@@ -200,6 +200,40 @@ func TestPersonalSessionAcceptsInterviewHelpRequest(t *testing.T) {
 	}
 }
 
+func TestPersonalSessionResetClearsHistory(t *testing.T) {
+	g := newAuthTestGateway()
+	g.cfg.CoachEnabled = true
+	registerReq := httptest.NewRequest(http.MethodPost, "/v1/auth/register", strings.NewReader(`{"email":"personal-reset@example.com","password":"password123","role":"personal"}`))
+	registerRec := httptest.NewRecorder()
+	g.register(registerRec, registerReq)
+	registered := authJSON[AuthResponse](t, registerRec)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"auto_opener":false}`))
+	createReq.Header.Set("Authorization", "Bearer "+registered.Token)
+	createRec := httptest.NewRecorder()
+	g.createSession(createRec, createReq)
+	session := authJSON[CreateSessionResponse](t, createRec)
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+session.SessionID+"/events", strings.NewReader(body))
+		req.SetPathValue("session_id", session.SessionID)
+		req.Header.Set("Authorization", "Bearer "+registered.Token)
+		rec := httptest.NewRecorder()
+		g.postEvent(rec, req)
+		return rec
+	}
+	if rec := post(`{"type":"stt.final","text":"What is the GIL?","source":"remote_audio"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("post transcript status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := post(`{"type":"personal.reset"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("reset status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	state, ok := g.store.Get(session.SessionID)
+	if !ok || len(state.Transcript) != 0 || len(state.Messages) != 0 || len(state.Events) != 1 || state.Events[0].Type != EventPersonalReset {
+		t.Fatalf("personal state was not reset: %#v", state)
+	}
+}
+
 func TestAuthRecognizesAdminRole(t *testing.T) {
 	role, err := normalizeUserRole(" Admin ")
 	if err != nil {

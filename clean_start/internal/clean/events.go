@@ -11,6 +11,7 @@ import (
 
 const (
 	EventSessionCreated                = "session.created"
+	EventPersonalReset                 = "personal.reset"
 	EventSellerInput                   = "seller.input"
 	EventClientPartial                 = "client.partial"
 	EventClientFinal                   = "client.final"

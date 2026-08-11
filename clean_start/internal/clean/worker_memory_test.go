@@ -6,6 +6,18 @@ import (
 	"testing"
 )
 
+func TestMemoryBookPersonalResetClearsInterviewContext(t *testing.T) {
+	book := newMemoryBook()
+	sessionID := "sess-memory-reset"
+	book.apply(NewEvent(sessionID, EventSTTFinal, "test", SpeechData{Role: "client", Text: "What is the GIL?"}))
+	book.apply(NewEvent(sessionID, EventInterviewQuestionIdentified, "test", InterviewQuestionIdentifiedData{Question: "What is the GIL?"}))
+
+	mem := book.apply(NewEvent(sessionID, EventPersonalReset, "test", map[string]any{}))
+	if len(mem.Messages) != 0 || mem.InterviewQuestion != "" || mem.latestInterviewerText() != "" {
+		t.Fatalf("personal history survived memory reset: %#v", mem)
+	}
+}
+
 func TestStudentMemoryDirectionDoesNotRewindFromSTTOrTranslation(t *testing.T) {
 	book := newMemoryBook()
 	sessionID := "sess-memory-direction"

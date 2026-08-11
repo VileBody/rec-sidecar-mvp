@@ -758,6 +758,7 @@ class OpenRouterClient:
         user_content: str,
         temperature: float,
         thinking_level: str | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         effective_model = model or self.settings.openrouter_gemini_model
         body = self._body(
@@ -766,6 +767,7 @@ class OpenRouterClient:
             user_content=user_content,
             temperature=temperature,
             stream=True,
+            max_tokens=max_tokens,
         )
         try:
             with provider_timer("openrouter", effective_model, "stream"):
@@ -937,8 +939,11 @@ class VertexClient:
         user_content: str,
         temperature: float,
         thinking_level: str | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         generation_config: dict[str, Any] = {"temperature": temperature}
+        if max_tokens is not None:
+            generation_config["maxOutputTokens"] = max_tokens
         if thinking_level:
             generation_config["thinkingConfig"] = {"thinkingLevel": thinking_level}
         body = {

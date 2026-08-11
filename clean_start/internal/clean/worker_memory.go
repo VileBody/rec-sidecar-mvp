@@ -246,6 +246,9 @@ func (b *memoryBook) apply(event Event) *sessionMemory {
 	}
 	b.seen[event.ID] = struct{}{}
 	switch event.Type {
+	case EventPersonalReset:
+		studentDirection := mem.StudentDirection
+		*mem = sessionMemory{CurrentStage: "S2.1", StudentDirection: studentDirection}
 	case EventSellerInput:
 		if data, err := DecodeData[TextData](event); err == nil && data.Text != "" {
 			mem.Messages = append(mem.Messages, Message{Role: "seller", Text: data.Text, CreatedAt: event.CreatedAt})

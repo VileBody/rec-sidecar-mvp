@@ -51,7 +51,15 @@ function createMockBridge() {
       if (command === "auth_login") return { id: "preview", email: args.email || "personal@rec.local", role: "personal" };
       if (command === "auth_logout") return null;
       if (command === "session_resume_or_create" || command === "session_current") return { session_id: mockState.session_id, state: mockState };
-      if (command === "session_post_event") return null;
+      if (command === "session_post_event") {
+        if (args.event?.type === "personal.reset") {
+          Object.assign(mockState, clearedPersonalState(mockState));
+          listeners.get("session://snapshot")?.({
+            payload: { session_id: mockState.session_id, state: mockState },
+          });
+        }
+        return null;
+      }
       if (command === "diagnostics_log_path") return "~/Library/Application Support/ru.TeamGenius.REC-Personal/logs/rec-personal.log";
       if (command === "audio_configure") {
         audio.config = { ...audio.config, ...(args.config || {}) };
@@ -131,6 +139,7 @@ function bindControls() {
   $("authPassword").onkeydown = (event) => { if (event.key === "Enter") submitAuth(); };
   $("authEmail").onkeydown = (event) => { if (event.key === "Enter") $("authPassword").focus(); };
   $("logout").onclick = logout;
+  $("resetSession").onclick = resetConversation;
   $("allToggle").onclick = () => toggleAudio("all");
   $("systemToggle").onclick = () => toggleAudio("system");
   $("microphoneToggle").onclick = () => toggleAudio("microphone");
@@ -358,6 +367,38 @@ async function requestInterviewHelp() {
   } finally {
     setTimeout(() => renderInterview(), 800);
   }
+}
+
+async function resetConversation() {
+  if (!sessionId) return;
+  if (!window.confirm("Очистить транскрипцию, вопросы и оба ответа? Запись продолжится.")) return;
+  const button = $("resetSession");
+  button.disabled = true;
+  button.textContent = "Сбрасываю…";
+  try {
+    await bridge.invoke("session_post_event", {
+      event: { type: "personal.reset" },
+    });
+    state = clearedPersonalState(state);
+    render();
+    showToast("История очищена");
+  } catch (error) {
+    showToast(errorText(error), 3600);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Сбросить";
+  }
+}
+
+function clearedPersonalState(current) {
+  return {
+    ...(current || {}),
+    messages: [],
+    transcript: [],
+    client_partial: "",
+    interview: { question: "", auto: {}, help: {} },
+    last_error: "",
+  };
 }
 
 function emptyAudioSnapshot() {

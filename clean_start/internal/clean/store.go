@@ -169,6 +169,19 @@ func (s *Store) Apply(event Event) SessionState {
 		if state.Student.Direction == "" {
 			state.Student.Direction = "en-ru"
 		}
+	case EventPersonalReset:
+		createdAt := state.CreatedAt
+		studentDirection := state.Student.Direction
+		if studentDirection == "" {
+			studentDirection = "en-ru"
+		}
+		*state = SessionState{
+			SessionID: event.SessionID,
+			CreatedAt: createdAt,
+			UpdatedAt: event.CreatedAt,
+			Student:   StudentState{Direction: studentDirection},
+			Events:    []Event{event},
+		}
 	case EventSellerInput:
 		if data, err := DecodeData[TextData](event); err == nil && data.Text != "" {
 			state.Messages = append(state.Messages, Message{Role: "seller", Text: data.Text, CreatedAt: event.CreatedAt})

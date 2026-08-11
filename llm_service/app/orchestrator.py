@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -82,6 +83,11 @@ from .stage_assets import (
     stage_detection_system_prompt,
 )
 
+INTERVIEW_MAX_SENTENCES = 7
+INTERVIEW_MAX_OUTPUT_TOKENS = 220
+INTERVIEW_MAX_OUTPUT_CHARS = 900
+INTERVIEW_SENTENCE_BOUNDARY = re.compile(r'[.!?](?:["”’\']+)?\s+')
+
 
 logger = logging.getLogger("uvicorn.error")
 HELP_TEMPERATURE = 1.0
@@ -94,6 +100,66 @@ FALLBACK_HELP_OPENER_TEXT = (
     "Давайте зафиксируем главный риск и разберем, что должно быть иначе, "
     "чтобы вам было безопасно двигаться дальше."
 )
+
+
+async def limit_interview_answer_stream(
+    stream: AsyncIterator[str],
+    *,
+    max_sentences: int = INTERVIEW_MAX_SENTENCES,
+    max_chars: int = INTERVIEW_MAX_OUTPUT_CHARS,
+) -> AsyncIterator[str]:
+    pending = ""
+    emitted_sentences = 0
+    emitted_chars = 0
+
+    def compact_piece(value: str) -> str:
+        return " ".join(value.split())
+
+    def fit_piece(value: str, prefix: str) -> tuple[str, bool]:
+        room = max_chars - emitted_chars - len(prefix)
+        if room <= 0:
+            return "", True
+        if len(value) <= room:
+            return prefix + value, False
+        clipped = value[:room].rsplit(" ", 1)[0].rstrip(" ,;:-.!?")
+        if not clipped:
+            return "", True
+        return prefix + clipped + ".", True
+
+    async for delta in stream:
+        pending += delta
+        while emitted_sentences < max_sentences:
+            boundary = INTERVIEW_SENTENCE_BOUNDARY.search(pending)
+            if boundary is None:
+                break
+            piece = compact_piece(pending[: boundary.end()])
+            pending = pending[boundary.end() :]
+            if not piece:
+                continue
+            prefix = "" if emitted_sentences == 0 else " "
+            output, clipped = fit_piece(piece, prefix)
+            if output:
+                yield output
+                emitted_chars += len(output)
+                emitted_sentences += 1
+            if clipped or emitted_sentences >= max_sentences:
+                return
+
+        if emitted_chars + len(pending) > max_chars:
+            piece = compact_piece(pending)
+            prefix = "" if emitted_sentences == 0 else " "
+            output, _ = fit_piece(piece, prefix)
+            if output:
+                yield output
+            return
+
+    if emitted_sentences < max_sentences:
+        piece = compact_piece(pending)
+        if piece:
+            prefix = "" if emitted_sentences == 0 else " "
+            output, _ = fit_piece(piece, prefix)
+            if output:
+                yield output
 
 
 @dataclass
@@ -494,13 +560,15 @@ class LlmOrchestrator:
                     "provider": self._gemini_text_provider(),
                 }
             )
-            async for delta in self._gemini_stream_text(
+            raw_stream = self._gemini_stream_text(
                 model=self._gemini_text_model(),
                 system_prompt=system_prompt,
                 user_content=user_content,
                 temperature=0.25,
                 thinking_level=self.settings.vertex_thinking_level,
-            ):
+                max_tokens=INTERVIEW_MAX_OUTPUT_TOKENS,
+            )
+            async for delta in limit_interview_answer_stream(raw_stream):
                 yield sse_event({"event": "delta", "text": delta})
             yield sse_event({"event": "done"})
         except ProviderError as exc:
@@ -1516,6 +1584,7 @@ class LlmOrchestrator:
         user_content: str,
         temperature: float,
         thinking_level: str | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         if self.openrouter.configured():
             return self.openrouter.stream_text(
@@ -1523,6 +1592,7 @@ class LlmOrchestrator:
                 system_prompt=system_prompt,
                 user_content=user_content,
                 temperature=temperature,
+                max_tokens=max_tokens,
             )
         return self.vertex.stream_text(
             model=model,
@@ -1530,6 +1600,7 @@ class LlmOrchestrator:
             user_content=user_content,
             temperature=temperature,
             thinking_level=thinking_level,
+            max_tokens=max_tokens,
         )
 
     async def _gemini_text_stream(

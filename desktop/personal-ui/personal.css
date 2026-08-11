@@ -14,6 +14,10 @@ body.personal-desktop {
   min-width: 136px;
 }
 
+.personal-reset-button {
+  color: var(--red);
+}
+
 .personal-transcript-card {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
